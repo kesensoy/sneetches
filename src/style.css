@@ -1,0 +1,39 @@
+.data-sneetch-extension {
+  text-decoration: none;
+}
+
+.data-sneetch-extension.missing {
+  color: red;
+}
+
+.data-sneetch-extension .sneetch-stars,
+.data-sneetch-extension .sneetch-forks,
+.data-sneetch-extension .sneetch-date {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.1);
+  margin: 0 1px;
+  font-size: 0.9em;
+}
+
+.data-sneetch-extension .sneetch-stars {
+  color: #e3b341;
+}
+
+.data-sneetch-extension .sneetch-forks {
+  opacity: 0.7;
+}
+
+.data-sneetch-extension .sneetch-forks .sneetch-fork-sym {
+  font-weight: 900;
+  -webkit-text-stroke: 0.5px;
+}
+
+.data-sneetch-extension .sneetch-date {
+  opacity: 0.7;
+}
+
+.fork-flag.lovely-forks-addon .data-sneetch-extension {
+  display: none;
+}

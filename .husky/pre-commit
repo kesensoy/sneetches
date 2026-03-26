@@ -1,0 +1,1 @@
+npx lint-staged && npm run check --silent && npx jest --onlyChanged

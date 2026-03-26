@@ -1,0 +1,19 @@
+dist/
+build/
+node_modules/
+yarn-error.log
+package-lock.json
+
+# Extension build artifacts
+*.crx
+*.pem
+
+# Environment / secrets
+.env*
+
+# OS files
+.DS_Store
+
+# IDE / tool configs
+.serena/
+.mcp.json
