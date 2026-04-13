@@ -4,6 +4,36 @@ import { getAccessToken } from './settings';
 const CACHE_VERSION = 1;
 const GITHUB_API_URL = 'https://api.github.com/repos/';
 
+export const RATE_LIMIT_KEY = 'rate_limit';
+
+export interface RateLimitInfo {
+  limit: number;
+  remaining: number;
+  at: number;
+}
+
+export function getStoredRateLimit(): Promise<RateLimitInfo | null> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([RATE_LIMIT_KEY], (items) => {
+      resolve((items[RATE_LIMIT_KEY] as RateLimitInfo | undefined) ?? null);
+    });
+  });
+}
+
+function captureRateLimit(res: Response): void {
+  const limit = res.headers.get('x-ratelimit-limit');
+  const remaining = res.headers.get('x-ratelimit-remaining');
+  if (limit !== null && remaining !== null) {
+    chrome.storage.local.set({
+      [RATE_LIMIT_KEY]: {
+        limit: Number(limit),
+        remaining: Number(remaining),
+        at: Date.now(),
+      },
+    });
+  }
+}
+
 interface RepoInfo {
   readonly forks_count: number;
   readonly pushed_at: string;
@@ -36,12 +66,13 @@ export function getRepoData(nwo: string): Promise<RepoResponse> {
   return locallyCached(nwo, CACHE_VERSION, async () => {
     const accessToken = await getAccessToken();
     const headers: Record<string, string> = {
-      'User-Agent': 'osteele/sneetches',
+      'User-Agent': 'kesensoy/sneetches',
     };
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`;
     }
     const res = await fetch(GITHUB_API_URL + nwo, { headers });
+    captureRateLimit(res);
     return marshallableResponse(res);
   });
 }

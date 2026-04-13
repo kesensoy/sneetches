@@ -1,4 +1,4 @@
-import { getRepoData, isRepoUrl } from '../src/github';
+import { getRepoData, isRepoUrl, RATE_LIMIT_KEY } from '../src/github';
 import { mockFetch } from './fetch.mock';
 
 describe('getRepoData', () => {
@@ -112,5 +112,41 @@ describe('isRepoUrl', () => {
     expect(isRepoUrl('https://github.com/security/something')).toBe(false);
     expect(isRepoUrl('https://github.com/sponsors/someone')).toBe(false);
     expect(isRepoUrl('https://github.com/features/actions')).toBe(false);
+  });
+});
+
+describe('rate limit persistence', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('stores rate limit info from response headers', async () => {
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '4873',
+      },
+    });
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toMatchObject({
+      limit: 5000,
+      remaining: 4873,
+    });
+  });
+
+  test('does not store rate limit when headers absent', async () => {
+    mockFetch({ json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 } });
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toBeUndefined();
   });
 });
