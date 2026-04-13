@@ -1,9 +1,4 @@
-import {
-  validateAccessToken,
-  getStoredRateLimit,
-  checkStarredStatus,
-  RateLimitInfo,
-} from './github';
+import { validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
 import { clearCache, getCacheEntryCount } from './cache';
 import {
   ACCESS_TOKEN_KEY,
@@ -13,7 +8,6 @@ import {
   DefaultShowSettings,
   DefaultStarStyle,
   DefaultTokenValidated,
-  getSettings,
   HAS_STARRED_KEY,
   SHOW_KEY,
   STAR_STYLE_KEY,
@@ -98,15 +92,6 @@ function applyStarredState(isStarred: boolean) {
   } else {
     cta.classList.remove('starred');
   }
-}
-
-async function refreshStarredStatus() {
-  const { accessToken } = await getSettings();
-  if (!accessToken) return;
-  const result = await checkStarredStatus(accessToken);
-  if (result === null) return; // unknown — don't touch state
-  chrome.storage.sync.set({ [HAS_STARRED_KEY]: result });
-  applyStarredState(result);
 }
 
 function restoreOptions() {
@@ -266,5 +251,4 @@ document.addEventListener('DOMContentLoaded', () => {
   wireAdvancedToggle();
   wireClearCache();
   renderVersion();
-  refreshStarredStatus(); // fire-and-forget background API call
 });

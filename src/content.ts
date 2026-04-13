@@ -3,6 +3,31 @@ import { getRepoData, isRepoUrl } from './github';
 import { ACCESS_TOKEN_KEY, getSettings, ShowSettings, StarStyle } from './settings';
 import { commafy, humanize, humanizeDate } from './utils';
 
+// Detect and persist whether the authenticated GitHub user has starred
+// this extension's repo. We scrape the star button's form action from
+// github.com/kesensoy/sneetches — much cleaner than an API call (no
+// token needed, no scope requirements).
+export function detectStarredStateOnSneetchesRepo(): void {
+  const url = window.location.href;
+  // Match https://github.com/kesensoy/sneetches and
+  // https://github.com/kesensoy/sneetches/ (optional trailing slash + query)
+  // Not subpages like /issues or /pulls.
+  if (!/^https?:\/\/github\.com\/kesensoy\/sneetches\/?(?:\?.*)?$/.test(url)) return;
+
+  // The star button is a <form> that posts to /kesensoy/sneetches/unstar
+  // when already starred, or /kesensoy/sneetches/star when not.
+  const unstarForm = document.querySelector('form[action^="/kesensoy/sneetches/unstar"]');
+  const starForm = document.querySelector('form[action^="/kesensoy/sneetches/star"]');
+
+  let isStarred: boolean | null = null;
+  if (unstarForm) isStarred = true;
+  else if (starForm) isStarred = false;
+
+  if (isStarred === null) return; // logged out or DOM changed — leave state alone
+
+  chrome.storage.sync.set({ has_starred: isStarred });
+}
+
 const ANNOTATION_CLASS = 'data-sneetch-extension';
 
 const Symbols = {
@@ -118,6 +143,7 @@ async function updateAnnotationsFromSettings() {
 }
 
 updateAnnotationsFromSettings();
+detectStarredStateOnSneetchesRepo(); // NEW: scrape starred state if we're on the sneetches repo page
 
 chrome.storage.onChanged.addListener((object, namespace) => {
   if (namespace === 'sync') {
