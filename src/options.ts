@@ -70,6 +70,17 @@ async function refreshAdvancedStats() {
   if (cacheCountEl) cacheCountEl.textContent = `${count} entries`;
 }
 
+function updateTokenHelpVisibility() {
+  const help = document.getElementById('token-help');
+  if (!help) return;
+  const token = inputElement('access-token').value.trim();
+  if (token) {
+    help.setAttribute('hidden', '');
+  } else {
+    help.removeAttribute('hidden');
+  }
+}
+
 function restoreOptions() {
   chrome.storage.sync.get(
     [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY, ADVANCED_OPEN_KEY],
@@ -80,6 +91,7 @@ function restoreOptions() {
       const advancedOpen = items[ADVANCED_OPEN_KEY] ?? DefaultAdvancedOpen;
 
       inputElement('access-token').value = accessToken || '';
+      updateTokenHelpVisibility();
       inputElement('show-forks').checked = show.forks;
       inputElement('show-stars').checked = show.stars;
       inputElement('show-update').checked = show.update;
@@ -142,6 +154,7 @@ function wireTokenTest() {
   inputElement('access-token').addEventListener('input', () => {
     btn.textContent = 'Test';
     btn.className = 'btn btn--primary';
+    updateTokenHelpVisibility();
   });
 }
 

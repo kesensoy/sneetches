@@ -34,6 +34,7 @@ describe('restoreOptions', () => {
         <input id="access-token" type="password">
         <button id="token-eye"></button>
         <button id="token-test">Test</button>
+        <p id="token-help"></p>
         <span id="saved-indicator" hidden></span>
         <div class="advanced" id="advanced-section">
           <button id="advanced-toggle" aria-expanded="false"></button>
@@ -301,5 +302,53 @@ describe('restoreOptions', () => {
     // the mock exposes getManifest. Both are acceptable — the test just verifies
     // textContent is non-empty and starts with "Sneetches".
     expect(versionEl.textContent).toMatch(/^Sneetches/);
+  });
+
+  test('token help is hidden on load when a token is already stored', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_existing' }, () => resolve());
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const help = document.getElementById('token-help')!;
+    expect(help.hasAttribute('hidden')).toBe(true);
+  });
+
+  test('token help is visible on load when no token is stored', () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    const help = document.getElementById('token-help')!;
+    expect(help.hasAttribute('hidden')).toBe(false);
+  });
+
+  test('token help hides when user types into the empty field', () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    const help = document.getElementById('token-help')!;
+    expect(help.hasAttribute('hidden')).toBe(false);
+
+    const input = inputElement('access-token');
+    input.value = 'ghp_new';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(help.hasAttribute('hidden')).toBe(true);
+  });
+
+  test('token help reappears when user clears a populated field', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_existing' }, () => resolve());
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const help = document.getElementById('token-help')!;
+    expect(help.hasAttribute('hidden')).toBe(true);
+
+    const input = inputElement('access-token');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(help.hasAttribute('hidden')).toBe(false);
   });
 });
