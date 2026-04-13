@@ -24,6 +24,10 @@ export type TokenValidation =
   | { valid: true }
   | { valid: false; status?: number; error?: 'network' };
 
+interface HasHeaders {
+  headers: { get(name: string): string | null };
+}
+
 export async function validateAccessToken(token: string): Promise<TokenValidation> {
   if (!token) return { valid: false };
   try {
@@ -33,16 +37,14 @@ export async function validateAccessToken(token: string): Promise<TokenValidatio
         Authorization: `Bearer ${token}`,
       },
     });
-    captureRateLimit(res); // side effect: refresh rate-limit display
-    if (res.ok) return { valid: true };
+    if (res.ok) {
+      captureRateLimit(res); // side effect: refresh rate-limit display on success only
+      return { valid: true };
+    }
     return { valid: false, status: res.status };
   } catch {
     return { valid: false, error: 'network' };
   }
-}
-
-interface HasHeaders {
-  headers: { get(name: string): string | null };
 }
 
 function captureRateLimit(res: HasHeaders): void {

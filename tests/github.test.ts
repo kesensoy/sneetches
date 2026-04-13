@@ -212,6 +212,24 @@ describe('validateAccessToken captures rate limit', () => {
     );
     expect(stored[RATE_LIMIT_KEY]).toMatchObject({ limit: 5000, remaining: 4500 });
   });
+
+  test('does NOT store rate limit on failed /user response', async () => {
+    mockFetch({
+      ok: false,
+      status: 401,
+      json: { message: 'Bad credentials' },
+      headers: {
+        'x-ratelimit-limit': '60',
+        'x-ratelimit-remaining': '59',
+      },
+    });
+    await validateAccessToken('bad-token');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(['rate_limit'], (items) => resolve(items))
+    );
+    expect(stored.rate_limit).toBeUndefined();
+  });
 });
 
 describe('rate limit persistence', () => {

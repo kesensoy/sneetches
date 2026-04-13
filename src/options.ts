@@ -6,6 +6,7 @@ import {
   DefaultAdvancedOpen,
   DefaultShowSettings,
   DefaultStarStyle,
+  DefaultTokenValidated,
   SHOW_KEY,
   STAR_STYLE_KEY,
   TOKEN_VALIDATED_KEY,
@@ -89,7 +90,8 @@ function restoreOptions() {
       const show = { ...DefaultShowSettings, ...(items[SHOW_KEY] || {}) };
       const starStyle = items[STAR_STYLE_KEY] ?? DefaultStarStyle;
       const advancedOpen = items[ADVANCED_OPEN_KEY] ?? DefaultAdvancedOpen;
-      const tokenValidated = (items[TOKEN_VALIDATED_KEY] as boolean | undefined) ?? false;
+      const tokenValidated =
+        (items[TOKEN_VALIDATED_KEY] as boolean | undefined) ?? DefaultTokenValidated;
 
       inputElement('access-token').value = accessToken || '';
 
