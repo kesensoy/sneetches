@@ -127,4 +127,23 @@ describe('restoreOptions', () => {
     expect(btn.textContent).toMatch(/Invalid/);
     expect(btn.classList.contains('btn--err')).toBe(true);
   });
+
+  test('selecting filled star style adds star-style--filled class to body', () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('ss-fill').checked = true;
+    inputElement('ss-fill').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(document.body.classList.contains('star-style--filled')).toBe(true);
+  });
+
+  test('selecting outline removes star-style--filled class', () => {
+    document.body.classList.add('star-style--filled');
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('ss-outline').checked = true;
+    inputElement('ss-outline').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(document.body.classList.contains('star-style--filled')).toBe(false);
+  });
 });

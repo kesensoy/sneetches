@@ -113,9 +113,18 @@ function wireTokenTest() {
   });
 }
 
+function wireStarStylePreview() {
+  const sync = () => {
+    document.body.classList.toggle('star-style--filled', inputElement('ss-fill').checked);
+  };
+  inputElement('ss-outline').addEventListener('change', sync);
+  inputElement('ss-fill').addEventListener('change', sync);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   addInputEventListeners();
   wireTokenEye();
   wireTokenTest();
+  wireStarStylePreview();
 });
