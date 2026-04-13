@@ -183,23 +183,30 @@ export function createAnnotation(
 ) {
   const pushedAt = new Date(data.pushed_at);
   const elt = _createAnnotation('');
+  // Build each stat span by splitting text content from SVG markup: text
+  // goes through a text node (escaped) while the SVG icon string is the
+  // only thing ever handed to innerHTML-style insertion. Keeps the SVG
+  // markup working without trusting humanize() / humanizeDate() output as
+  // HTML, even though today those functions only ever emit digits.
   if (show.stars) {
     const span = document.createElement('span');
     span.className = 'sneetch-stars';
-    span.innerHTML =
-      humanize(data.stargazers_count) + ' ' + starIcon('sneetch-icon', starStyle === 'filled');
+    span.append(humanize(data.stargazers_count) + ' ');
+    span.insertAdjacentHTML('beforeend', starIcon('sneetch-icon', starStyle === 'filled'));
     elt.appendChild(span);
   }
   if (show.forks) {
     const span = document.createElement('span');
     span.className = 'sneetch-forks';
-    span.innerHTML = humanize(data.forks_count) + ' ' + repoForkedIcon('sneetch-icon');
+    span.append(humanize(data.forks_count) + ' ');
+    span.insertAdjacentHTML('beforeend', repoForkedIcon('sneetch-icon'));
     elt.appendChild(span);
   }
   if (show.update) {
     const span = document.createElement('span');
     span.className = 'sneetch-date';
-    span.innerHTML = clockIcon('sneetch-icon') + ' ' + humanizeDate(pushedAt);
+    span.insertAdjacentHTML('beforeend', clockIcon('sneetch-icon'));
+    span.append(' ' + humanizeDate(pushedAt));
     elt.appendChild(span);
   }
   elt.title =

@@ -177,7 +177,7 @@ The extension popup and options page were fully redesigned as part of the 1.1.0 
 - **Test suite grew from 30 to 96 tests** (all passing).
 
 ### New chrome.storage keys
-- `chrome.storage.sync`: `star_style`, `advanced_open`, `token_validated`, `has_starred`
+- `chrome.storage.sync`: `star_style`, `advanced_open`, `token_validated`, `has_starred`, `toolbar_icon`
 - `chrome.storage.local`: `rate_limit` (stores `{limit, remaining}` from GitHub response headers)
 
 ## Extension Features
