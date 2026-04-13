@@ -66,6 +66,18 @@ describe('restoreOptions', () => {
     expect(document.body.classList.contains('star-style--filled')).toBe(true);
   });
 
+  test('eye toggle switches input type between password and text', () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    const input = inputElement('access-token');
+    expect(input.type).toBe('password');
+
+    document.getElementById('token-eye')!.click();
+    expect(input.type).toBe('text');
+
+    document.getElementById('token-eye')!.click();
+    expect(input.type).toBe('password');
+  });
+
   test('saved indicator appears after a change', () => {
     jest.useFakeTimers();
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));

@@ -78,7 +78,18 @@ export function addInputEventListeners() {
   document.querySelectorAll('input').forEach((elt) => elt.addEventListener('change', saveOptions));
 }
 
+function wireTokenEye() {
+  const eye = document.getElementById('token-eye');
+  if (!eye) return;
+  eye.addEventListener('click', (e) => {
+    e.preventDefault();
+    const input = inputElement('access-token');
+    input.type = input.type === 'password' ? 'text' : 'password';
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   addInputEventListeners();
+  wireTokenEye();
 });
