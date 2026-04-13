@@ -13,6 +13,7 @@ describe('settingsP', () => {
       show: { stars: true, forks: false, update: false },
       starStyle: 'outline',
       advancedOpen: false,
+      tokenValidated: false,
     });
   });
 
@@ -34,6 +35,7 @@ describe('settingsP', () => {
       show: { stars: false, forks: true, update: false },
       starStyle: 'outline',
       advancedOpen: false,
+      tokenValidated: false,
     });
   });
 
@@ -61,5 +63,18 @@ describe('settingsP', () => {
     });
     const settings = await getSettings();
     expect(settings.advancedOpen).toBe(true);
+  });
+
+  test('token_validated defaults to false', async () => {
+    const settings = await getSettings();
+    expect(settings.tokenValidated).toBe(false);
+  });
+
+  test('honors stored token_validated', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ token_validated: true }, () => resolve());
+    });
+    const settings = await getSettings();
+    expect(settings.tokenValidated).toBe(true);
   });
 });

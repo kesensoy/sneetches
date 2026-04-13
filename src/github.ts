@@ -1,5 +1,5 @@
 import { locallyCached } from './cache';
-import { getAccessToken } from './settings';
+import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
 
 const CACHE_VERSION = 1;
 const GITHUB_API_URL = 'https://api.github.com/repos/';
@@ -33,6 +33,7 @@ export async function validateAccessToken(token: string): Promise<TokenValidatio
         Authorization: `Bearer ${token}`,
       },
     });
+    captureRateLimit(res); // side effect: refresh rate-limit display
     if (res.ok) return { valid: true };
     return { valid: false, status: res.status };
   } catch {
@@ -40,16 +41,27 @@ export async function validateAccessToken(token: string): Promise<TokenValidatio
   }
 }
 
-function captureRateLimit(res: Response): void {
+interface HasHeaders {
+  headers: { get(name: string): string | null };
+}
+
+function captureRateLimit(res: HasHeaders): void {
   const limit = res.headers.get('x-ratelimit-limit');
   const remaining = res.headers.get('x-ratelimit-remaining');
   if (limit !== null && remaining !== null) {
+    const limitNum = Number(limit);
     chrome.storage.local.set({
       [RATE_LIMIT_KEY]: {
-        limit: Number(limit),
+        limit: limitNum,
         remaining: Number(remaining),
       },
     });
+    // If the observed limit is below the authenticated tier (5000),
+    // the current token is not working. Auto-invalidate the persisted
+    // "validated" flag so the popup shows the honest state on next open.
+    if (limitNum < 1000) {
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+    }
   }
 }
 

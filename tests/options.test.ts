@@ -304,9 +304,11 @@ describe('restoreOptions', () => {
     expect(versionEl.textContent).toMatch(/^Sneetches/);
   });
 
-  test('token help is hidden on load when a token is already stored', async () => {
+  test('token help is hidden on load when token_validated is true', async () => {
     await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ access_token: 'ghp_existing' }, () => resolve());
+      chrome.storage.sync.set({ access_token: 'ghp_existing', token_validated: true }, () =>
+        resolve()
+      );
     });
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
     await new Promise((r) => setTimeout(r, 0));
@@ -317,27 +319,26 @@ describe('restoreOptions', () => {
 
   test('token help is visible on load when no token is stored', () => {
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
-
     const help = document.getElementById('token-help')!;
     expect(help.hasAttribute('hidden')).toBe(false);
   });
 
-  test('token help hides when user types into the empty field', () => {
-    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
-
-    const help = document.getElementById('token-help')!;
-    expect(help.hasAttribute('hidden')).toBe(false);
-
-    const input = inputElement('access-token');
-    input.value = 'ghp_new';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-
-    expect(help.hasAttribute('hidden')).toBe(true);
-  });
-
-  test('token help reappears when user clears a populated field', async () => {
+  test('token help stays visible on load when token is stored but not validated', async () => {
     await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ access_token: 'ghp_existing' }, () => resolve());
+      chrome.storage.sync.set({ access_token: 'ghp_untested' }, () => resolve());
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const help = document.getElementById('token-help')!;
+    expect(help.hasAttribute('hidden')).toBe(false); // token set but token_validated=false
+  });
+
+  test('token help reappears when user edits the token field', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_existing', token_validated: true }, () =>
+        resolve()
+      );
     });
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
     await new Promise((r) => setTimeout(r, 0));
@@ -345,10 +346,76 @@ describe('restoreOptions', () => {
     const help = document.getElementById('token-help')!;
     expect(help.hasAttribute('hidden')).toBe(true);
 
+    // User edits the field — triggers input event — help should reappear
     const input = inputElement('access-token');
-    input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
 
     expect(help.hasAttribute('hidden')).toBe(false);
+  });
+
+  test('Test button starts as Valid when token_validated=true on load', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_existing', token_validated: true }, () =>
+        resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const btn = document.getElementById('token-test')!;
+    expect(btn.textContent).toMatch(/Valid/);
+    expect(btn.classList.contains('btn--ok')).toBe(true);
+  });
+
+  test('successful Test click persists token_validated=true', async () => {
+    (validateAccessToken as jest.Mock).mockResolvedValue({ valid: true });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('access-token').value = 'ghp_new';
+    document.getElementById('token-test')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['token_validated'], (items) => resolve(items))
+    );
+    expect(stored.token_validated).toBe(true);
+  });
+
+  test('failed Test click persists token_validated=false', async () => {
+    (validateAccessToken as jest.Mock).mockResolvedValue({ valid: false, status: 401 });
+    // Pre-set to true so we can observe it flip to false
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ token_validated: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    inputElement('access-token').value = 'ghp_bad';
+    document.getElementById('token-test')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['token_validated'], (items) => resolve(items))
+    );
+    expect(stored.token_validated).toBe(false);
+  });
+
+  test('editing token field persists token_validated=false', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ token_validated: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const input = inputElement('access-token');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['token_validated'], (items) => resolve(items))
+    );
+    expect(stored.token_validated).toBe(false);
   });
 });

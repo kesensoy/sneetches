@@ -8,6 +8,7 @@ import {
   DefaultStarStyle,
   SHOW_KEY,
   STAR_STYLE_KEY,
+  TOKEN_VALIDATED_KEY,
 } from './settings';
 
 export function inputElement(id: string): HTMLInputElement {
@@ -70,11 +71,10 @@ async function refreshAdvancedStats() {
   if (cacheCountEl) cacheCountEl.textContent = `${count} entries`;
 }
 
-function updateTokenHelpVisibility() {
+function updateTokenHelpVisibility(validated: boolean) {
   const help = document.getElementById('token-help');
   if (!help) return;
-  const token = inputElement('access-token').value.trim();
-  if (token) {
+  if (validated) {
     help.setAttribute('hidden', '');
   } else {
     help.removeAttribute('hidden');
@@ -83,15 +83,24 @@ function updateTokenHelpVisibility() {
 
 function restoreOptions() {
   chrome.storage.sync.get(
-    [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY, ADVANCED_OPEN_KEY],
+    [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY, ADVANCED_OPEN_KEY, TOKEN_VALIDATED_KEY],
     (items) => {
       const accessToken = items[ACCESS_TOKEN_KEY] as string | undefined;
       const show = { ...DefaultShowSettings, ...(items[SHOW_KEY] || {}) };
       const starStyle = items[STAR_STYLE_KEY] ?? DefaultStarStyle;
       const advancedOpen = items[ADVANCED_OPEN_KEY] ?? DefaultAdvancedOpen;
+      const tokenValidated = (items[TOKEN_VALIDATED_KEY] as boolean | undefined) ?? false;
 
       inputElement('access-token').value = accessToken || '';
-      updateTokenHelpVisibility();
+
+      // Restore Test button state based on persisted token_validated flag
+      const testBtn = document.getElementById('token-test');
+      if (testBtn && tokenValidated) {
+        testBtn.textContent = '✓ Valid';
+        testBtn.className = 'btn btn--ok';
+      }
+
+      updateTokenHelpVisibility(tokenValidated);
       inputElement('show-forks').checked = show.forks;
       inputElement('show-stars').checked = show.stars;
       inputElement('show-update').checked = show.update;
@@ -144,9 +153,13 @@ function wireTokenTest() {
     if (result.valid) {
       btn.textContent = '✓ Valid';
       btn.className = 'btn btn--ok';
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true });
+      updateTokenHelpVisibility(true);
     } else {
       btn.textContent = '✗ Invalid';
       btn.className = 'btn btn--err';
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+      updateTokenHelpVisibility(false);
     }
   });
 
@@ -154,7 +167,8 @@ function wireTokenTest() {
   inputElement('access-token').addEventListener('input', () => {
     btn.textContent = 'Test';
     btn.className = 'btn btn--primary';
-    updateTokenHelpVisibility();
+    chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+    updateTokenHelpVisibility(false);
   });
 }
 
