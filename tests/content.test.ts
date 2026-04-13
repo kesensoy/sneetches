@@ -309,6 +309,52 @@ describe('startLinkScanner', () => {
     expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
   });
 
+  test('does not double-fetch when a second scan fires while the first is still in flight', async () => {
+    // Race scenario: the first scan fires getRepoData for an anchor, the
+    // promise takes a while to resolve (cold cache + slow network), and
+    // some unrelated GitHub DOM activity (hovercards, lazy-loaded content,
+    // whatever) mutates the page during the debounce window. That mutation
+    // reschedules a second scan. Before the fix, the second scan would find
+    // the same still-empty anchor (childElementCount === 0 because the
+    // promise hasn't resolved) and fire a SECOND getRepoData. Both promises
+    // would eventually resolve and each append an annotation — double-up.
+    let resolveFetch: (v: {
+      ok: boolean;
+      json: { forks_count: number; pushed_at: string; stargazers_count: number };
+    }) => void = () => {};
+    mockedGetRepoData.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        })
+    );
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+    // First scan found the link and fired one fetch (still pending).
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+
+    // Simulate unrelated GitHub DOM activity — adds a non-annotation node,
+    // which the observer will classify as "real" activity and schedule a
+    // second scan on. The second scan must NOT re-fetch the in-flight link.
+    const marker = document.createElement('div');
+    document.body.appendChild(marker);
+    await waitForScanner();
+
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+
+    // Now let the fetch resolve and assert exactly one annotation landed.
+    resolveFetch({ ok: true, json: makeRepoPayload() });
+    await waitForScanner();
+
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+  });
+
   test('does nothing when all show settings are off', async () => {
     await new Promise<void>((resolve) =>
       chrome.storage.sync.set({ show: { stars: false, forks: false, update: false } }, resolve)

@@ -115,6 +115,16 @@ export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
 let linkScanObserver: MutationObserver | null = null;
 let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
 
+// Anchors with a getRepoData() fetch still in flight. Used to prevent a
+// second debounced scan from re-issuing fetches for links the first scan is
+// already processing. Without this, a mutation burst that fires a second
+// scan inside the debounce window (e.g., GitHub hovercard previews loading
+// while the first scan's cold-cache fetches are still pending) would find
+// the same empty-child anchors and double-annotate them once both fetch
+// waves resolve. A WeakSet auto-releases entries if an anchor is removed
+// from the DOM before its fetch resolves.
+let inFlightAnchors: WeakSet<HTMLAnchorElement> = new WeakSet();
+
 const removeLinkAnnotations = () =>
   document.querySelectorAll('.' + ANNOTATION_CLASS).forEach((node) => node.remove());
 
@@ -124,13 +134,14 @@ const removeLinkAnnotations = () =>
 // one-shot module-load snapshot misses every link. The `childElementCount === 0`
 // filter does double duty here: it skips anchors that wrap images/badges (a
 // historical concern) AND it skips links we've already annotated, because
-// appending our <small> makes childElementCount ≥ 1.
+// appending our <small> makes childElementCount ≥ 1. The `inFlightAnchors`
+// check catches the narrower race of links we're still fetching for.
 function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
   return Array.from(
     document.querySelectorAll<HTMLAnchorElement>(
       'a[href^="https://github.com/"], a[href^="http://github.com/"]'
     )
-  ).filter(isRepoLink);
+  ).filter((a) => isRepoLink(a) && !inFlightAnchors.has(a));
 }
 
 async function updateLinks() {
@@ -140,8 +151,10 @@ async function updateLinks() {
     const href = elt.href;
     const m = href.match('^https?://github.com/(.+?)(?:.git)?/?$');
     if (m) {
+      inFlightAnchors.add(elt);
       getRepoData(m[1])
         .then((res) => {
+          inFlightAnchors.delete(elt);
           if (res.ok) {
             elt.appendChild(createAnnotation(res.json!, show, starStyle));
           } else {
@@ -149,6 +162,7 @@ async function updateLinks() {
           }
         })
         .catch((err) => {
+          inFlightAnchors.delete(elt);
           elt.appendChild(createErrorAnnotation(err, accessToken));
         });
     }
@@ -271,9 +285,15 @@ export function startLinkScanner(): void {
   linkScanObserver = new MutationObserver((mutations) => {
     // Ignore mutations that only added our own annotation nodes — otherwise
     // each appendChild(createAnnotation(...)) would re-trigger a scan and
-    // spin forever. Any other added element (or any removed/attribute
-    // change) is a signal that the page is still assembling and may contain
-    // new repo links worth checking.
+    // spin forever. Checking the top-level added node is sufficient: when
+    // the extension attaches a pre-built <small class="data-sneetch-extension">
+    // subtree to an anchor, the observer reports exactly one added node (the
+    // <small>); its inner <span>/<svg>/<path> descendants are NOT reported as
+    // separate additions, because they were already part of the subtree when
+    // the top-level element was appended (MutationObserver childList spec).
+    // The detached <span> construction inside createAnnotation — including
+    // the insertAdjacentHTML call for the SVG icon — fires no observer
+    // callbacks at all, because the span isn't in document.body yet.
     const nonAnnotationActivity = mutations.some((m) => {
       if (m.type !== 'childList') return true;
       if (m.removedNodes.length > 0) return true;
@@ -294,8 +314,9 @@ export function startLinkScanner(): void {
   });
 }
 
-// Test-only helper: disconnect the observer and clear any pending debounce.
-// Used in afterEach to prevent cross-test pollution. Not called in production.
+// Test-only helper: disconnect the observer, clear any pending debounce,
+// and reset the in-flight anchor tracker. Used in afterEach to prevent
+// cross-test pollution. Not called in production.
 export function __resetLinkScannerForTests(): void {
   if (linkScanObserver) {
     linkScanObserver.disconnect();
@@ -305,6 +326,8 @@ export function __resetLinkScannerForTests(): void {
     clearTimeout(linkScanTimeout);
     linkScanTimeout = null;
   }
+  // WeakSets can't be cleared in place, so replace with a fresh instance.
+  inFlightAnchors = new WeakSet();
 }
 
 startLinkScanner();
