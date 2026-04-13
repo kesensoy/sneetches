@@ -121,10 +121,32 @@ function wireStarStylePreview() {
   inputElement('ss-fill').addEventListener('change', sync);
 }
 
+function wireAdvancedToggle() {
+  const toggle = document.getElementById('advanced-toggle');
+  const content = document.getElementById('advanced-content');
+  const section = document.getElementById('advanced-section');
+  if (!toggle || !content || !section) return;
+
+  toggle.addEventListener('click', () => {
+    const isOpen = !content.hasAttribute('hidden');
+    if (isOpen) {
+      content.setAttribute('hidden', '');
+      toggle.setAttribute('aria-expanded', 'false');
+      section.removeAttribute('data-open');
+    } else {
+      content.removeAttribute('hidden');
+      toggle.setAttribute('aria-expanded', 'true');
+      section.setAttribute('data-open', 'true');
+    }
+    chrome.storage.sync.set({ advanced_open: !isOpen });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   addInputEventListeners();
   wireTokenEye();
   wireTokenTest();
   wireStarStylePreview();
+  wireAdvancedToggle();
 });

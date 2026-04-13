@@ -146,4 +146,56 @@ describe('restoreOptions', () => {
 
     expect(document.body.classList.contains('star-style--filled')).toBe(false);
   });
+
+  test('clicking advanced toggle reveals content and persists state', async () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    const toggle = document.getElementById('advanced-toggle')!;
+    const content = document.getElementById('advanced-content')!;
+    expect(content.hasAttribute('hidden')).toBe(true);
+
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(content.hasAttribute('hidden')).toBe(false);
+
+    // The change should be persisted in chrome.storage.sync
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['advanced_open'], (items) => resolve(items))
+    );
+    expect(stored.advanced_open).toBe(true);
+  });
+
+  test('reopening popup with stored advanced_open=true starts expanded', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const content = document.getElementById('advanced-content')!;
+    expect(content.hasAttribute('hidden')).toBe(false);
+  });
+
+  test('clicking advanced toggle when open closes the tray and persists state', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const toggle = document.getElementById('advanced-toggle')!;
+    const content = document.getElementById('advanced-content')!;
+    expect(content.hasAttribute('hidden')).toBe(false);
+
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(content.hasAttribute('hidden')).toBe(true);
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['advanced_open'], (items) => resolve(items))
+    );
+    expect(stored.advanced_open).toBe(false);
+  });
 });
