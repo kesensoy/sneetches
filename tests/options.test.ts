@@ -65,4 +65,24 @@ describe('restoreOptions', () => {
     expect(document.getElementById('advanced-content')?.hasAttribute('hidden')).toBe(false);
     expect(document.body.classList.contains('star-style--filled')).toBe(true);
   });
+
+  test('saved indicator appears after a change', () => {
+    jest.useFakeTimers();
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    const indicator = document.getElementById('saved-indicator')!;
+    expect(indicator.hasAttribute('hidden')).toBe(true);
+
+    inputElement('show-forks').checked = true;
+    inputElement('show-forks').dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Hidden attribute should be removed immediately
+    expect(indicator.hasAttribute('hidden')).toBe(false);
+
+    // And re-hidden after 1.5 seconds
+    jest.advanceTimersByTime(2000);
+    expect(indicator.hasAttribute('hidden')).toBe(true);
+
+    jest.useRealTimers();
+  });
 });

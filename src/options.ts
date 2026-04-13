@@ -12,6 +12,19 @@ export function inputElement(id: string): HTMLInputElement {
   return document.querySelector('#' + id) as HTMLInputElement;
 }
 
+let savedIndicatorTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showSavedIndicator() {
+  const indicator = document.getElementById('saved-indicator');
+  if (!indicator) return;
+  indicator.removeAttribute('hidden');
+  if (savedIndicatorTimer !== null) clearTimeout(savedIndicatorTimer);
+  savedIndicatorTimer = setTimeout(() => {
+    indicator.setAttribute('hidden', '');
+    savedIndicatorTimer = null;
+  }, 1500);
+}
+
 function saveOptions() {
   chrome.storage.sync.set({
     access_token: inputElement('access-token').value,
@@ -22,6 +35,7 @@ function saveOptions() {
     },
     star_style: inputElement('ss-outline').checked ? 'outline' : 'filled',
   });
+  showSavedIndicator();
 }
 
 function restoreOptions() {
@@ -60,10 +74,11 @@ function restoreOptions() {
   );
 }
 
-document.addEventListener('DOMContentLoaded', restoreOptions);
-
 export function addInputEventListeners() {
   document.querySelectorAll('input').forEach((elt) => elt.addEventListener('change', saveOptions));
 }
 
-addInputEventListeners();
+document.addEventListener('DOMContentLoaded', () => {
+  restoreOptions();
+  addInputEventListeners();
+});
