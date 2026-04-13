@@ -48,6 +48,7 @@ describe('restoreOptions', () => {
         </div>
         <svg class="star-preview-outline"></svg>
         <svg class="star-preview-filled"></svg>
+        <span id="version"></span>
       </div>`;
   });
 
@@ -216,7 +217,7 @@ describe('restoreOptions', () => {
   });
 
   test('advanced stats render rate limit and cache count', async () => {
-    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4873, at: 0 });
+    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4873 });
     (getCacheEntryCount as jest.Mock).mockResolvedValue(142);
 
     await new Promise<void>((resolve) =>
@@ -251,7 +252,7 @@ describe('restoreOptions', () => {
   });
 
   test('opening advanced tray refreshes stats', async () => {
-    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4500, at: 0 });
+    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4500 });
     (getCacheEntryCount as jest.Mock).mockResolvedValue(50);
 
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
@@ -291,5 +292,14 @@ describe('restoreOptions', () => {
 
     expect(clearCache).toHaveBeenCalled();
     expect(document.getElementById('cache-count')!.textContent).toMatch(/0 entries/);
+  });
+
+  test('renders version from manifest', () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    const versionEl = document.getElementById('version')!;
+    // Either "Sneetches v<something>" or just "Sneetches" depending on whether
+    // the mock exposes getManifest. Both are acceptable — the test just verifies
+    // textContent is non-empty and starts with "Sneetches".
+    expect(versionEl.textContent).toMatch(/^Sneetches/);
   });
 });

@@ -317,6 +317,7 @@ body.star-style--filled .star-preview-filled { display: inline-block; }
   height: 100%;
   width: 0%;
   background: linear-gradient(90deg, var(--accent), var(--star-teal));
+  transition: width 0.3s ease;
 }
 
 .stat-row {

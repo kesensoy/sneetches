@@ -9,12 +9,12 @@ export const RATE_LIMIT_KEY = 'rate_limit';
 export interface RateLimitInfo {
   limit: number;
   remaining: number;
-  at: number;
 }
 
 export function getStoredRateLimit(): Promise<RateLimitInfo | null> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     chrome.storage.local.get([RATE_LIMIT_KEY], (items) => {
+      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
       resolve((items[RATE_LIMIT_KEY] as RateLimitInfo | undefined) ?? null);
     });
   });
@@ -48,7 +48,6 @@ function captureRateLimit(res: Response): void {
       [RATE_LIMIT_KEY]: {
         limit: Number(limit),
         remaining: Number(remaining),
-        at: Date.now(),
       },
     });
   }

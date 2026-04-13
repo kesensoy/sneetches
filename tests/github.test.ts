@@ -133,6 +133,14 @@ describe('validateAccessToken', () => {
     const result = await validateAccessToken('token');
     expect(result).toEqual({ valid: false, error: 'network' });
   });
+
+  test('returns invalid without calling fetch when token is empty', async () => {
+    const fetchSpy = jest.fn();
+    global.fetch = fetchSpy as unknown as typeof fetch;
+    const result = await validateAccessToken('');
+    expect(result).toEqual({ valid: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('rate limit persistence', () => {

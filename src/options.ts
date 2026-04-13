@@ -1,4 +1,4 @@
-import { validateAccessToken, getStoredRateLimit } from './github';
+import { validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
 import { clearCache, getCacheEntryCount } from './cache';
 import {
   ACCESS_TOKEN_KEY,
@@ -41,7 +41,12 @@ function saveOptions() {
 }
 
 async function refreshAdvancedStats() {
-  const rl = await getStoredRateLimit();
+  let rl: RateLimitInfo | null = null;
+  try {
+    rl = await getStoredRateLimit();
+  } catch {
+    rl = null;
+  }
   const rlValue = document.getElementById('rate-limit-value');
   const rlBar = document.getElementById('rate-limit-bar-fill') as HTMLElement | null;
   if (rlValue && rlBar) {
@@ -55,7 +60,12 @@ async function refreshAdvancedStats() {
     }
   }
 
-  const count = await getCacheEntryCount();
+  let count = 0;
+  try {
+    count = await getCacheEntryCount();
+  } catch {
+    count = 0;
+  }
   const cacheCountEl = document.getElementById('cache-count');
   if (cacheCountEl) cacheCountEl.textContent = `${count} entries`;
 }
@@ -174,6 +184,14 @@ function wireClearCache() {
   });
 }
 
+function renderVersion() {
+  const versionEl = document.getElementById('version');
+  if (!versionEl) return;
+  // chrome.runtime.getManifest may not exist in test mocks, hence the optional chain
+  const version = chrome.runtime?.getManifest?.()?.version ?? '';
+  versionEl.textContent = version ? `Sneetches v${version}` : 'Sneetches';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   addInputEventListeners();
@@ -182,4 +200,5 @@ document.addEventListener('DOMContentLoaded', () => {
   wireStarStylePreview();
   wireAdvancedToggle();
   wireClearCache();
+  renderVersion();
 });
