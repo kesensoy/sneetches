@@ -38,5 +38,6 @@ visually confirm that links are followed by star counts, for example
 "webext-options-sync (30★)" instead of "webext-options-sync".
 
 You may need to enter a GitHub Personal Access Token into the options panel, if
-the extension has already used up its GitHub API request quota. The extension
-doesn't currently visually indicate this state.
+the extension has already used up its GitHub API request quota. Current rate-limit
+usage is shown in the Advanced tray of the popup as a bar displaying remaining
+requests out of the hourly limit.

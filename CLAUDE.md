@@ -33,10 +33,12 @@ src/
   ├── content.ts       # Content script (main extension logic)
   ├── github.ts        # GitHub API interaction
   ├── settings.ts      # Extension settings management
-  ├── options.ts       # Options page UI logic
+  ├── icons.ts         # Inline Octicons SVG strings (star, star-fill, repo-forked, clock)
+  ├── options.ts       # Popup/options page UI logic
   ├── utils.ts         # Utility functions (number formatting, date humanization)
-  ├── options.html     # Options page HTML
-  ├── style.css        # Annotation styles
+  ├── options.html     # Popup and options page HTML
+  ├── popup.css        # Popup/options page stylesheet
+  ├── style.css        # Inline annotation styles
   ├── manifest.json    # Chrome extension manifest (v3)
   └── images/          # Extension icons (32px, 128px)
 
@@ -112,7 +114,7 @@ Pre-configured via Husky:
 - ts-jest preset
 - jsdom test environment
 - Chrome extension API mocks via jest-webextension-mock + custom storage mock (`tests/chrome-storage.mock.ts`)
-- All 30 tests passing
+- All 86 tests passing
 
 ## CI/CD
 
@@ -139,7 +141,7 @@ This project was modernized from 2018-era tooling to current standards:
 - Node.js 20+
 - TypeScript 5.7.2
 - Webpack 5.97.1
-- Jest 29.7.0 (30/30 tests passing)
+- Jest 29.7.0 (86/86 tests passing)
 - ESLint 9.17.0 + Prettier 3.4.2
 - Husky 9.1.7 (working commit hooks!)
 - npm (replaced Yarn)
@@ -157,14 +159,43 @@ This project was modernized from 2018-era tooling to current standards:
 8. **Package manager** - Migrated from Yarn to npm
 9. **Bug fix** - Added missing GitHub special page exclusions (advisories, security, etc.)
 
+## Popup & Options Page Redesign (2026)
+
+The extension popup and options page were fully redesigned as part of the 1.1.0 release, moving from the plain browser-default look to a branded, feature-rich UI.
+
+### What changed
+- **`src/options.html`** — full rewrite with branded dark header (8-color star constellation logo, "Sneetches" wordmark, tagline), horizontal pill toggles for Stars/Forks/Last push, token field with eye toggle and Test button, Advanced disclosure tray, rate-limit bar, cache stats + Clear cache button, footer with version.
+- **`src/options.ts`** — full rewrite; new wire functions for all new controls: `wireTokenEye`, `wireTokenTest`, `wireStarStylePreview`, `wireAdvancedToggle`, `wireClearCache`, plus `showSavedIndicator`, `updateTokenHelpVisibility`, `applyStarredState`, `refreshAdvancedStats`, `renderVersion`.
+- **`src/popup.css`** — new file; replaces inline styles that were previously embedded in `options.html`.
+- **`src/icons.ts`** — new file; inline Octicons SVG strings (star, star-fill, repo-forked, clock). No npm dependency added.
+- **`src/style.css`** — added `.sneetch-icon` rule for SVG glyphs; removed obsolete `.sneetch-fork-sym` rule.
+- **`src/content.ts`** — replaced Unicode glyphs with Octicons SVGs from `icons.ts`; added `starStyle` parameter to `createAnnotation`; added `detectStarredStateOnSneetchesRepo` (scrapes star button state on `github.com/kesensoy/sneetches`, MutationObserver for in-place updates).
+- **`src/github.ts`** — added `captureRateLimit` (persists `x-ratelimit-*` headers to `chrome.storage.local`), `getStoredRateLimit`, `validateAccessToken` (hits `GET /user` for the Test button). User-Agent corrected from `osteele/sneetches` to `kesensoy/sneetches`.
+- **`src/cache.ts`** — added `getCacheEntryCount()` and `clearCache()` helpers (both exclude the `rate_limit` key).
+- **`src/settings.ts`** — four new settings: `star_style`, `advanced_open`, `token_validated`, `has_starred`.
+- **Version bumped to 1.1.0.**
+- **Test suite grew from 30 to 86 tests** (all passing).
+
+### New chrome.storage keys
+- `chrome.storage.sync`: `star_style`, `advanced_open`, `token_validated`, `has_starred`
+- `chrome.storage.local`: `rate_limit` (stores `{limit, remaining}` from GitHub response headers)
+
 ## Extension Features
 
-- Displays GitHub repository stats inline next to repo links
-- Shows: stars ⭐, forks ➡, last pushed date ➲
+- Displays GitHub repository stats inline next to repo links using Octicons SVGs
+- Shows: stars, forks, last pushed date (each individually toggleable)
+- Star style preference: outline or filled icon, applied both inline and in popup preview
 - Caches API responses (2-hour TTL)
-- Configurable display options
-- Supports GitHub Personal Access Tokens for higher API rate limits
+- Branded dark popup/options page with horizontal pill toggles and "Saved" indicator
+- Token field with show/hide eye toggle and Test button (validates against `GET /user`; persists result across sessions)
+- Advanced disclosure tray (open/close state persisted) with:
+  - Rate-limit display (X / 5,000 per hour, with gradient bar) fed by captured response headers
+  - Cache entry count and Clear cache button
+- "Star us?" CTA in popup header: gray at rest, gold on hover, locks gold when user has starred `github.com/kesensoy/sneetches` (detected via DOM scrape with MutationObserver)
+- Footer shows version from `chrome.runtime.getManifest().version`
+- Supports GitHub Personal Access Tokens for higher API rate limits (5,000/hour vs 60/hour)
 - Works on both Chrome and Firefox
+- Backward-compatible: existing users' `access_token` and `show` settings survive updates
 
 ## Rate Limiting
 
@@ -172,7 +203,7 @@ The extension makes a GitHub API call for each repo link on a page:
 - **Without token**: 60 requests/hour
 - **With token**: 5,000 requests/hour
 
-Create a [GitHub Personal Access Token](https://github.com/settings/tokens/new) and add it in the extension options to avoid rate limiting.
+Create a [GitHub Personal Access Token](https://github.com/settings/tokens/new) and add it in the extension options to avoid rate limiting. Current usage is displayed in the Advanced tray of the popup as a gradient bar showing remaining requests out of the limit.
 
 ## License
 
