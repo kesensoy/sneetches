@@ -114,7 +114,7 @@ Pre-configured via Husky:
 - ts-jest preset
 - jsdom test environment
 - Chrome extension API mocks via jest-webextension-mock + custom storage mock (`tests/chrome-storage.mock.ts`)
-- All 96 tests passing
+- All 107 tests passing
 
 ## CI/CD
 
@@ -141,7 +141,7 @@ This project was modernized from 2018-era tooling to current standards:
 - Node.js 20+
 - TypeScript 5.7.2
 - Webpack 5.97.1
-- Jest 29.7.0 (96/96 tests passing)
+- Jest 29.7.0 (107/107 tests passing)
 - ESLint 9.17.0 + Prettier 3.4.2
 - Husky 9.1.7 (working commit hooks!)
 - npm (replaced Yarn)
@@ -174,7 +174,7 @@ The extension popup and options page were fully redesigned as part of the 1.1.0 
 - **`src/cache.ts`** — added `getCacheEntryCount()` and `clearCache()` helpers (both exclude the `rate_limit` key).
 - **`src/settings.ts`** — four new settings: `star_style`, `advanced_open`, `token_validated`, `has_starred`.
 - **Version bumped to 1.1.0.**
-- **Test suite grew from 30 to 96 tests** (all passing).
+- **Test suite grew from 30 to 107 tests** (all passing).
 
 ### New chrome.storage keys
 - `chrome.storage.sync`: `star_style`, `advanced_open`, `token_validated`, `has_starred`, `toolbar_icon`
