@@ -36,6 +36,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Pin the toolbar popup to Chrome's natural width so Firefox doesn't stretch
+   it to its default ~800px max. The .is-popup class is applied by options.ts
+   only when the page is top-level (popup context); the options page, which
+   renders inside an iframe in about:addons / chrome://extensions, is left
+   fluid so the min-width: 480px widening below still applies there. */
+body.is-popup {
+  width: 324px;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -114,12 +123,13 @@ body {
   background: var(--surface-2);
 }
 
-/* Spin animation on hover when starred */
+/* Spin animation — retriggered from JS by toggling .spinning on each click
+   while in the .starred state. Seven clicks in a row flips the toolbar icon. */
 @keyframes star-cta-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
-.star-cta.starred:hover .star-cta-icon {
+.star-cta-icon.spinning {
   animation: star-cta-spin 0.6s ease-out;
 }
 
@@ -226,6 +236,12 @@ body {
 body .star-preview-filled { display: none; }
 body.star-style--filled .star-preview-outline { display: none; }
 body.star-style--filled .star-preview-filled { display: inline-block; }
+
+/* Star CTA icon swap — mirrors the Annotations preview so the top-right
+   "Star us?" / "Thanks!" icon reflects the user's outline/filled preference. */
+body .star-cta-icon--filled { display: none; }
+body.star-style--filled .star-cta-icon--outline { display: none; }
+body.star-style--filled .star-cta-icon--filled { display: inline-block; }
 
 /* Token field */
 .token-field {

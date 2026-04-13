@@ -326,6 +326,120 @@ describe('restoreOptions', () => {
     expect(cta.classList.contains('starred')).toBe(false);
   });
 
+  test('unstarred star CTA click does not preventDefault (lets link navigate)', async () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const cta = document.querySelector('.star-cta') as HTMLAnchorElement;
+    expect(cta.classList.contains('starred')).toBe(false);
+
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+    cta.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  test('starred CTA click preventDefaults and adds spinning class to icon', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ has_starred: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const cta = document.querySelector('.star-cta') as HTMLAnchorElement;
+    expect(cta.classList.contains('starred')).toBe(true);
+
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+    cta.dispatchEvent(ev);
+
+    expect(ev.defaultPrevented).toBe(true);
+    const icon = cta.querySelector('.star-cta-icon')!;
+    expect(icon.classList.contains('spinning')).toBe(true);
+  });
+
+  test('seven starred clicks flip toolbar_icon from gray to colorful', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ has_starred: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const cta = document.querySelector('.star-cta') as HTMLAnchorElement;
+    for (let i = 0; i < 7; i++) {
+      cta.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+    // The final click reads storage asynchronously then writes; flush microtasks.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['toolbar_icon'], (items) => resolve(items))
+    );
+    expect(stored.toolbar_icon).toBe('colorful');
+  });
+
+  test('fourteen starred clicks flip toolbar_icon back to gray', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ has_starred: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const cta = document.querySelector('.star-cta') as HTMLAnchorElement;
+    // First combo → colorful
+    for (let i = 0; i < 7; i++) {
+      cta.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    // Second combo → back to gray
+    for (let i = 0; i < 7; i++) {
+      cta.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['toolbar_icon'], (items) => resolve(items))
+    );
+    expect(stored.toolbar_icon).toBe('gray');
+  });
+
+  test('starred click combo resets after the timeout window', async () => {
+    jest.useFakeTimers();
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ has_starred: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    // Flush the storage.get microtask that drives restoreOptions, even under fake timers.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const cta = document.querySelector('.star-cta') as HTMLAnchorElement;
+    // 6 clicks — not enough to trigger the combo
+    for (let i = 0; i < 6; i++) {
+      cta.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+    // Advance past reset window
+    jest.advanceTimersByTime(3000);
+    // Now only 1 more click — counter was reset, so this should NOT trigger
+    cta.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    jest.useRealTimers();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['toolbar_icon'], (items) => resolve(items))
+    );
+    expect(stored.toolbar_icon).toBeUndefined(); // never flipped
+  });
+
+  test('body gets is-popup class in popup context (window.top === window)', () => {
+    // jsdom defaults to window.top === window, matching a top-level popup frame.
+    // The options page, rendered inside an about:addons/chrome://extensions iframe,
+    // would have window.top !== window and therefore skip this class.
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    expect(document.body.classList.contains('is-popup')).toBe(true);
+  });
+
   test('token help is hidden on load when token_validated is true', async () => {
     await new Promise<void>((resolve) => {
       chrome.storage.sync.set({ access_token: 'ghp_existing', token_validated: true }, () =>

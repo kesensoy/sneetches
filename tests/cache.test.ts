@@ -35,9 +35,9 @@ describe('locallyCached', () => {
   });
 
   test('calls the thunk when the cache has expired', async () => {
-    // Advance time past the 2-hour cache TTL
-    const twoHoursMs = 2 * 3600 * 1000 + 1;
-    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + twoHoursMs);
+    // Advance time past the 4-hour cache TTL
+    const fourHoursMs = 4 * 3600 * 1000 + 1;
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + fourHoursMs);
     const r2 = await locallyCached('k', 1, () => 'y');
     expect(r2).toBe('y');
     jest.restoreAllMocks();

@@ -29,7 +29,7 @@ Sneetches is a Chrome/Firefox browser extension that adds GitHub repository stat
 
 ```
 src/
-  ├── cache.ts         # Local storage caching (2-hour TTL)
+  ├── cache.ts         # Local storage caching (4-hour TTL)
   ├── content.ts       # Content script (main extension logic)
   ├── github.ts        # GitHub API interaction
   ├── settings.ts      # Extension settings management
@@ -185,7 +185,7 @@ The extension popup and options page were fully redesigned as part of the 1.1.0 
 - Displays GitHub repository stats inline next to repo links using Octicons SVGs
 - Shows: stars, forks, last pushed date (each individually toggleable)
 - Star style preference: outline or filled icon, applied both inline and in popup preview
-- Caches API responses (2-hour TTL)
+- Caches API responses (4-hour TTL)
 - Branded dark popup/options page with horizontal pill toggles and "Saved" indicator
 - Token field with show/hide eye toggle and Test button (validates against `GET /user`; persists result across sessions)
 - Advanced disclosure tray (open/close state persisted) with:

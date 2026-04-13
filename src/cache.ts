@@ -1,4 +1,4 @@
-const CACHE_DUR_SECONDS = 2 * 3600;
+const CACHE_DUR_SECONDS = 4 * 3600;
 
 interface Entry<T, V> {
   readonly exp: number;

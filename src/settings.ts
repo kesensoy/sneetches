@@ -4,8 +4,10 @@ export const STAR_STYLE_KEY = 'star_style';
 export const ADVANCED_OPEN_KEY = 'advanced_open';
 export const TOKEN_VALIDATED_KEY = 'token_validated';
 export const HAS_STARRED_KEY = 'has_starred';
+export const TOOLBAR_ICON_KEY = 'toolbar_icon';
 
 export type StarStyle = 'outline' | 'filled';
+export type ToolbarIconMode = 'gray' | 'colorful';
 
 interface Settings {
   accessToken: string;
@@ -14,6 +16,7 @@ interface Settings {
   advancedOpen: boolean;
   tokenValidated: boolean;
   hasStarred: boolean;
+  toolbarIcon: ToolbarIconMode;
 }
 
 export interface ShowSettings {
@@ -32,6 +35,7 @@ export const DefaultStarStyle: StarStyle = 'outline';
 export const DefaultAdvancedOpen: boolean = false;
 export const DefaultTokenValidated: boolean = false;
 export const DefaultHasStarred: boolean = false;
+export const DefaultToolbarIcon: ToolbarIconMode = 'gray';
 
 export function getSettings(): Promise<Settings> {
   return new Promise((resolve, reject) =>
@@ -43,6 +47,7 @@ export function getSettings(): Promise<Settings> {
         ADVANCED_OPEN_KEY,
         TOKEN_VALIDATED_KEY,
         HAS_STARRED_KEY,
+        TOOLBAR_ICON_KEY,
       ],
       (object) =>
         chrome.runtime.lastError
@@ -54,6 +59,7 @@ export function getSettings(): Promise<Settings> {
               advancedOpen: object[ADVANCED_OPEN_KEY] ?? DefaultAdvancedOpen,
               tokenValidated: object[TOKEN_VALIDATED_KEY] ?? DefaultTokenValidated,
               hasStarred: object[HAS_STARRED_KEY] ?? DefaultHasStarred,
+              toolbarIcon: object[TOOLBAR_ICON_KEY] ?? DefaultToolbarIcon,
             })
     )
   );

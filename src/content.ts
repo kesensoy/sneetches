@@ -1,6 +1,12 @@
 import { clockIcon, repoForkedIcon, starIcon } from './icons';
 import { getRepoData, isRepoUrl } from './github';
-import { ACCESS_TOKEN_KEY, getSettings, ShowSettings, StarStyle } from './settings';
+import {
+  ACCESS_TOKEN_KEY,
+  HAS_STARRED_KEY,
+  getSettings,
+  ShowSettings,
+  StarStyle,
+} from './settings';
 import { commafy, humanize, humanizeDate } from './utils';
 
 // Detect and persist whether the authenticated GitHub user has starred
@@ -11,21 +17,29 @@ import { commafy, humanize, humanizeDate } from './utils';
 // If the repo is ever renamed or transferred, update SNEETCHES_REPO below
 // AND the href of the "Star us?" CTA in src/options.html.
 const SNEETCHES_REPO = 'kesensoy/sneetches';
-const SNEETCHES_REPO_URL = new RegExp(`^https?://github\\.com/${SNEETCHES_REPO}/?(?:\\?.*)?$`);
+// Match the repo landing page with optional trailing slash and any query or
+// hash suffix. Excludes subpages like /issues, /pulls, /blob/*, etc.
+const SNEETCHES_REPO_URL = new RegExp(`^https?://github\\.com/${SNEETCHES_REPO}/?(?:[?#].*)?$`);
 
 let starredObserver: MutationObserver | null = null;
 let starredObserverTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function writeStarredStateFromDOM(): void {
-  const unstarForm = document.querySelector(`form[action^="/${SNEETCHES_REPO}/unstar"]`);
-  const starForm = document.querySelector(`form[action^="/${SNEETCHES_REPO}/star"]`);
+  // Match the exact form action, not a prefix — GitHub also has `/stargazers`
+  // which would false-positive a `^="/kesensoy/sneetches/star"` selector.
+  const unstarForm = document.querySelector(
+    `form[action="/${SNEETCHES_REPO}/unstar"], form[action^="/${SNEETCHES_REPO}/unstar?"]`
+  );
+  const starForm = document.querySelector(
+    `form[action="/${SNEETCHES_REPO}/star"], form[action^="/${SNEETCHES_REPO}/star?"]`
+  );
 
   let isStarred: boolean | null = null;
   if (unstarForm) isStarred = true;
   else if (starForm) isStarred = false;
 
   if (isStarred === null) return; // logged out or DOM changed — leave state alone
-  chrome.storage.sync.set({ has_starred: isStarred });
+  chrome.storage.sync.set({ [HAS_STARRED_KEY]: isStarred });
 }
 
 export function detectStarredStateOnSneetchesRepo(): void {
@@ -88,10 +102,7 @@ export function __resetStarredDetectorForTests(): void {
 }
 
 const ANNOTATION_CLASS = 'data-sneetch-extension';
-
-const Symbols = {
-  missing: 'missingⓍ',
-};
+const MISSING_SYMBOL = 'missingⓍ';
 
 export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
   isRepoUrl(elt.href) && elt.childElementCount === 0;
@@ -140,7 +151,7 @@ export function createErrorAnnotation(
     elt.setAttribute('title', title);
     return elt;
   } else if (res.status === 404) {
-    return _createAnnotation(Symbols.missing, 'missing');
+    return _createAnnotation(MISSING_SYMBOL, 'missing');
   } else {
     reportError('sneetches: request status =', res.status);
     return _createAnnotation('');
@@ -202,7 +213,7 @@ async function updateAnnotationsFromSettings() {
 }
 
 updateAnnotationsFromSettings();
-detectStarredStateOnSneetchesRepo(); // NEW: scrape starred state if we're on the sneetches repo page
+detectStarredStateOnSneetchesRepo();
 
 chrome.storage.onChanged.addListener((object, namespace) => {
   if (namespace === 'sync') {

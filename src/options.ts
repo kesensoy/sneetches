@@ -8,10 +8,13 @@ import {
   DefaultShowSettings,
   DefaultStarStyle,
   DefaultTokenValidated,
+  DefaultToolbarIcon,
   HAS_STARRED_KEY,
   SHOW_KEY,
   STAR_STYLE_KEY,
   TOKEN_VALIDATED_KEY,
+  TOOLBAR_ICON_KEY,
+  ToolbarIconMode,
 } from './settings';
 
 export function inputElement(id: string): HTMLInputElement {
@@ -32,8 +35,11 @@ function showSavedIndicator() {
 }
 
 function saveOptions() {
+  // Trim the token on save so it matches what the Test button validates
+  // (which also trims). Otherwise a trailing space on input would pass Test
+  // but 401 on every real API call.
   chrome.storage.sync.set({
-    [ACCESS_TOKEN_KEY]: inputElement('access-token').value,
+    [ACCESS_TOKEN_KEY]: inputElement('access-token').value.trim(),
     [SHOW_KEY]: {
       forks: inputElement('show-forks').checked,
       stars: inputElement('show-stars').checked,
@@ -94,6 +100,23 @@ function applyStarredState(isStarred: boolean) {
   }
 }
 
+// Apply the toolbar icon for the current mode. chrome.action.setIcon is
+// session-scoped, so this is called during restoreOptions on every popup
+// or options-page open to re-sync the icon after browser restarts. The
+// gray 32px is the manifest default; the 128px entry is kept colorful in
+// both modes since it's only used for large surfaces like about:addons.
+function applyToolbarIcon(mode: ToolbarIconMode) {
+  // chrome.action is unavailable in test env / older contexts — skip silently.
+  const action = (chrome as unknown as { action?: { setIcon?: (details: unknown) => void } })
+    .action;
+  if (!action?.setIcon) return;
+  const path =
+    mode === 'colorful'
+      ? { 32: 'images/icon128.png', 128: 'images/icon128.png' }
+      : { 32: 'images/icon32.png', 128: 'images/icon128.png' };
+  action.setIcon({ path });
+}
+
 function restoreOptions() {
   chrome.storage.sync.get(
     [
@@ -103,6 +126,7 @@ function restoreOptions() {
       ADVANCED_OPEN_KEY,
       TOKEN_VALIDATED_KEY,
       HAS_STARRED_KEY,
+      TOOLBAR_ICON_KEY,
     ],
     (items) => {
       const accessToken = items[ACCESS_TOKEN_KEY] as string | undefined;
@@ -112,6 +136,11 @@ function restoreOptions() {
       const tokenValidated =
         (items[TOKEN_VALIDATED_KEY] as boolean | undefined) ?? DefaultTokenValidated;
       const hasStarred = (items[HAS_STARRED_KEY] as boolean | undefined) ?? DefaultHasStarred;
+      const toolbarIcon =
+        (items[TOOLBAR_ICON_KEY] as ToolbarIconMode | undefined) ?? DefaultToolbarIcon;
+
+      // Re-sync toolbar icon after any browser restart (setIcon is session-scoped)
+      applyToolbarIcon(toolbarIcon);
 
       inputElement('access-token').value = accessToken || '';
 
@@ -242,7 +271,80 @@ function renderVersion() {
   versionEl.textContent = version ? `Sneetches v${version}` : 'Sneetches';
 }
 
+// Easter egg: when the CTA is in the .starred state, each click spins the
+// star and counts toward a 7-click combo that toggles the toolbar icon
+// between the default gray star and the multicolor constellation. Suppresses
+// navigation while .starred so every click feeds the counter instead of
+// popping seven github.com tabs. The combo resets if clicks are separated
+// by more than SPIN_RESET_MS.
+const SPIN_COMBO_TARGET = 7;
+const SPIN_RESET_MS = 2000;
+
+function wireStarCtaEasterEgg() {
+  const cta = document.querySelector('.star-cta') as HTMLAnchorElement | null;
+  if (!cta) return;
+
+  let clickCount = 0;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleReset = () => {
+    if (resetTimer !== null) clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => {
+      clickCount = 0;
+      resetTimer = null;
+    }, SPIN_RESET_MS);
+  };
+
+  cta.addEventListener('click', (e) => {
+    // Unstarred state keeps default navigation (the a[href] opens the repo).
+    if (!cta.classList.contains('starred')) return;
+
+    e.preventDefault();
+
+    // Retrigger the spin on both icons (whichever is currently visible plays;
+    // the hidden one just carries the class harmlessly). Toggling a class and
+    // forcing a reflow is the canonical way to restart a CSS animation —
+    // simply adding .spinning a second time is a no-op.
+    //
+    // IMPORTANT: the reflow must be read on an HTMLElement. SVGElement does
+    // NOT expose offsetWidth, so `void svg.offsetWidth` is a no-op and the
+    // browser coalesces the remove+add into a single style recalc that sees
+    // no change. Reading offsetWidth on the anchor flushes pending style
+    // changes for the whole subtree, including the SVG children.
+    const icons = cta.querySelectorAll('.star-cta-icon');
+    icons.forEach((el) => el.classList.remove('spinning'));
+    void cta.offsetWidth;
+    icons.forEach((el) => el.classList.add('spinning'));
+
+    clickCount++;
+    scheduleReset();
+
+    if (clickCount >= SPIN_COMBO_TARGET) {
+      clickCount = 0;
+      if (resetTimer !== null) {
+        clearTimeout(resetTimer);
+        resetTimer = null;
+      }
+      chrome.storage.sync.get([TOOLBAR_ICON_KEY], (items) => {
+        const current =
+          (items[TOOLBAR_ICON_KEY] as ToolbarIconMode | undefined) ?? DefaultToolbarIcon;
+        const next: ToolbarIconMode = current === 'colorful' ? 'gray' : 'colorful';
+        chrome.storage.sync.set({ [TOOLBAR_ICON_KEY]: next });
+        applyToolbarIcon(next);
+      });
+    }
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  // Mark popup vs options-page context. Firefox's options_ui page renders inside
+  // an iframe in about:addons (window.top !== window); Chrome's chrome://extensions
+  // behaves the same. The toolbar popup is always a top-level window in both.
+  // The class scopes a fixed width in popup.css so Firefox's popup doesn't stretch
+  // to its default ~800px max — see popup.css body.is-popup rule.
+  if (window.top === window) {
+    document.body.classList.add('is-popup');
+  }
   restoreOptions();
   addInputEventListeners();
   wireTokenEye();
@@ -250,5 +352,6 @@ document.addEventListener('DOMContentLoaded', () => {
   wireStarStylePreview();
   wireAdvancedToggle();
   wireClearCache();
+  wireStarCtaEasterEgg();
   renderVersion();
 });

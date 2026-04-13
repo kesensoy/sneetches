@@ -15,6 +15,7 @@ describe('settingsP', () => {
       advancedOpen: false,
       tokenValidated: false,
       hasStarred: false,
+      toolbarIcon: 'gray',
     });
   });
 
@@ -38,6 +39,7 @@ describe('settingsP', () => {
       advancedOpen: false,
       tokenValidated: false,
       hasStarred: false,
+      toolbarIcon: 'gray',
     });
   });
 
@@ -91,5 +93,18 @@ describe('settingsP', () => {
     });
     const settings = await getSettings();
     expect(settings.hasStarred).toBe(true);
+  });
+
+  test('toolbar_icon defaults to gray', async () => {
+    const settings = await getSettings();
+    expect(settings.toolbarIcon).toBe('gray');
+  });
+
+  test('honors stored toolbar_icon', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ toolbar_icon: 'colorful' }, () => resolve());
+    });
+    const settings = await getSettings();
+    expect(settings.toolbarIcon).toBe('colorful');
   });
 });
