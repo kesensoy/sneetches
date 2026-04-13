@@ -1,7 +1,14 @@
 import { inputElement } from '../src/options';
-import { validateAccessToken } from '../src/github';
+import { validateAccessToken, getStoredRateLimit } from '../src/github';
 jest.mock('../src/github', () => ({
   validateAccessToken: jest.fn(),
+  getStoredRateLimit: jest.fn(),
+}));
+
+import { getCacheEntryCount } from '../src/cache';
+jest.mock('../src/cache', () => ({
+  getCacheEntryCount: jest.fn(),
+  clearCache: jest.fn(),
 }));
 
 describe('restoreOptions', () => {
@@ -9,6 +16,13 @@ describe('restoreOptions', () => {
     chrome.storage.sync.clear();
     chrome.storage.local.clear();
     document.body.className = '';
+
+    // Reset call history and provide safe defaults so existing tests don't break
+    // when refreshAdvancedStats is triggered (e.g. advanced_open: true or toggle click).
+    (getStoredRateLimit as jest.Mock).mockReset();
+    (getCacheEntryCount as jest.Mock).mockReset();
+    (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
+    (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
 
     document.body.innerHTML = `
       <div>
@@ -197,5 +211,57 @@ describe('restoreOptions', () => {
       chrome.storage.sync.get(['advanced_open'], (items) => resolve(items))
     );
     expect(stored.advanced_open).toBe(false);
+  });
+
+  test('advanced stats render rate limit and cache count', async () => {
+    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4873, at: 0 });
+    (getCacheEntryCount as jest.Mock).mockResolvedValue(142);
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0)); // double flush — two awaits inside refreshAdvancedStats
+
+    expect(document.getElementById('rate-limit-value')!.textContent).toMatch(
+      /4,873 \/ 5,000 per hour/
+    );
+    expect(document.getElementById('cache-count')!.textContent).toMatch(/142 entries/);
+
+    const fill = document.getElementById('rate-limit-bar-fill') as HTMLElement;
+    expect(fill.style.width).toBe('97.46%'); // 4873/5000
+  });
+
+  test('advanced stats show dashes when no rate-limit data available', async () => {
+    (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
+    (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(document.getElementById('rate-limit-value')!.textContent).toMatch(/—/);
+    expect(document.getElementById('cache-count')!.textContent).toMatch(/0 entries/);
+  });
+
+  test('opening advanced tray refreshes stats', async () => {
+    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4500, at: 0 });
+    (getCacheEntryCount as jest.Mock).mockResolvedValue(50);
+
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    // Initially closed → no refresh, mock not called yet
+    expect(getStoredRateLimit).not.toHaveBeenCalled();
+
+    document.getElementById('advanced-toggle')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0)); // double flush
+
+    expect(getStoredRateLimit).toHaveBeenCalled();
+    expect(getCacheEntryCount).toHaveBeenCalled();
+    expect(document.getElementById('cache-count')!.textContent).toMatch(/50 entries/);
   });
 });

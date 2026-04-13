@@ -1,4 +1,5 @@
-import { validateAccessToken } from './github';
+import { validateAccessToken, getStoredRateLimit } from './github';
+import { getCacheEntryCount } from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
@@ -39,6 +40,26 @@ function saveOptions() {
   showSavedIndicator();
 }
 
+async function refreshAdvancedStats() {
+  const rl = await getStoredRateLimit();
+  const rlValue = document.getElementById('rate-limit-value');
+  const rlBar = document.getElementById('rate-limit-bar-fill') as HTMLElement | null;
+  if (rlValue && rlBar) {
+    if (rl) {
+      rlValue.textContent = `${rl.remaining.toLocaleString()} / ${rl.limit.toLocaleString()} per hour`;
+      const pct = (rl.remaining / rl.limit) * 100;
+      rlBar.style.width = `${pct.toFixed(2)}%`;
+    } else {
+      rlValue.textContent = '— / — per hour';
+      rlBar.style.width = '0%';
+    }
+  }
+
+  const count = await getCacheEntryCount();
+  const cacheCountEl = document.getElementById('cache-count');
+  if (cacheCountEl) cacheCountEl.textContent = `${count} entries`;
+}
+
 function restoreOptions() {
   chrome.storage.sync.get(
     [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY, ADVANCED_OPEN_KEY],
@@ -66,6 +87,7 @@ function restoreOptions() {
         advancedContent?.removeAttribute('hidden');
         advancedToggle?.setAttribute('aria-expanded', 'true');
         advancedSection?.setAttribute('data-open', 'true');
+        refreshAdvancedStats();
       } else {
         advancedContent?.setAttribute('hidden', '');
         advancedToggle?.setAttribute('aria-expanded', 'false');
@@ -137,6 +159,7 @@ function wireAdvancedToggle() {
       content.removeAttribute('hidden');
       toggle.setAttribute('aria-expanded', 'true');
       section.setAttribute('data-open', 'true');
+      refreshAdvancedStats();
     }
     chrome.storage.sync.set({ advanced_open: !isOpen });
   });
