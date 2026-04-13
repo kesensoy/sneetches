@@ -5,7 +5,7 @@ jest.mock('../src/github', () => ({
   getStoredRateLimit: jest.fn(),
 }));
 
-import { getCacheEntryCount } from '../src/cache';
+import { getCacheEntryCount, clearCache } from '../src/cache';
 jest.mock('../src/cache', () => ({
   getCacheEntryCount: jest.fn(),
   clearCache: jest.fn(),
@@ -21,8 +21,10 @@ describe('restoreOptions', () => {
     // when refreshAdvancedStats is triggered (e.g. advanced_open: true or toggle click).
     (getStoredRateLimit as jest.Mock).mockReset();
     (getCacheEntryCount as jest.Mock).mockReset();
+    (clearCache as jest.Mock).mockReset();
     (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
     (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
+    (clearCache as jest.Mock).mockResolvedValue(undefined);
 
     document.body.innerHTML = `
       <div>
@@ -263,5 +265,31 @@ describe('restoreOptions', () => {
     expect(getStoredRateLimit).toHaveBeenCalled();
     expect(getCacheEntryCount).toHaveBeenCalled();
     expect(document.getElementById('cache-count')!.textContent).toMatch(/50 entries/);
+  });
+
+  test('clear cache button calls clearCache and updates count to 0', async () => {
+    (getCacheEntryCount as jest.Mock)
+      .mockResolvedValueOnce(142) // initial render shows 142
+      .mockResolvedValueOnce(0); // after clear, shows 0
+    (clearCache as jest.Mock).mockResolvedValue(undefined);
+    (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Verify initial render shows 142
+    expect(document.getElementById('cache-count')!.textContent).toMatch(/142 entries/);
+
+    document.getElementById('clear-cache')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0)); // triple flush — clearCache + refreshAdvancedStats both have awaits
+
+    expect(clearCache).toHaveBeenCalled();
+    expect(document.getElementById('cache-count')!.textContent).toMatch(/0 entries/);
   });
 });

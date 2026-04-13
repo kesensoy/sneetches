@@ -1,5 +1,5 @@
 import { validateAccessToken, getStoredRateLimit } from './github';
-import { getCacheEntryCount } from './cache';
+import { clearCache, getCacheEntryCount } from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
@@ -165,6 +165,15 @@ function wireAdvancedToggle() {
   });
 }
 
+function wireClearCache() {
+  const btn = document.getElementById('clear-cache');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    await clearCache();
+    await refreshAdvancedStats();
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   addInputEventListeners();
@@ -172,4 +181,5 @@ document.addEventListener('DOMContentLoaded', () => {
   wireTokenTest();
   wireStarStylePreview();
   wireAdvancedToggle();
+  wireClearCache();
 });
