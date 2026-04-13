@@ -462,6 +462,39 @@ describe('startLinkScanner', () => {
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
   });
 
+  test('access_token change flushes the local cache in addition to rescanning', async () => {
+    // access_token is unique among the rescan-trigger keys: it additionally
+    // invalidates the chrome.storage.local cache when it changes, because
+    // a new token may have different repo visibility (private repos the
+    // old token couldn't see, etc.) and stale cached payloads would be
+    // served forever otherwise. show and star_style only re-render; they
+    // don't touch the cache. This test guards that branch specifically.
+    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+
+    const clearSpy = jest.spyOn(chrome.storage.local, 'clear');
+    clearSpy.mockClear();
+
+    __handleSyncStorageChangeForTests({
+      access_token: { oldValue: 'ghp_old', newValue: 'ghp_new' },
+    });
+    await waitForScanner();
+
+    // Exactly one local-cache flush, triggered by the token change.
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+    // And the rescan fired too (same path as the show/star_style case).
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+
+    clearSpy.mockRestore();
+  });
+
   test('relevant storage changes (show/star_style/access_token) do trigger an annotation rescan', async () => {
     // Counterpart to the popup-only test above: the three "real" trigger
     // keys still need to fire a full rescan. A show-setting toggle is a
