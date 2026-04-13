@@ -7,15 +7,11 @@ import { commafy, humanize, humanizeDate } from './utils';
 // this extension's repo. We scrape the star button's form action from
 // github.com/kesensoy/sneetches — much cleaner than an API call (no
 // token needed, no scope requirements).
-export function detectStarredStateOnSneetchesRepo(): void {
-  const url = window.location.href;
-  // Match https://github.com/kesensoy/sneetches and
-  // https://github.com/kesensoy/sneetches/ (optional trailing slash + query)
-  // Not subpages like /issues or /pulls.
-  if (!/^https?:\/\/github\.com\/kesensoy\/sneetches\/?(?:\?.*)?$/.test(url)) return;
 
-  // The star button is a <form> that posts to /kesensoy/sneetches/unstar
-  // when already starred, or /kesensoy/sneetches/star when not.
+let starredObserver: MutationObserver | null = null;
+let starredObserverTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function writeStarredStateFromDOM(): void {
   const unstarForm = document.querySelector('form[action^="/kesensoy/sneetches/unstar"]');
   const starForm = document.querySelector('form[action^="/kesensoy/sneetches/star"]');
 
@@ -24,8 +20,66 @@ export function detectStarredStateOnSneetchesRepo(): void {
   else if (starForm) isStarred = false;
 
   if (isStarred === null) return; // logged out or DOM changed — leave state alone
-
   chrome.storage.sync.set({ has_starred: isStarred });
+}
+
+export function detectStarredStateOnSneetchesRepo(): void {
+  // Always clean up any previous observer first — important for tests where
+  // this function gets called multiple times. In production it only runs once
+  // at content-script init, but the cleanup is cheap and defensive.
+  if (starredObserver) {
+    starredObserver.disconnect();
+    starredObserver = null;
+  }
+  if (starredObserverTimeout) {
+    clearTimeout(starredObserverTimeout);
+    starredObserverTimeout = null;
+  }
+
+  const url = window.location.href;
+  // Match https://github.com/kesensoy/sneetches and
+  // https://github.com/kesensoy/sneetches/ (optional trailing slash + query)
+  // Not subpages like /issues or /pulls.
+  if (!/^https?:\/\/github\.com\/kesensoy\/sneetches\/?(?:\?.*)?$/.test(url)) return;
+
+  // Initial scrape — catches the state as of page load
+  writeStarredStateFromDOM();
+
+  // Set up a MutationObserver to catch in-place star/unstar actions
+  // (e.g., user clicks Star on the page and GitHub mutates the form DOM).
+  starredObserver = new MutationObserver(() => {
+    writeStarredStateFromDOM();
+  });
+  starredObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['action'],
+  });
+
+  // Safety: auto-disconnect after 5 minutes to avoid a long-running observer
+  // if the user leaves the tab open and idle.
+  starredObserverTimeout = setTimeout(
+    () => {
+      starredObserver?.disconnect();
+      starredObserver = null;
+      starredObserverTimeout = null;
+    },
+    5 * 60 * 1000
+  );
+}
+
+// Test-only helper: disconnects the observer and clears any pending timeout.
+// Used in afterEach to prevent cross-test pollution. Not called in production.
+export function __resetStarredDetectorForTests(): void {
+  if (starredObserver) {
+    starredObserver.disconnect();
+    starredObserver = null;
+  }
+  if (starredObserverTimeout) {
+    clearTimeout(starredObserverTimeout);
+    starredObserverTimeout = null;
+  }
 }
 
 const ANNOTATION_CLASS = 'data-sneetch-extension';

@@ -2,6 +2,7 @@ import {
   createAnnotation,
   createErrorAnnotation,
   detectStarredStateOnSneetchesRepo,
+  __resetStarredDetectorForTests,
 } from '../src/content';
 
 describe('createAnnotation', () => {
@@ -65,6 +66,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
   });
 
   afterEach(() => {
+    __resetStarredDetectorForTests();
     // Restore original location
     Object.defineProperty(window, 'location', {
       value: new URL(originalHref),
@@ -150,5 +152,46 @@ describe('detectStarredStateOnSneetchesRepo', () => {
     detectStarredStateOnSneetchesRepo();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(undefined);
+  });
+
+  test('observer updates state when form action attribute mutates in place', async () => {
+    setHref('https://github.com/kesensoy/sneetches');
+    document.body.innerHTML = `
+      <form action="/kesensoy/sneetches/star?location=repo_overview_page" method="post">
+        <button>Star</button>
+      </form>
+    `;
+    detectStarredStateOnSneetchesRepo();
+    await new Promise((r) => setTimeout(r, 0));
+    await expectStoredStarred(false);
+
+    // Simulate user clicking the Star button — GitHub mutates the form action
+    const form = document.querySelector('form')!;
+    form.setAttribute('action', '/kesensoy/sneetches/unstar?location=repo_overview_page');
+    // Let the MutationObserver callback fire (it runs as a microtask)
+    await new Promise((r) => setTimeout(r, 10));
+
+    await expectStoredStarred(true);
+  });
+
+  test('observer updates state when form element is replaced via DOM mutation', async () => {
+    setHref('https://github.com/kesensoy/sneetches');
+    document.body.innerHTML = `
+      <div id="star-container">
+        <form action="/kesensoy/sneetches/unstar" method="post"><button>Unstar</button></form>
+      </div>
+    `;
+    detectStarredStateOnSneetchesRepo();
+    await new Promise((r) => setTimeout(r, 0));
+    await expectStoredStarred(true);
+
+    // Simulate form element replacement (user clicks Unstar, GitHub swaps the DOM)
+    const container = document.getElementById('star-container')!;
+    container.innerHTML = `
+      <form action="/kesensoy/sneetches/star" method="post"><button>Star</button></form>
+    `;
+    await new Promise((r) => setTimeout(r, 10));
+
+    await expectStoredStarred(false);
   });
 });
