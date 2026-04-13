@@ -2,7 +2,10 @@
   "name": "sneetches",
   "version": "1.1.0",
   "description": "Adds stars next to GitHub repo links",
-  "author": "Oliver Steele <steele@osteele.com>",
+  "author": "Kevin Esensoy",
+  "contributors": [
+    "Oliver Steele <steele@osteele.com>"
+  ],
   "license": "MIT",
   "main": "src/content.js",
   "private": true,
