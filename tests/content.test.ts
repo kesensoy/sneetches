@@ -1,9 +1,22 @@
+jest.mock('../src/github', () => {
+  const actual = jest.requireActual('../src/github');
+  return {
+    ...actual,
+    getRepoData: jest.fn(),
+  };
+});
+
+import { getRepoData } from '../src/github';
 import {
   createAnnotation,
   createErrorAnnotation,
   detectStarredStateOnSneetchesRepo,
+  startLinkScanner,
   __resetStarredDetectorForTests,
+  __resetLinkScannerForTests,
 } from '../src/content';
+
+const mockedGetRepoData = getRepoData as jest.MockedFunction<typeof getRepoData>;
 
 describe('createAnnotation', () => {
   const data = {
@@ -193,5 +206,122 @@ describe('detectStarredStateOnSneetchesRepo', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     await expectStoredStarred(false);
+  });
+});
+
+describe('startLinkScanner', () => {
+  const makeRepoPayload = (overrides: Partial<{ stargazers_count: number }> = {}) => ({
+    forks_count: 1,
+    pushed_at: '2024-01-01',
+    stargazers_count: 42,
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        { show: { stars: true, forks: false, update: false }, star_style: 'outline' },
+        resolve
+      )
+    );
+    document.body.innerHTML = '';
+    mockedGetRepoData.mockReset();
+    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  // Helper: wait for MutationObserver debounce + an extra tick for the
+  // microtask from getRepoData's then() to flush. Debounce is 300ms.
+  const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
+
+  test('annotates repo links added AFTER the scanner is set up (SPA hydration case)', async () => {
+    // Scanner starts on an empty document — this is the scenario where
+    // content_scripts injection (document_idle) races ahead of GitHub's
+    // client-side README hydration. The initial scan finds zero links, but
+    // the observer must catch links as they appear later.
+    startLinkScanner();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockedGetRepoData).not.toHaveBeenCalled();
+
+    // Simulate GitHub hydrating README content into the DOM
+    const container = document.createElement('div');
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    container.appendChild(a);
+    document.body.appendChild(container);
+
+    await waitForScanner();
+
+    expect(mockedGetRepoData).toHaveBeenCalledWith('ollama/ollama');
+    expect(a.querySelector('.data-sneetch-extension')).not.toBeNull();
+  });
+
+  test('does not re-annotate links that already have an annotation', async () => {
+    // Seed the DOM with a link BEFORE starting the scanner so the initial
+    // scan processes it. Then trigger another scan via a new mutation and
+    // verify the same link isn't touched twice.
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+
+    // Trigger another mutation — a NEW link so the observer schedules a scan.
+    // The already-annotated 'ollama/ollama' link must not be fetched again.
+    const b = document.createElement('a');
+    b.href = 'https://github.com/anthropics/claude-code';
+    document.body.appendChild(b);
+
+    await waitForScanner();
+
+    // Exactly two fetches total — one per distinct link. The ollama link
+    // must not have been re-fetched, and it must still have exactly one
+    // annotation child.
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+    expect(mockedGetRepoData).toHaveBeenLastCalledWith('anthropics/claude-code');
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+    expect(b.querySelector('.data-sneetch-extension')).not.toBeNull();
+  });
+
+  test('observer does not reschedule on its own annotation additions (no infinite loop)', async () => {
+    // Put a link in the DOM, let the scanner annotate it, then ensure no
+    // further scans fire. This guards against the footgun where appending
+    // an annotation via elt.appendChild(...) triggers the observer again.
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+
+    // Wait well beyond another debounce window — if the observer re-queued a
+    // scan from its own annotation mutation, it would have fired by now.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+  });
+
+  test('does nothing when all show settings are off', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ show: { stars: false, forks: false, update: false } }, resolve)
+    );
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(mockedGetRepoData).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
   });
 });

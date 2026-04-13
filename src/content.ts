@@ -104,21 +104,39 @@ export function __resetStarredDetectorForTests(): void {
 const ANNOTATION_CLASS = 'data-sneetch-extension';
 const MISSING_SYMBOL = 'missingⓍ';
 
+// Debounce window for the DOM observer. Long enough to coalesce the wave of
+// mutations GitHub's React hydration fires during README insertion; short
+// enough that the user doesn't notice the delay once links appear.
+const LINK_SCAN_DEBOUNCE_MS = 300;
+
 export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
   isRepoUrl(elt.href) && elt.childElementCount === 0;
 
-const repoLinks = Array.from(
-  document.querySelectorAll<HTMLAnchorElement>(
-    'a[href^="https://github.com/"], a[href^="http://github.com/"]'
-  )
-).filter(isRepoLink);
+let linkScanObserver: MutationObserver | null = null;
+let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const removeLinkAnnotations = () =>
   document.querySelectorAll('.' + ANNOTATION_CLASS).forEach((node) => node.remove());
 
+// Live DOM query for repo links that still need annotating. Must be called
+// fresh on every scan — GitHub renders awesome-list READMEs client-side via
+// React/Turbo hydration that completes SECONDS after `document_idle`, so a
+// one-shot module-load snapshot misses every link. The `childElementCount === 0`
+// filter does double duty here: it skips anchors that wrap images/badges (a
+// historical concern) AND it skips links we've already annotated, because
+// appending our <small> makes childElementCount ≥ 1.
+function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLAnchorElement>(
+      'a[href^="https://github.com/"], a[href^="http://github.com/"]'
+    )
+  ).filter(isRepoLink);
+}
+
 async function updateLinks() {
   const { accessToken, show, starStyle } = await getSettings();
-  repoLinks.forEach((elt) => {
+  const links = findUnannotatedRepoLinks();
+  links.forEach((elt) => {
     const href = elt.href;
     const m = href.match('^https?://github.com/(.+?)(?:.git)?/?$');
     if (m) {
@@ -212,7 +230,77 @@ async function updateAnnotationsFromSettings() {
   }
 }
 
-updateAnnotationsFromSettings();
+// Run an initial scan plus wire up a MutationObserver that re-runs the scan
+// (debounced) whenever new DOM arrives. This is what makes Sneetches work on
+// modern GitHub pages where the README is React-hydrated AFTER the content
+// script's default document_idle injection point — a one-shot scan at load
+// time would catch none of the 700+ repo links on an awesome-list page, and
+// the extension would stay silent. Also handles Turbo cross-page navigation
+// within github.com, where only the article DOM is swapped without a reload.
+export function startLinkScanner(): void {
+  // Defensive cleanup — production only calls this once, but tests call it
+  // many times and we must not leak observers or debounce timers.
+  if (linkScanObserver) {
+    linkScanObserver.disconnect();
+    linkScanObserver = null;
+  }
+  if (linkScanTimeout) {
+    clearTimeout(linkScanTimeout);
+    linkScanTimeout = null;
+  }
+
+  // Initial scan for whatever links are present at injection time (may be
+  // zero on awesome-list pages, but will find them on regular repo pages).
+  updateAnnotationsFromSettings();
+
+  const scheduleScan = () => {
+    if (linkScanTimeout) clearTimeout(linkScanTimeout);
+    linkScanTimeout = setTimeout(() => {
+      linkScanTimeout = null;
+      updateAnnotationsFromSettings();
+    }, LINK_SCAN_DEBOUNCE_MS);
+  };
+
+  linkScanObserver = new MutationObserver((mutations) => {
+    // Ignore mutations that only added our own annotation nodes — otherwise
+    // each appendChild(createAnnotation(...)) would re-trigger a scan and
+    // spin forever. Any other added element (or any removed/attribute
+    // change) is a signal that the page is still assembling and may contain
+    // new repo links worth checking.
+    const nonAnnotationActivity = mutations.some((m) => {
+      if (m.type !== 'childList') return true;
+      if (m.removedNodes.length > 0) return true;
+      for (const node of Array.from(m.addedNodes)) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const el = node as Element;
+        if (el.classList && el.classList.contains(ANNOTATION_CLASS)) continue;
+        return true;
+      }
+      return false;
+    });
+    if (nonAnnotationActivity) scheduleScan();
+  });
+
+  linkScanObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+// Test-only helper: disconnect the observer and clear any pending debounce.
+// Used in afterEach to prevent cross-test pollution. Not called in production.
+export function __resetLinkScannerForTests(): void {
+  if (linkScanObserver) {
+    linkScanObserver.disconnect();
+    linkScanObserver = null;
+  }
+  if (linkScanTimeout) {
+    clearTimeout(linkScanTimeout);
+    linkScanTimeout = null;
+  }
+}
+
+startLinkScanner();
 detectStarredStateOnSneetchesRepo();
 
 chrome.storage.onChanged.addListener((object, namespace) => {

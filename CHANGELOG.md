@@ -60,6 +60,14 @@ data all survive the update.
   match the validation path.
 - **Starred-state detector** now matches repo URLs with `#readme` (and other
   hash fragments) and no longer false-positives on `/stargazers`.
+- **Awesome-list pages showed no stars on refresh** because GitHub hydrates
+  the README markdown client-side AFTER `document_idle`, and the content
+  script's one-shot link scan at injection time was catching zero links.
+  Replaced the module-load snapshot with a live DOM query wrapped in a
+  debounced `MutationObserver` on `document.body`, so links added by
+  post-load React/Turbo hydration (or cross-page Turbo navigation) get
+  annotated as they appear. Verified on `awesome-homelab` (712 repo links
+  rendered within ~1s of hydration, zero new API calls on a warm cache).
 
 ### Internal
 
