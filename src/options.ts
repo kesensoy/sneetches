@@ -29,13 +29,13 @@ function showSavedIndicator() {
 
 function saveOptions() {
   chrome.storage.sync.set({
-    access_token: inputElement('access-token').value,
-    show: {
+    [ACCESS_TOKEN_KEY]: inputElement('access-token').value,
+    [SHOW_KEY]: {
       forks: inputElement('show-forks').checked,
       stars: inputElement('show-stars').checked,
       update: inputElement('show-update').checked,
     },
-    star_style: inputElement('ss-outline').checked ? 'outline' : 'filled',
+    [STAR_STYLE_KEY]: inputElement('ss-outline').checked ? 'outline' : 'filled',
   });
   showSavedIndicator();
 }
@@ -161,7 +161,7 @@ function wireAdvancedToggle() {
       section.setAttribute('data-open', 'true');
       refreshAdvancedStats();
     }
-    chrome.storage.sync.set({ advanced_open: !isOpen });
+    chrome.storage.sync.set({ [ADVANCED_OPEN_KEY]: !isOpen });
   });
 }
 
