@@ -63,7 +63,7 @@ data all survive the update.
 
 ### Internal
 
-- Test suite expanded from 30 to 94 tests.
+- Test suite expanded from 30 to 96 tests.
 - Full migration from TSLint → ESLint 9 + Prettier 3.
 - New `src/icons.ts` with inline Octicon SVGs (no npm dependency added).
 - Existing `chrome.storage.sync` and `chrome.storage.local` keys are

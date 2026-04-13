@@ -257,6 +257,25 @@ describe('restoreOptions', () => {
     expect(document.getElementById('cache-count')!.textContent).toMatch(/0 entries/);
   });
 
+  test('rate limit bar handles limit=0 without producing NaN% width', async () => {
+    // Defensive: if storage is corrupted or a future API quirk returns
+    // limit=0, we should fall back to 0% rather than writing "NaN%" (which
+    // the browser silently drops, leaving the bar at its previous width).
+    (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 0, remaining: 0 });
+    (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const fill = document.getElementById('rate-limit-bar-fill') as HTMLElement;
+    expect(fill.style.width).toBe('0.00%');
+    expect(fill.style.width).not.toMatch(/NaN/);
+  });
+
   test('opening advanced tray refreshes stats', async () => {
     (getStoredRateLimit as jest.Mock).mockResolvedValue({ limit: 5000, remaining: 4500 });
     (getCacheEntryCount as jest.Mock).mockResolvedValue(50);

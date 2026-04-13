@@ -62,7 +62,10 @@ async function refreshAdvancedStats() {
   if (rlValue && rlBar) {
     if (rl) {
       rlValue.textContent = `${rl.remaining.toLocaleString()} / ${rl.limit.toLocaleString()} per hour`;
-      const pct = (rl.remaining / rl.limit) * 100;
+      // Guard against rl.limit === 0 (corrupted storage etc.) so the
+      // width doesn't become "NaN%" — an invalid CSS value the browser
+      // silently drops, leaving the bar at its previous width.
+      const pct = rl.limit > 0 ? (rl.remaining / rl.limit) * 100 : 0;
       rlBar.style.width = `${pct.toFixed(2)}%`;
     } else {
       rlValue.textContent = '— / — per hour';
