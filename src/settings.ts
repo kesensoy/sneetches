@@ -1,9 +1,13 @@
 export const ACCESS_TOKEN_KEY = 'access_token';
 export const SHOW_KEY = 'show';
+export const STAR_STYLE_KEY = 'star_style';
+
+export type StarStyle = 'outline' | 'filled';
 
 interface Settings {
   accessToken: string;
   show: ShowSettings;
+  starStyle: StarStyle;
 }
 
 export interface ShowSettings {
@@ -18,14 +22,17 @@ export const DefaultShowSettings: ShowSettings = {
   update: false,
 };
 
+export const DefaultStarStyle: StarStyle = 'outline';
+
 export function getSettings(): Promise<Settings> {
   return new Promise((resolve, reject) =>
-    chrome.storage.sync.get([ACCESS_TOKEN_KEY, SHOW_KEY], (object) =>
+    chrome.storage.sync.get([ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY], (object) =>
       chrome.runtime.lastError
         ? reject(chrome.runtime.lastError)
         : resolve({
             accessToken: object[ACCESS_TOKEN_KEY],
             show: { ...DefaultShowSettings, ...object[SHOW_KEY] },
+            starStyle: object[STAR_STYLE_KEY] ?? DefaultStarStyle,
           })
     )
   );

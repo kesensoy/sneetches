@@ -11,6 +11,7 @@ describe('settingsP', () => {
     expect(settings).toEqual({
       accessToken: undefined,
       show: { stars: true, forks: false, update: false },
+      starStyle: 'outline',
     });
   });
 
@@ -30,6 +31,20 @@ describe('settingsP', () => {
     expect(settings).toEqual({
       accessToken: '<<token value>>',
       show: { stars: false, forks: true, update: false },
+      starStyle: 'outline',
     });
+  });
+
+  test('star style defaults to outline', async () => {
+    const settings = await getSettings();
+    expect(settings.starStyle).toBe('outline');
+  });
+
+  test('honors stored star style', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ star_style: 'filled' }, () => resolve());
+    });
+    const settings = await getSettings();
+    expect(settings.starStyle).toBe('filled');
   });
 });
