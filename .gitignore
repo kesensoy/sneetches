@@ -17,3 +17,6 @@ package-lock.json
 # IDE / tool configs
 .serena/
 .mcp.json
+
+# Internal planning / design artifacts (never committed)
+docs/plans/

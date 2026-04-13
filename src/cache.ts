@@ -1,4 +1,4 @@
-const CACHE_DUR_SECONDS = 2 * 3600;
+const CACHE_DUR_SECONDS = 4 * 3600;
 
 interface Entry<T, V> {
   readonly exp: number;
@@ -13,6 +13,12 @@ function storageGet(keys: string[]): Promise<Record<string, unknown>> {
     )
   );
 }
+
+const RATE_LIMIT_KEY = 'rate_limit';
+// Duplicated from github.ts rather than imported to avoid circular deps:
+// github.ts already imports locallyCached from cache.ts, so importing back
+// would create cache.ts ← github.ts ← cache.ts. Duplication is the lesser evil.
+// Keep these two constants in sync.
 
 // If local storage contains an unexpired cache entry for `key` with the
 // specified version, return its value. Otherwise call `thunk`, store its
@@ -36,4 +42,27 @@ export async function locallyCached<T, V>(
     () => chrome.runtime.lastError && chrome.storage.local.clear()
   );
   return pay;
+}
+
+export function getCacheEntryCount(): Promise<number> {
+  return new Promise((resolve, reject) =>
+    chrome.storage.local.get(null, (items) =>
+      chrome.runtime.lastError
+        ? reject(chrome.runtime.lastError)
+        : resolve(Object.keys(items).filter((k) => k !== RATE_LIMIT_KEY).length)
+    )
+  );
+}
+
+export function clearCache(): Promise<void> {
+  return new Promise((resolve, reject) =>
+    chrome.storage.local.get(null, (items) => {
+      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+      const keysToRemove = Object.keys(items).filter((k) => k !== RATE_LIMIT_KEY);
+      if (keysToRemove.length === 0) return resolve();
+      chrome.storage.local.remove(keysToRemove, () =>
+        chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve()
+      );
+    })
+  );
 }

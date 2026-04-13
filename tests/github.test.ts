@@ -1,5 +1,6 @@
-import { getRepoData, isRepoUrl } from '../src/github';
+import { getRepoData, isRepoUrl, RATE_LIMIT_KEY, validateAccessToken } from '../src/github';
 import { mockFetch } from './fetch.mock';
+import { TOKEN_VALIDATED_KEY } from '../src/settings';
 
 describe('getRepoData', () => {
   const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3 };
@@ -112,5 +113,157 @@ describe('isRepoUrl', () => {
     expect(isRepoUrl('https://github.com/security/something')).toBe(false);
     expect(isRepoUrl('https://github.com/sponsors/someone')).toBe(false);
     expect(isRepoUrl('https://github.com/features/actions')).toBe(false);
+  });
+});
+
+describe('validateAccessToken', () => {
+  test('returns valid for 200 response', async () => {
+    mockFetch({ ok: true, status: 200, json: { login: 'alice' } });
+    const result = await validateAccessToken('good-token');
+    expect(result).toEqual({ valid: true });
+  });
+
+  test('returns invalid for 401 response', async () => {
+    mockFetch({ ok: false, status: 401, json: { message: 'Bad credentials' } });
+    const result = await validateAccessToken('bad-token');
+    expect(result).toEqual({ valid: false, status: 401 });
+  });
+
+  test('returns network error on fetch rejection', async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    const result = await validateAccessToken('token');
+    expect(result).toEqual({ valid: false, error: 'network' });
+  });
+
+  test('returns invalid without calling fetch when token is empty', async () => {
+    const fetchSpy = jest.fn();
+    global.fetch = fetchSpy as unknown as typeof fetch;
+    const result = await validateAccessToken('');
+    expect(result).toEqual({ valid: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('captureRateLimit auto-invalidates token_validated', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('flips token_validated to false when rate limit is unauthenticated', async () => {
+    // Start with token_validated: true in storage
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ token_validated: true }, () => resolve())
+    );
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
+      headers: {
+        'x-ratelimit-limit': '60',
+        'x-ratelimit-remaining': '59',
+      },
+    });
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(false);
+  });
+
+  test('does NOT flip token_validated when rate limit is authenticated', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ token_validated: true }, () => resolve())
+    );
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '4999',
+      },
+    });
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(true); // unchanged
+  });
+});
+
+describe('validateAccessToken captures rate limit', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('stores rate limit from /user response on success', async () => {
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: { login: 'alice' },
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '4500',
+      },
+    });
+    await validateAccessToken('good-token');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toMatchObject({ limit: 5000, remaining: 4500 });
+  });
+
+  test('does NOT store rate limit on failed /user response', async () => {
+    mockFetch({
+      ok: false,
+      status: 401,
+      json: { message: 'Bad credentials' },
+      headers: {
+        'x-ratelimit-limit': '60',
+        'x-ratelimit-remaining': '59',
+      },
+    });
+    await validateAccessToken('bad-token');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(['rate_limit'], (items) => resolve(items))
+    );
+    expect(stored.rate_limit).toBeUndefined();
+  });
+});
+
+describe('rate limit persistence', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('stores rate limit info from response headers', async () => {
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '4873',
+      },
+    });
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toMatchObject({
+      limit: 5000,
+      remaining: 4873,
+    });
+  });
+
+  test('does not store rate limit when headers absent', async () => {
+    mockFetch({ json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 } });
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toBeUndefined();
   });
 });

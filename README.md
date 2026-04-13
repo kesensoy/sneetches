@@ -34,11 +34,13 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/sne
    npm run build:firefox
    ```
 
-### Settings
+## Settings
 
-Sneetches uses the [GitHub API](https://developer.github.com/v3/) to retrieve repository metadata. It makes an API call for each repo link on a page and will quickly hit the [60 request/hour rate limit](https://developer.github.com/v3/#rate-limiting) for unauthenticated requests (displayed as an hourglass).
+<p align="center">
+  <img src="./docs/popup.png" alt="Sneetches popup" width="320" />
+</p>
 
-To increase this to 5,000 requests/hour, create a [GitHub Personal Access Token](https://github.com/settings/tokens/new) and paste it into the extension options. No scopes are required unless you want stats for private repos (add "repo" scope).
+Click the toolbar icon to open the popup — it's also the settings page. Toggle stars / forks / last push, pick an icon style, and (optionally) paste a [GitHub Personal Access Token](https://github.com/settings/tokens/new) to lift the API rate limit from 60 to 5,000 requests per hour. No scopes are required for public repos; add `repo` only if you want stats for your private ones. Current rate-limit usage and cached entry count are shown in the Advanced tray.
 
 ## Development
 
@@ -48,7 +50,10 @@ npm run watch        # Development build with watch mode
 npm test             # Run tests
 npm run lint         # Lint
 npm run check        # TypeScript type check
+npm run format       # Format with Prettier
 ```
+
+See [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) and [PRIVACY.md](./PRIVACY.md).
 
 ## Similar Projects
 
@@ -57,4 +62,4 @@ npm run check        # TypeScript type check
 
 ## License
 
-MIT - See [LICENSE](./LICENSE) for details.
+MIT — see [LICENSE.txt](./LICENSE.txt) for details.
