@@ -20,6 +20,26 @@ export function getStoredRateLimit(): Promise<RateLimitInfo | null> {
   });
 }
 
+export type TokenValidation =
+  | { valid: true }
+  | { valid: false; status?: number; error?: 'network' };
+
+export async function validateAccessToken(token: string): Promise<TokenValidation> {
+  if (!token) return { valid: false };
+  try {
+    const res = await fetch('https://api.github.com/user', {
+      headers: {
+        'User-Agent': 'kesensoy/sneetches',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (res.ok) return { valid: true };
+    return { valid: false, status: res.status };
+  } catch {
+    return { valid: false, error: 'network' };
+  }
+}
+
 function captureRateLimit(res: Response): void {
   const limit = res.headers.get('x-ratelimit-limit');
   const remaining = res.headers.get('x-ratelimit-remaining');

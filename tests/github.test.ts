@@ -1,4 +1,4 @@
-import { getRepoData, isRepoUrl, RATE_LIMIT_KEY } from '../src/github';
+import { getRepoData, isRepoUrl, RATE_LIMIT_KEY, validateAccessToken } from '../src/github';
 import { mockFetch } from './fetch.mock';
 
 describe('getRepoData', () => {
@@ -112,6 +112,26 @@ describe('isRepoUrl', () => {
     expect(isRepoUrl('https://github.com/security/something')).toBe(false);
     expect(isRepoUrl('https://github.com/sponsors/someone')).toBe(false);
     expect(isRepoUrl('https://github.com/features/actions')).toBe(false);
+  });
+});
+
+describe('validateAccessToken', () => {
+  test('returns valid for 200 response', async () => {
+    mockFetch({ ok: true, status: 200, json: { login: 'alice' } });
+    const result = await validateAccessToken('good-token');
+    expect(result).toEqual({ valid: true });
+  });
+
+  test('returns invalid for 401 response', async () => {
+    mockFetch({ ok: false, status: 401, json: { message: 'Bad credentials' } });
+    const result = await validateAccessToken('bad-token');
+    expect(result).toEqual({ valid: false, status: 401 });
+  });
+
+  test('returns network error on fetch rejection', async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    const result = await validateAccessToken('token');
+    expect(result).toEqual({ valid: false, error: 'network' });
   });
 });
 
