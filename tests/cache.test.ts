@@ -1,4 +1,4 @@
-import { locallyCached } from '../src/cache';
+import { locallyCached, getCacheEntryCount, clearCache } from '../src/cache';
 
 describe('locallyCached', () => {
   let thunk: jest.Mock<string>;
@@ -46,5 +46,57 @@ describe('locallyCached', () => {
   test('passes rejections through', async () => {
     const thunk2 = jest.fn(() => new Promise((_, reject) => reject('rejection')));
     await expect(locallyCached('err', 1, thunk2)).rejects.toBe('rejection');
+  });
+});
+
+describe('getCacheEntryCount', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('returns 0 when empty', async () => {
+    expect(await getCacheEntryCount()).toBe(0);
+  });
+
+  test('counts entries written by locallyCached', async () => {
+    await locallyCached('repo1', 1, () => 'a');
+    await locallyCached('repo2', 1, () => 'b');
+    expect(await getCacheEntryCount()).toBe(2);
+  });
+
+  test('excludes the rate_limit key from the count', async () => {
+    await locallyCached('repo1', 1, () => 'a');
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set({ rate_limit: { limit: 5000, remaining: 4999, at: 0 } }, () =>
+        resolve()
+      )
+    );
+    expect(await getCacheEntryCount()).toBe(1);
+  });
+});
+
+describe('clearCache', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('removes cached repo entries', async () => {
+    await locallyCached('repo1', 1, () => 'a');
+    await clearCache();
+    expect(await getCacheEntryCount()).toBe(0);
+  });
+
+  test('preserves the rate_limit key', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set({ rate_limit: { limit: 5000, remaining: 4999, at: 0 } }, () =>
+        resolve()
+      )
+    );
+    await locallyCached('repo1', 1, () => 'a');
+    await clearCache();
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(['rate_limit'], (items) => resolve(items))
+    );
+    expect(stored.rate_limit).toBeDefined();
   });
 });
