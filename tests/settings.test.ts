@@ -14,6 +14,7 @@ describe('settingsP', () => {
       starStyle: 'outline',
       advancedOpen: false,
       tokenValidated: false,
+      hasStarred: false,
     });
   });
 
@@ -36,6 +37,7 @@ describe('settingsP', () => {
       starStyle: 'outline',
       advancedOpen: false,
       tokenValidated: false,
+      hasStarred: false,
     });
   });
 
@@ -76,5 +78,18 @@ describe('settingsP', () => {
     });
     const settings = await getSettings();
     expect(settings.tokenValidated).toBe(true);
+  });
+
+  test('has_starred defaults to false', async () => {
+    const settings = await getSettings();
+    expect(settings.hasStarred).toBe(false);
+  });
+
+  test('honors stored has_starred', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ has_starred: true }, () => resolve());
+    });
+    const settings = await getSettings();
+    expect(settings.hasStarred).toBe(true);
   });
 });

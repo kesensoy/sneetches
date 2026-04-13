@@ -1,12 +1,20 @@
-import { validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
+import {
+  validateAccessToken,
+  getStoredRateLimit,
+  checkStarredStatus,
+  RateLimitInfo,
+} from './github';
 import { clearCache, getCacheEntryCount } from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
   DefaultAdvancedOpen,
+  DefaultHasStarred,
   DefaultShowSettings,
   DefaultStarStyle,
   DefaultTokenValidated,
+  getSettings,
+  HAS_STARRED_KEY,
   SHOW_KEY,
   STAR_STYLE_KEY,
   TOKEN_VALIDATED_KEY,
@@ -82,9 +90,35 @@ function updateTokenHelpVisibility(validated: boolean) {
   }
 }
 
+function applyStarredState(isStarred: boolean) {
+  const cta = document.querySelector('.star-cta');
+  if (!cta) return;
+  if (isStarred) {
+    cta.classList.add('starred');
+  } else {
+    cta.classList.remove('starred');
+  }
+}
+
+async function refreshStarredStatus() {
+  const { accessToken } = await getSettings();
+  if (!accessToken) return;
+  const result = await checkStarredStatus(accessToken);
+  if (result === null) return; // unknown — don't touch state
+  chrome.storage.sync.set({ [HAS_STARRED_KEY]: result });
+  applyStarredState(result);
+}
+
 function restoreOptions() {
   chrome.storage.sync.get(
-    [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY, ADVANCED_OPEN_KEY, TOKEN_VALIDATED_KEY],
+    [
+      ACCESS_TOKEN_KEY,
+      SHOW_KEY,
+      STAR_STYLE_KEY,
+      ADVANCED_OPEN_KEY,
+      TOKEN_VALIDATED_KEY,
+      HAS_STARRED_KEY,
+    ],
     (items) => {
       const accessToken = items[ACCESS_TOKEN_KEY] as string | undefined;
       const show = { ...DefaultShowSettings, ...(items[SHOW_KEY] || {}) };
@@ -92,6 +126,7 @@ function restoreOptions() {
       const advancedOpen = items[ADVANCED_OPEN_KEY] ?? DefaultAdvancedOpen;
       const tokenValidated =
         (items[TOKEN_VALIDATED_KEY] as boolean | undefined) ?? DefaultTokenValidated;
+      const hasStarred = (items[HAS_STARRED_KEY] as boolean | undefined) ?? DefaultHasStarred;
 
       inputElement('access-token').value = accessToken || '';
 
@@ -103,6 +138,7 @@ function restoreOptions() {
       }
 
       updateTokenHelpVisibility(tokenValidated);
+      applyStarredState(hasStarred);
       inputElement('show-forks').checked = show.forks;
       inputElement('show-stars').checked = show.stars;
       inputElement('show-update').checked = show.update;
@@ -230,4 +266,5 @@ document.addEventListener('DOMContentLoaded', () => {
   wireAdvancedToggle();
   wireClearCache();
   renderVersion();
+  refreshStarredStatus(); // fire-and-forget background API call
 });

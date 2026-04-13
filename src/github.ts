@@ -47,6 +47,25 @@ export async function validateAccessToken(token: string): Promise<TokenValidatio
   }
 }
 
+const STAR_CHECK_URL = 'https://api.github.com/user/starred/kesensoy/sneetches';
+
+export async function checkStarredStatus(token: string): Promise<boolean | null> {
+  if (!token) return null;
+  try {
+    const res = await fetch(STAR_CHECK_URL, {
+      headers: {
+        'User-Agent': 'kesensoy/sneetches',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (res.status === 204) return true;
+    if (res.status === 404) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function captureRateLimit(res: HasHeaders): void {
   const limit = res.headers.get('x-ratelimit-limit');
   const remaining = res.headers.get('x-ratelimit-remaining');

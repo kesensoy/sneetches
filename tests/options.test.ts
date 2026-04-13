@@ -1,8 +1,9 @@
 import { inputElement } from '../src/options';
-import { validateAccessToken, getStoredRateLimit } from '../src/github';
+import { validateAccessToken, getStoredRateLimit, checkStarredStatus } from '../src/github';
 jest.mock('../src/github', () => ({
   validateAccessToken: jest.fn(),
   getStoredRateLimit: jest.fn(),
+  checkStarredStatus: jest.fn(),
 }));
 
 import { getCacheEntryCount, clearCache } from '../src/cache';
@@ -22,9 +23,11 @@ describe('restoreOptions', () => {
     (getStoredRateLimit as jest.Mock).mockReset();
     (getCacheEntryCount as jest.Mock).mockReset();
     (clearCache as jest.Mock).mockReset();
+    (checkStarredStatus as jest.Mock).mockReset();
     (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
     (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
     (clearCache as jest.Mock).mockResolvedValue(undefined);
+    (checkStarredStatus as jest.Mock).mockResolvedValue(null); // default: unknown
 
     document.body.innerHTML = `
       <div>
@@ -36,6 +39,11 @@ describe('restoreOptions', () => {
         <button id="token-test">Test</button>
         <p id="token-help"></p>
         <span id="saved-indicator" hidden></span>
+        <a class="star-cta" href="#">
+          <span class="star-cta-text star-cta-text--unstarred">Star us?</span>
+          <span class="star-cta-text star-cta-text--starred">Thanks!</span>
+          <svg class="star-cta-icon"></svg>
+        </a>
         <div class="advanced" id="advanced-section">
           <button id="advanced-toggle" aria-expanded="false"></button>
           <div id="advanced-content" hidden>
@@ -302,6 +310,86 @@ describe('restoreOptions', () => {
     // the mock exposes getManifest. Both are acceptable — the test just verifies
     // textContent is non-empty and starts with "Sneetches".
     expect(versionEl.textContent).toMatch(/^Sneetches/);
+  });
+
+  test('star CTA has starred class on load when has_starred is true', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ has_starred: true }, () => resolve());
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const cta = document.querySelector('.star-cta')!;
+    expect(cta.classList.contains('starred')).toBe(true);
+  });
+
+  test('star CTA has no starred class on load when has_starred is false', () => {
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    const cta = document.querySelector('.star-cta')!;
+    expect(cta.classList.contains('starred')).toBe(false);
+  });
+
+  test('background check updates has_starred and applies starred class when user has starred', async () => {
+    (checkStarredStatus as jest.Mock).mockResolvedValue(true);
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_existing', token_validated: true }, () =>
+        resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    // Let restoreOptions + async background check settle
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(checkStarredStatus).toHaveBeenCalledWith('ghp_existing');
+    const cta = document.querySelector('.star-cta')!;
+    expect(cta.classList.contains('starred')).toBe(true);
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['has_starred'], (items) => resolve(items))
+    );
+    expect(stored.has_starred).toBe(true);
+  });
+
+  test('background check updates has_starred to false when user has unstarred', async () => {
+    (checkStarredStatus as jest.Mock).mockResolvedValue(false);
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set(
+        { access_token: 'ghp_existing', token_validated: true, has_starred: true },
+        () => resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(checkStarredStatus).toHaveBeenCalled();
+    const cta = document.querySelector('.star-cta')!;
+    expect(cta.classList.contains('starred')).toBe(false);
+  });
+
+  test('background check is skipped when no token is present', async () => {
+    (checkStarredStatus as jest.Mock).mockResolvedValue(true);
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(checkStarredStatus).not.toHaveBeenCalled();
+  });
+
+  test('null result from background check does not touch current state', async () => {
+    (checkStarredStatus as jest.Mock).mockResolvedValue(null);
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_existing', has_starred: true }, () => resolve());
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Started starred, null result, should still be starred
+    const cta = document.querySelector('.star-cta')!;
+    expect(cta.classList.contains('starred')).toBe(true);
   });
 
   test('token help is hidden on load when token_validated is true', async () => {

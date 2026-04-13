@@ -100,6 +100,29 @@ body {
   outline-offset: 2px;
 }
 
+/* Two text variants — display swapped based on .starred class */
+.star-cta-text--starred { display: none; }
+.star-cta.starred .star-cta-text--unstarred { display: none; }
+.star-cta.starred .star-cta-text--starred { display: inline; }
+
+/* Locked-gold state when starred: gold at rest, no hover color transition */
+.star-cta.starred {
+  color: var(--star-yellow);
+}
+.star-cta.starred:hover {
+  color: var(--star-yellow); /* no change on hover, already gold */
+  background: var(--surface-2);
+}
+
+/* Spin animation on hover when starred */
+@keyframes star-cta-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.star-cta.starred:hover .star-cta-icon {
+  animation: star-cta-spin 0.6s ease-out;
+}
+
 /* Sections */
 .popup-section {
   padding: 12px 16px;

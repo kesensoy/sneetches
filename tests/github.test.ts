@@ -1,4 +1,10 @@
-import { getRepoData, isRepoUrl, RATE_LIMIT_KEY, validateAccessToken } from '../src/github';
+import {
+  getRepoData,
+  isRepoUrl,
+  RATE_LIMIT_KEY,
+  validateAccessToken,
+  checkStarredStatus,
+} from '../src/github';
 import { mockFetch } from './fetch.mock';
 import { TOKEN_VALIDATED_KEY } from '../src/settings';
 
@@ -265,5 +271,39 @@ describe('rate limit persistence', () => {
       chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
     );
     expect(stored[RATE_LIMIT_KEY]).toBeUndefined();
+  });
+});
+
+describe('checkStarredStatus', () => {
+  test('returns true for 204 response', async () => {
+    mockFetch({ ok: true, status: 204 });
+    const result = await checkStarredStatus('good-token');
+    expect(result).toBe(true);
+  });
+
+  test('returns false for 404 response', async () => {
+    mockFetch({ ok: false, status: 404 });
+    const result = await checkStarredStatus('good-token');
+    expect(result).toBe(false);
+  });
+
+  test('returns null for unexpected status like 401', async () => {
+    mockFetch({ ok: false, status: 401 });
+    const result = await checkStarredStatus('bad-token');
+    expect(result).toBeNull();
+  });
+
+  test('returns null when token is empty', async () => {
+    const fetchSpy = jest.fn();
+    global.fetch = fetchSpy as unknown as typeof fetch;
+    const result = await checkStarredStatus('');
+    expect(result).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test('returns null on network error', async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    const result = await checkStarredStatus('token');
+    expect(result).toBeNull();
   });
 });
