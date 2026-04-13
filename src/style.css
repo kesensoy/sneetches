@@ -25,9 +25,12 @@
   opacity: 0.7;
 }
 
-.data-sneetch-extension .sneetch-forks .sneetch-fork-sym {
-  font-weight: 900;
-  -webkit-text-stroke: 0.5px;
+.data-sneetch-extension .sneetch-icon {
+  display: inline-block;
+  vertical-align: middle;
+  width: 0.9em;
+  height: 0.9em;
+  margin-bottom: 0.15em;
 }
 
 .data-sneetch-extension .sneetch-date {

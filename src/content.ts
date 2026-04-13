@@ -1,14 +1,12 @@
+import { clockIcon, repoForkedIcon, starIcon } from './icons';
 import { getRepoData, isRepoUrl } from './github';
-import { ACCESS_TOKEN_KEY, getSettings, ShowSettings } from './settings';
+import { ACCESS_TOKEN_KEY, getSettings, ShowSettings, StarStyle } from './settings';
 import { commafy, humanize, humanizeDate } from './utils';
 
 const ANNOTATION_CLASS = 'data-sneetch-extension';
 
 const Symbols = {
-  forks: '⑃',
   missing: 'missingⓍ',
-  pushedAt: '↻',
-  stars: '☆',
 };
 
 export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
@@ -24,7 +22,7 @@ const removeLinkAnnotations = () =>
   document.querySelectorAll('.' + ANNOTATION_CLASS).forEach((node) => node.remove());
 
 async function updateLinks() {
-  const { accessToken, show } = await getSettings();
+  const { accessToken, show, starStyle } = await getSettings();
   repoLinks.forEach((elt) => {
     const href = elt.href;
     const m = href.match('^https?://github.com/(.+?)(?:.git)?/?$');
@@ -32,7 +30,7 @@ async function updateLinks() {
       getRepoData(m[1])
         .then((res) => {
           if (res.ok) {
-            elt.appendChild(createAnnotation(res.json!, show));
+            elt.appendChild(createAnnotation(res.json!, show, starStyle));
           } else {
             elt.appendChild(createErrorAnnotation(res, accessToken));
           }
@@ -67,30 +65,28 @@ export function createErrorAnnotation(
 
 export function createAnnotation(
   data: { forks_count: number; stargazers_count: number; pushed_at: string },
-  show: ShowSettings
+  show: ShowSettings,
+  starStyle: StarStyle
 ) {
   const pushedAt = new Date(data.pushed_at);
   const elt = _createAnnotation('');
   if (show.stars) {
     const span = document.createElement('span');
     span.className = 'sneetch-stars';
-    span.textContent = humanize(data.stargazers_count) + Symbols.stars;
+    span.innerHTML =
+      humanize(data.stargazers_count) + ' ' + starIcon('sneetch-icon', starStyle === 'filled');
     elt.appendChild(span);
   }
   if (show.forks) {
     const span = document.createElement('span');
     span.className = 'sneetch-forks';
-    span.textContent = humanize(data.forks_count);
-    const sym = document.createElement('span');
-    sym.className = 'sneetch-fork-sym';
-    sym.textContent = Symbols.forks;
-    span.appendChild(sym);
+    span.innerHTML = humanize(data.forks_count) + ' ' + repoForkedIcon('sneetch-icon');
     elt.appendChild(span);
   }
   if (show.update) {
     const span = document.createElement('span');
     span.className = 'sneetch-date';
-    span.textContent = Symbols.pushedAt + humanizeDate(pushedAt);
+    span.innerHTML = clockIcon('sneetch-icon') + ' ' + humanizeDate(pushedAt);
     elt.appendChild(span);
   }
   elt.title =
