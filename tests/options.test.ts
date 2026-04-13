@@ -1,4 +1,8 @@
 import { inputElement } from '../src/options';
+import { validateAccessToken } from '../src/github';
+jest.mock('../src/github', () => ({
+  validateAccessToken: jest.fn(),
+}));
 
 describe('restoreOptions', () => {
   beforeEach(() => {
@@ -96,5 +100,31 @@ describe('restoreOptions', () => {
     expect(indicator.hasAttribute('hidden')).toBe(true);
 
     jest.useRealTimers();
+  });
+
+  test('test button shows Valid when token is valid', async () => {
+    (validateAccessToken as jest.Mock).mockResolvedValue({ valid: true });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('access-token').value = 'good-token';
+    document.getElementById('token-test')!.click();
+    await new Promise((r) => setTimeout(r, 0)); // flush microtasks
+
+    const btn = document.getElementById('token-test')!;
+    expect(btn.textContent).toMatch(/Valid/);
+    expect(btn.classList.contains('btn--ok')).toBe(true);
+  });
+
+  test('test button shows Invalid when token is invalid', async () => {
+    (validateAccessToken as jest.Mock).mockResolvedValue({ valid: false, status: 401 });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('access-token').value = 'bad';
+    document.getElementById('token-test')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const btn = document.getElementById('token-test')!;
+    expect(btn.textContent).toMatch(/Invalid/);
+    expect(btn.classList.contains('btn--err')).toBe(true);
   });
 });

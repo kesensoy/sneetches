@@ -1,3 +1,4 @@
+import { validateAccessToken } from './github';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
@@ -88,8 +89,33 @@ function wireTokenEye() {
   });
 }
 
+function wireTokenTest() {
+  const btn = document.getElementById('token-test');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const token = inputElement('access-token').value.trim();
+    btn.textContent = 'Testing…';
+    btn.className = 'btn';
+    const result = await validateAccessToken(token);
+    if (result.valid) {
+      btn.textContent = '✓ Valid';
+      btn.className = 'btn btn--ok';
+    } else {
+      btn.textContent = '✗ Invalid';
+      btn.className = 'btn btn--err';
+    }
+  });
+
+  // Reset to idle when the token is edited
+  inputElement('access-token').addEventListener('input', () => {
+    btn.textContent = 'Test';
+    btn.className = 'btn btn--primary';
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
   addInputEventListeners();
   wireTokenEye();
+  wireTokenTest();
 });
