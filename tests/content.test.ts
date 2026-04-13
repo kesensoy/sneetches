@@ -14,6 +14,7 @@ import {
   startLinkScanner,
   __resetStarredDetectorForTests,
   __resetLinkScannerForTests,
+  __applySettingsChangeForTests,
 } from '../src/content';
 
 const mockedGetRepoData = getRepoData as jest.MockedFunction<typeof getRepoData>;
@@ -353,6 +354,63 @@ describe('startLinkScanner', () => {
     await waitForScanner();
 
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+  });
+
+  test('drops in-flight fetch result when settings change mid-flight', async () => {
+    // Scenario: a scan is in progress (fetch pending), the user toggles a
+    // display setting in the popup, chrome.storage.onChanged fires. The
+    // extension responds by clearing annotations and re-running the scan.
+    // Before this fix, the original fetch's .then() closure captured the
+    // OLD show/starStyle/accessToken, and when it eventually resolved it
+    // would appendChild an annotation reflecting the pre-change settings
+    // — a stale annotation that survives until the next page load.
+    //
+    // The fix: bump an epoch counter on every settings change, capture the
+    // epoch at fetch-start, and drop the result on epoch mismatch.
+    //
+    // The custom Chrome storage mock doesn't fire onChanged events, so the
+    // test invokes the settings-changed code path via a test-only helper
+    // rather than by setting a storage key. The production listener and
+    // the helper share the same implementation.
+    let firstResolve: (v: {
+      ok: boolean;
+      json: { forks_count: number; pushed_at: string; stargazers_count: number };
+    }) => void = () => {};
+    mockedGetRepoData.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          firstResolve = resolve;
+        })
+    );
+    // Second call (from the post-settings-change rescan) stays pending forever
+    // so we can observe the behavior purely through the first call's resolution.
+    mockedGetRepoData.mockImplementationOnce(() => new Promise(() => {}));
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+
+    // Simulate a settings change mid-flight (bumps epoch, clears in-flight
+    // set, removes annotations, re-runs scan). The second scan fires a new
+    // getRepoData for the same anchor under the new epoch.
+    __applySettingsChangeForTests();
+    await waitForScanner();
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+
+    // Resolve the first (pre-change, stale-epoch) fetch. Its .then should
+    // see the epoch mismatch and drop the result instead of appending.
+    firstResolve({
+      ok: true,
+      json: makeRepoPayload({ stargazers_count: 9999 }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(0);
   });
 
   test('does nothing when all show settings are off', async () => {

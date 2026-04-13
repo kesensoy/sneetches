@@ -115,15 +115,26 @@ export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
 let linkScanObserver: MutationObserver | null = null;
 let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
 
-// Anchors with a getRepoData() fetch still in flight. Used to prevent a
-// second debounced scan from re-issuing fetches for links the first scan is
-// already processing. Without this, a mutation burst that fires a second
-// scan inside the debounce window (e.g., GitHub hovercard previews loading
-// while the first scan's cold-cache fetches are still pending) would find
-// the same empty-child anchors and double-annotate them once both fetch
-// waves resolve. A WeakSet auto-releases entries if an anchor is removed
-// from the DOM before its fetch resolves.
-let inFlightAnchors: WeakSet<HTMLAnchorElement> = new WeakSet();
+// Anchors with a getRepoData() fetch still in flight, mapped to the epoch
+// at which the fetch was started. Used for two things:
+//
+//   1. Prevent a second debounced scan from re-issuing fetches for links
+//      the first scan is already processing (the "duplicate annotation"
+//      race — a mutation burst fires a second scan inside the debounce
+//      window while the first scan's cold-cache fetches are still
+//      pending, and both waves try to annotate the same anchors).
+//
+//   2. Drop stale-settings results when `chrome.storage.onChanged` fires
+//      mid-fetch. Settings changes bump `currentEpoch`, and each fetch's
+//      .then/.catch compares its captured epoch against the current map
+//      entry — if they no longer match, the result is dropped rather
+//      than appended, and the fresh rescan (under the new settings) is
+//      allowed to produce the live annotation.
+//
+// WeakMap auto-releases entries if an anchor is removed from the DOM
+// before its fetch resolves, so nothing to clean up on long-lived pages.
+let currentEpoch = 0;
+let inFlightAnchors: WeakMap<HTMLAnchorElement, number> = new WeakMap();
 
 const removeLinkAnnotations = () =>
   document.querySelectorAll('.' + ANNOTATION_CLASS).forEach((node) => node.remove());
@@ -146,14 +157,26 @@ function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
 
 async function updateLinks() {
   const { accessToken, show, starStyle } = await getSettings();
+  // Capture the epoch AFTER reading settings so a settings change that
+  // races with getSettings() still invalidates this scan's results. The
+  // captured closure of show/starStyle/accessToken is now bound to this
+  // epoch — any resolver whose epoch no longer matches the map entry
+  // will drop its result instead of appending a stale annotation.
+  const epoch = currentEpoch;
   const links = findUnannotatedRepoLinks();
   links.forEach((elt) => {
     const href = elt.href;
     const m = href.match('^https?://github.com/(.+?)(?:.git)?/?$');
     if (m) {
-      inFlightAnchors.add(elt);
+      inFlightAnchors.set(elt, epoch);
       getRepoData(m[1])
         .then((res) => {
+          // If our epoch no longer matches, settings changed mid-flight
+          // and a newer scan has taken over (or no scan has rebound the
+          // anchor yet). Either way, silently drop: don't appendChild
+          // with stale closure, and don't delete the map entry (it may
+          // belong to the newer scan's in-flight fetch).
+          if (inFlightAnchors.get(elt) !== epoch) return;
           inFlightAnchors.delete(elt);
           if (res.ok) {
             elt.appendChild(createAnnotation(res.json!, show, starStyle));
@@ -162,6 +185,7 @@ async function updateLinks() {
           }
         })
         .catch((err) => {
+          if (inFlightAnchors.get(elt) !== epoch) return;
           inFlightAnchors.delete(elt);
           elt.appendChild(createErrorAnnotation(err, accessToken));
         });
@@ -314,9 +338,23 @@ export function startLinkScanner(): void {
   });
 }
 
+// Respond to a settings change: invalidate in-flight fetches, clear any
+// existing annotations, and re-run the scan under the new settings. The
+// epoch bump is what causes stale .then/.catch callbacks from the
+// previous scan to drop their results instead of appending them. The
+// WeakMap reset ensures the new scan actually re-fetches the anchors
+// the old scan had claimed (rather than skipping them as already
+// in-flight). See the inFlightAnchors declaration for the full rationale.
+function applySettingsChange(): void {
+  currentEpoch++;
+  inFlightAnchors = new WeakMap();
+  removeLinkAnnotations();
+  updateAnnotationsFromSettings();
+}
+
 // Test-only helper: disconnect the observer, clear any pending debounce,
-// and reset the in-flight anchor tracker. Used in afterEach to prevent
-// cross-test pollution. Not called in production.
+// reset the in-flight anchor tracker, and bump the epoch counter. Used
+// in afterEach to prevent cross-test pollution. Not called in production.
 export function __resetLinkScannerForTests(): void {
   if (linkScanObserver) {
     linkScanObserver.disconnect();
@@ -326,8 +364,19 @@ export function __resetLinkScannerForTests(): void {
     clearTimeout(linkScanTimeout);
     linkScanTimeout = null;
   }
-  // WeakSets can't be cleared in place, so replace with a fresh instance.
-  inFlightAnchors = new WeakSet();
+  inFlightAnchors = new WeakMap();
+  // Bump rather than reset so any lingering .then/.catch from a prior
+  // test's fetch can't coincidentally match a fresh epoch=0.
+  currentEpoch++;
+}
+
+// Test-only helper: invoke the settings-changed code path without firing
+// a chrome.storage.onChanged event. Needed because the custom Chrome
+// storage mock in tests does not propagate `set()` to `onChanged`
+// listeners, so tests verifying the mid-flight invalidation behavior
+// would otherwise have no way to trigger the production path.
+export function __applySettingsChangeForTests(): void {
+  applySettingsChange();
 }
 
 startLinkScanner();
@@ -339,7 +388,6 @@ chrome.storage.onChanged.addListener((object, namespace) => {
     if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
       chrome.storage.local.clear();
     }
-    removeLinkAnnotations();
-    updateAnnotationsFromSettings();
+    applySettingsChange();
   }
 });

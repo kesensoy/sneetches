@@ -573,4 +573,89 @@ describe('restoreOptions', () => {
     );
     expect(stored.token_validated).toBe(false);
   });
+
+  test('Test button ignores concurrent clicks while a validation is in flight', async () => {
+    // Three rapid clicks while validateAccessToken is still pending should
+    // only fire one real validation call. Before the guard, each click
+    // would launch a parallel validateAccessToken call, wasting API quota
+    // and creating a race between parallel storage writes.
+    //
+    // NOTE: validateAccessToken is a jest.fn() mock that the beforeEach
+    // in this file does not reset, so its call count accumulates across
+    // tests. Clear it here so our toHaveBeenCalledTimes(1) assertion
+    // reflects only the clicks in THIS test.
+    (validateAccessToken as jest.Mock).mockClear();
+    let resolveValidate: (v: { valid: boolean; status?: number }) => void = () => {};
+    (validateAccessToken as jest.Mock).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveValidate = resolve;
+        })
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('access-token').value = 'ghp_test';
+    const btn = document.getElementById('token-test') as HTMLButtonElement;
+    btn.click();
+    btn.click();
+    btn.click();
+
+    // Let any scheduled microtasks resolve — but the validation promise
+    // is still pending because we haven't called resolveValidate yet.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(validateAccessToken).toHaveBeenCalledTimes(1);
+    expect(btn.disabled).toBe(true);
+
+    // Let the validation resolve and confirm the button re-enables + lands
+    // in the Valid state.
+    resolveValidate({ valid: true });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toMatch(/Valid/);
+  });
+
+  test('typing the token does not spam token_validated writes on every keystroke', async () => {
+    // chrome.storage.sync has a ~120 writes/minute rate limit. Before this
+    // fix, every `input` event on the token field wrote `token_validated:
+    // false` to sync storage, so typing a 50-char PAT would send 50
+    // redundant writes in ~10 seconds.
+    //
+    // The fix: on input, only write when the button is transitioning from
+    // a non-idle state (Valid / Invalid / Testing…) into the idle Test
+    // state. If the button is already idle, the input is a no-op for
+    // storage.
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ token_validated: true }, () => resolve())
+    );
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Spy and reset the storage.set call history AFTER restoreOptions has
+    // populated fields, so we only count writes from the typing sequence.
+    const setSpy = jest.spyOn(chrome.storage.sync, 'set');
+    setSpy.mockClear();
+
+    const input = inputElement('access-token');
+    for (let i = 1; i <= 10; i++) {
+      input.value = 'x'.repeat(i);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Count the calls that wrote token_validated. The first input transitions
+    // the button from '✓ Valid' to idle and writes false. The remaining nine
+    // inputs find the button already idle and skip.
+    const tokenValidatedWrites = setSpy.mock.calls.filter(
+      ([arg]) =>
+        typeof arg === 'object' &&
+        arg !== null &&
+        Object.prototype.hasOwnProperty.call(arg, 'token_validated')
+    );
+    expect(tokenValidatedWrites).toHaveLength(1);
+
+    setSpy.mockRestore();
+  });
 });

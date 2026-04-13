@@ -198,28 +198,49 @@ function wireTokenEye() {
 }
 
 function wireTokenTest() {
-  const btn = document.getElementById('token-test');
+  const btn = document.getElementById('token-test') as HTMLButtonElement | null;
   if (!btn) return;
+  // Reentrancy guard: rapid clicks while a validation is still in flight
+  // would each fire their own validateAccessToken() call, wasting API
+  // quota and racing on the subsequent chrome.storage.sync.set. Disable
+  // the button for the duration and short-circuit stray handler calls
+  // just in case the disabled attribute isn't honored somewhere.
+  let validating = false;
+
   btn.addEventListener('click', async () => {
-    const token = inputElement('access-token').value.trim();
-    btn.textContent = 'Testing…';
-    btn.className = 'btn';
-    const result = await validateAccessToken(token);
-    if (result.valid) {
-      btn.textContent = '✓ Valid';
-      btn.className = 'btn btn--ok';
-      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true });
-      updateTokenHelpVisibility(true);
-    } else {
-      btn.textContent = '✗ Invalid';
-      btn.className = 'btn btn--err';
-      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
-      updateTokenHelpVisibility(false);
+    if (validating) return;
+    validating = true;
+    btn.disabled = true;
+    try {
+      const token = inputElement('access-token').value.trim();
+      btn.textContent = 'Testing…';
+      btn.className = 'btn';
+      const result = await validateAccessToken(token);
+      if (result.valid) {
+        btn.textContent = '✓ Valid';
+        btn.className = 'btn btn--ok';
+        chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true });
+        updateTokenHelpVisibility(true);
+      } else {
+        btn.textContent = '✗ Invalid';
+        btn.className = 'btn btn--err';
+        chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+        updateTokenHelpVisibility(false);
+      }
+    } finally {
+      validating = false;
+      btn.disabled = false;
     }
   });
 
-  // Reset to idle when the token is edited
+  // Reset to idle when the token is edited. Skip the storage write (and
+  // the visual transition) if we're already in the idle state — typing a
+  // 50-char PAT otherwise fires 50 redundant writes to chrome.storage.sync
+  // and can hit the ~120-writes/minute sync rate limit. The idle state is
+  // canonically identified by the button class, which is set from a fixed
+  // list of values elsewhere in this function and by restoreOptions.
   inputElement('access-token').addEventListener('input', () => {
+    if (btn.className === 'btn btn--primary') return;
     btn.textContent = 'Test';
     btn.className = 'btn btn--primary';
     chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
