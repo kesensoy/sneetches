@@ -22,6 +22,7 @@ describe('restoreOptions', () => {
     (getStoredRateLimit as jest.Mock).mockReset();
     (getCacheEntryCount as jest.Mock).mockReset();
     (clearCache as jest.Mock).mockReset();
+    (validateAccessToken as jest.Mock).mockReset();
     (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
     (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
     (clearCache as jest.Mock).mockResolvedValue(undefined);
@@ -579,12 +580,6 @@ describe('restoreOptions', () => {
     // only fire one real validation call. Before the guard, each click
     // would launch a parallel validateAccessToken call, wasting API quota
     // and creating a race between parallel storage writes.
-    //
-    // NOTE: validateAccessToken is a jest.fn() mock that the beforeEach
-    // in this file does not reset, so its call count accumulates across
-    // tests. Clear it here so our toHaveBeenCalledTimes(1) assertion
-    // reflects only the clicks in THIS test.
-    (validateAccessToken as jest.Mock).mockClear();
     let resolveValidate: (v: { valid: boolean; status?: number }) => void = () => {};
     (validateAccessToken as jest.Mock).mockImplementation(
       () =>

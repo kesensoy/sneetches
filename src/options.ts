@@ -237,10 +237,13 @@ function wireTokenTest() {
   // the visual transition) if we're already in the idle state — typing a
   // 50-char PAT otherwise fires 50 redundant writes to chrome.storage.sync
   // and can hit the ~120-writes/minute sync rate limit. The idle state is
-  // canonically identified by the button class, which is set from a fixed
-  // list of values elsewhere in this function and by restoreOptions.
+  // identified by the presence of the `btn--primary` modifier on the
+  // button (the other states use `btn--ok`, `btn--err`, or bare `btn`).
+  // classList.contains is preferred over a full className string match so
+  // future additions like a transient `loading` class don't break the
+  // check.
   inputElement('access-token').addEventListener('input', () => {
-    if (btn.className === 'btn btn--primary') return;
+    if (btn.classList.contains('btn--primary')) return;
     btn.textContent = 'Test';
     btn.className = 'btn btn--primary';
     chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
