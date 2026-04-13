@@ -68,6 +68,23 @@ data all survive the update.
   post-load React/Turbo hydration (or cross-page Turbo navigation) get
   annotated as they appear. Verified on `awesome-homelab` (712 repo links
   rendered within ~1s of hydration, zero new API calls on a warm cache).
+- **Annotation flicker in every open GitHub tab when interacting with the
+  popup.** The `chrome.storage.onChanged` listener fired a full annotation
+  wipe and rescan on any sync-storage change, including the new popup-only
+  keys introduced by the redesign (`token_validated`, `advanced_open`,
+  `has_starred`, `toolbar_icon`). Clicking the Test button, opening the
+  Advanced tray, starring the repo, or flipping the toolbar icon each
+  caused a visible flash in every open GitHub tab. The listener now
+  filters on the content-script-relevant keys (`access_token`, `show`,
+  `star_style`) and short-circuits popup-only changes.
+- **Rapid double-clicks on the Test button** no longer fire parallel
+  `GET /user` validations. The button disables itself while validation
+  is in flight, with a reentrancy guard as belt-and-suspenders.
+- **Typing into the token field** no longer spams `chrome.storage.sync`
+  with a `token_validated: false` write on every keystroke (chrome.storage.sync
+  is rate-limited at ~120 writes/minute; a 50-character PAT used to trip
+  that limit). The input handler now short-circuits when the button is
+  already in the idle state.
 
 ### Internal
 

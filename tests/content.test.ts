@@ -15,6 +15,7 @@ import {
   __resetStarredDetectorForTests,
   __resetLinkScannerForTests,
   __applySettingsChangeForTests,
+  __handleSyncStorageChangeForTests,
 } from '../src/content';
 
 const mockedGetRepoData = getRepoData as jest.MockedFunction<typeof getRepoData>;
@@ -411,6 +412,86 @@ describe('startLinkScanner', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(0);
+  });
+
+  test('popup-only storage changes do not trigger an annotation rescan', async () => {
+    // The chrome.storage.onChanged listener is fired on ANY sync key
+    // change, not just the ones the content script cares about. Before
+    // this fix, clicking "Test" in the popup (which writes
+    // token_validated), opening the Advanced tray (advanced_open),
+    // starring the repo (has_starred), or flipping the toolbar icon
+    // (toolbar_icon) would cause every open GitHub tab to wipe its
+    // annotations and re-render — a visible flicker on every popup
+    // interaction. The fix filters the listener so only the keys
+    // ACCESS_TOKEN_KEY, SHOW_KEY, and STAR_STYLE_KEY trigger a rescan.
+    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+
+    // Simulate the popup writing a popup-only key (e.g. the user clicked
+    // "Test" and the button flipped to ✓ Valid). This should NOT wipe or
+    // refetch anything in open tabs.
+    __handleSyncStorageChangeForTests({
+      token_validated: { oldValue: false, newValue: true },
+    });
+    await waitForScanner();
+
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+
+    // Same check for the other popup-only keys — belt and suspenders.
+    __handleSyncStorageChangeForTests({
+      advanced_open: { oldValue: false, newValue: true },
+    });
+    __handleSyncStorageChangeForTests({
+      has_starred: { oldValue: false, newValue: true },
+    });
+    __handleSyncStorageChangeForTests({
+      toolbar_icon: { oldValue: 'gray', newValue: 'colorful' },
+    });
+    await waitForScanner();
+
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
+  });
+
+  test('relevant storage changes (show/star_style/access_token) do trigger an annotation rescan', async () => {
+    // Counterpart to the popup-only test above: the three "real" trigger
+    // keys still need to fire a full rescan. A show-setting toggle is a
+    // sufficient sentinel — the handler is key-driven, so if show
+    // triggers correctly, star_style and access_token will too (plus
+    // access_token additionally flushes the local cache).
+    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+
+    __handleSyncStorageChangeForTests({
+      show: {
+        oldValue: { stars: true, forks: false, update: false },
+        newValue: { stars: true, forks: true, update: false },
+      },
+    });
+    await waitForScanner();
+
+    // Rescan should have fired: removeLinkAnnotations() wipes the first
+    // annotation, then updateLinks() re-fetches + re-appends with the
+    // new settings. Exactly one annotation on the anchor, and a second
+    // getRepoData call.
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+    expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
   });
 
   test('does nothing when all show settings are off', async () => {

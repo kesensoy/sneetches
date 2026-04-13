@@ -3,6 +3,8 @@ import { getRepoData, isRepoUrl } from './github';
 import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
+  SHOW_KEY,
+  STAR_STYLE_KEY,
   getSettings,
   ShowSettings,
   StarStyle,
@@ -379,15 +381,41 @@ export function __applySettingsChangeForTests(): void {
   applySettingsChange();
 }
 
+// Keys in chrome.storage.sync that actually affect what the content
+// script renders. Any change to one of these should trigger a rescan
+// (and a cache flush in the access-token case). All OTHER sync keys
+// are popup/UI-only state (`token_validated`, `advanced_open`,
+// `has_starred`, `toolbar_icon`) and must NOT wipe annotations in
+// every open GitHub tab — doing so caused every "Test" click and every
+// Advanced-tray toggle in the popup to flicker every open tab's stars.
+const RESCAN_TRIGGER_KEYS: readonly string[] = [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY];
+
+// Handle a sync-storage change batch. Bail out early if none of the
+// keys the content script cares about changed.
+function handleSyncStorageChange(changes: { [key: string]: chrome.storage.StorageChange }): void {
+  const relevantChanged = RESCAN_TRIGGER_KEYS.some((k) => k in changes);
+  if (!relevantChanged) return;
+
+  const accessTokenChange = changes[ACCESS_TOKEN_KEY];
+  if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
+    chrome.storage.local.clear();
+  }
+  applySettingsChange();
+}
+
+// Test-only helper: drive the sync-storage-changed code path with a
+// synthetic changes object. The custom Chrome storage mock doesn't
+// fire onChanged events from set() calls, so tests exercising the
+// key filter need to invoke the handler directly.
+export function __handleSyncStorageChangeForTests(changes: {
+  [key: string]: chrome.storage.StorageChange;
+}): void {
+  handleSyncStorageChange(changes);
+}
+
 startLinkScanner();
 detectStarredStateOnSneetchesRepo();
 
-chrome.storage.onChanged.addListener((object, namespace) => {
-  if (namespace === 'sync') {
-    const accessTokenChange = object[ACCESS_TOKEN_KEY];
-    if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
-      chrome.storage.local.clear();
-    }
-    applySettingsChange();
-  }
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'sync') handleSyncStorageChange(changes);
 });
