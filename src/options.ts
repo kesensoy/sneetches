@@ -285,8 +285,15 @@ function wireClearCache() {
   const btn = document.getElementById('clear-cache');
   if (!btn) return;
   btn.addEventListener('click', async () => {
-    await clearCache();
-    await refreshAdvancedStats();
+    // clearCache talks to chrome.storage.local, which can reject on
+    // quota/IO errors. Log and continue; the button click shouldn't
+    // leave an unhandled promise rejection on the page.
+    try {
+      await clearCache();
+      await refreshAdvancedStats();
+    } catch (err) {
+      console.error('sneetches: clear cache failed', err);
+    }
   });
 }
 

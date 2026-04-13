@@ -158,13 +158,20 @@ function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
 }
 
 async function updateLinks() {
-  const { accessToken, show, starStyle } = await getSettings();
-  // Capture the epoch AFTER reading settings so a settings change that
-  // races with getSettings() still invalidates this scan's results. The
-  // captured closure of show/starStyle/accessToken is now bound to this
-  // epoch — any resolver whose epoch no longer matches the map entry
-  // will drop its result instead of appending a stale annotation.
+  // Capture the epoch BEFORE the await so that any settings change that
+  // fires between here and getSettings() resolving is guaranteed to have
+  // bumped currentEpoch past our captured value. Our .then/.catch epoch
+  // check will then correctly drop our (potentially mixed-state) results
+  // in favor of the post-change rescan that applySettingsChange dispatches.
+  //
+  // Subtle detail: capturing AFTER the await is almost always fine in
+  // practice because Chrome delivers chrome.storage.onChanged as an async
+  // task (not a microtask), so it cannot interleave with the synchronous
+  // continuation between the await resolving and the next line executing.
+  // But capturing BEFORE the await is provably safe regardless of the
+  // implementation's microtask-vs-task boundary, so we do it that way.
   const epoch = currentEpoch;
+  const { accessToken, show, starStyle } = await getSettings();
   const links = findUnannotatedRepoLinks();
   links.forEach((elt) => {
     const href = elt.href;

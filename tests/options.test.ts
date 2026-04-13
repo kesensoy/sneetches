@@ -320,6 +320,50 @@ describe('restoreOptions', () => {
     expect(document.getElementById('cache-count')!.textContent).toMatch(/0 entries/);
   });
 
+  test('clear cache click handler swallows errors from clearCache', async () => {
+    // clearCache talks to chrome.storage.local, which can reject with
+    // storage quota or IO errors. The click handler must catch and log
+    // rather than leaving an unhandled promise rejection on the page.
+    (clearCache as jest.Mock).mockRejectedValue(new Error('storage quota exceeded'));
+    (getCacheEntryCount as jest.Mock).mockResolvedValue(100);
+    (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
+
+    // Capture unhandled rejections so we can assert none escaped. Node's
+    // process emits 'unhandledRejection' when a promise rejection is not
+    // handled within a microtask. jest runs node, so this works.
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', handler);
+
+    // Silence the console.error so the test output doesn't look alarming.
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await new Promise<void>((resolve) =>
+        chrome.storage.sync.set({ advanced_open: true }, () => resolve())
+      );
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+
+      document.getElementById('clear-cache')!.click();
+      // Give the microtask queue plenty of ticks to settle any rejection.
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(clearCache).toHaveBeenCalled();
+      expect(unhandled).toHaveLength(0);
+      // And the error should have been logged via console.error so debugging
+      // is possible.
+      expect(errorSpy).toHaveBeenCalledWith('sneetches: clear cache failed', expect.any(Error));
+    } finally {
+      process.off('unhandledRejection', handler);
+      errorSpy.mockRestore();
+    }
+  });
+
   test('renders version from manifest', () => {
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
     const versionEl = document.getElementById('version')!;
