@@ -7,13 +7,18 @@ import { commafy, humanize, humanizeDate } from './utils';
 // this extension's repo. We scrape the star button's form action from
 // github.com/kesensoy/sneetches — much cleaner than an API call (no
 // token needed, no scope requirements).
+//
+// If the repo is ever renamed or transferred, update SNEETCHES_REPO below
+// AND the href of the "Star us?" CTA in src/options.html.
+const SNEETCHES_REPO = 'kesensoy/sneetches';
+const SNEETCHES_REPO_URL = new RegExp(`^https?://github\\.com/${SNEETCHES_REPO}/?(?:\\?.*)?$`);
 
 let starredObserver: MutationObserver | null = null;
 let starredObserverTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function writeStarredStateFromDOM(): void {
-  const unstarForm = document.querySelector('form[action^="/kesensoy/sneetches/unstar"]');
-  const starForm = document.querySelector('form[action^="/kesensoy/sneetches/star"]');
+  const unstarForm = document.querySelector(`form[action^="/${SNEETCHES_REPO}/unstar"]`);
+  const starForm = document.querySelector(`form[action^="/${SNEETCHES_REPO}/star"]`);
 
   let isStarred: boolean | null = null;
   if (unstarForm) isStarred = true;
@@ -40,7 +45,7 @@ export function detectStarredStateOnSneetchesRepo(): void {
   // Match https://github.com/kesensoy/sneetches and
   // https://github.com/kesensoy/sneetches/ (optional trailing slash + query)
   // Not subpages like /issues or /pulls.
-  if (!/^https?:\/\/github\.com\/kesensoy\/sneetches\/?(?:\?.*)?$/.test(url)) return;
+  if (!SNEETCHES_REPO_URL.test(url)) return;
 
   // Initial scrape — catches the state as of page load
   writeStarredStateFromDOM();
