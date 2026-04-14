@@ -87,7 +87,13 @@ interface RepoResponse {
 async function marshallableResponse(res: Response): Promise<RepoResponse> {
   const { ok, status } = res;
   if (ok) {
-    const json = await res.json();
+    const raw = await res.json();
+    const json: RepoInfo = {
+      forks_count: raw.forks_count,
+      pushed_at: raw.pushed_at,
+      stargazers_count: raw.stargazers_count,
+      archived: raw.archived === true,
+    };
     return { ok: true, json };
   }
   if (status === 404) {

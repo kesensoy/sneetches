@@ -65,6 +65,25 @@ describe('getRepoData', () => {
     const info = await getRepoData('owner/repo');
     expect(info).toEqual({ ok: false, status: 404 });
   });
+
+  test('REST response populates archived field', async () => {
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
+    });
+    const info = await getRepoData('owner/repo');
+    expect(info).toEqual({
+      ok: true,
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
+    });
+  });
+
+  test('REST response defaults archived to false when absent', async () => {
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
+    });
+    const info = await getRepoData('owner/repo');
+    expect(info.json?.archived).toBe(false);
+  });
 });
 
 describe('isRepoUrl', () => {
