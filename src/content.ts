@@ -1,5 +1,5 @@
 import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
-import { getRepoDataMany, isRepoUrl } from './github';
+import { getRepoDataMany, isRepoUrl, RepoResponse } from './github';
 import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
@@ -197,12 +197,9 @@ async function updateLinks() {
   // the same repo, and we only need one Map entry per unique nwo.
   const uniqueNwos = Array.from(new Set(pending.map((p) => p.nwo)));
 
-  let results: Map<
-    string,
-    Awaited<ReturnType<typeof getRepoDataMany>> extends Map<string, infer V> ? V : never
-  >;
+  let results: Map<string, RepoResponse>;
   try {
-    results = (await getRepoDataMany(uniqueNwos)) as typeof results;
+    results = await getRepoDataMany(uniqueNwos);
   } catch (err) {
     // Batch-level failure (network error, 401, 5xx): every anchor in the
     // pending set gets an error annotation so the user sees the failure

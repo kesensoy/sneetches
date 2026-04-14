@@ -93,7 +93,7 @@ interface RepoInfo {
   readonly committed_date?: string;
 }
 
-interface RepoResponse {
+export interface RepoResponse {
   readonly ok: boolean;
   readonly status?: number;
   readonly json?: RepoInfo;
@@ -253,11 +253,15 @@ export async function fetchGraphQLBatch(
   if (errors) {
     for (const err of errors) {
       const alias = err.path?.[0];
-      if (typeof alias !== 'string' || !alias.startsWith('r')) {
+      // Match only the exact alias shape our buildBatchQuery emits ("r0",
+      // "r1", …). A looser `startsWith('r')` check would false-match
+      // sibling paths like `rateLimit` and silently swallow their errors.
+      const aliasMatch = typeof alias === 'string' ? alias.match(/^r(\d+)$/) : null;
+      if (!aliasMatch) {
         console.error('sneetches: GraphQL error without recognized path', err);
         continue;
       }
-      const idx = Number(alias.slice(1));
+      const idx = Number(aliasMatch[1]);
       const nwo = nwos[idx];
       if (!nwo) continue;
       if (err.type === 'NOT_FOUND') {

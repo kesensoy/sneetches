@@ -6,7 +6,7 @@ jest.mock('../src/github', () => {
   };
 });
 
-import { getRepoDataMany } from '../src/github';
+import { getRepoDataMany, RepoResponse } from '../src/github';
 import {
   createAnnotation,
   createErrorAnnotation,
@@ -20,17 +20,15 @@ import {
 
 const mockedGetRepoDataMany = getRepoDataMany as jest.MockedFunction<typeof getRepoDataMany>;
 
-// Shorthand for the RepoResponse type the production function returns —
-// inferred from the mock so tests don't have to import the private type.
-type MockBatchResponse =
-  Awaited<ReturnType<typeof getRepoDataMany>> extends Map<string, infer V> ? V : never;
+// Alias retained so the existing call sites don't all change names.
+type MockBatchResponse = RepoResponse;
 
 // Helper: make getRepoDataMany return a Map that answers every requested
 // nwo with the given fixed response. Keeps tests readable when each
 // scan cares about a single payload for every anchor it finds.
-function mockBatchRespondsWith(response: MockBatchResponse): void {
+function mockBatchRespondsWith(response: RepoResponse): void {
   mockedGetRepoDataMany.mockImplementation(async (nwos: string[]) => {
-    const map = new Map<string, MockBatchResponse>();
+    const map = new Map<string, RepoResponse>();
     for (const nwo of nwos) map.set(nwo, response);
     return map;
   });
