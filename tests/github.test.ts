@@ -1,5 +1,6 @@
 import {
   buildBatchQuery,
+  fetchGraphQLBatch,
   getRepoData,
   isRepoUrl,
   RATE_LIMIT_KEY,
@@ -678,5 +679,172 @@ describe('buildBatchQuery', () => {
     expect(Object.keys(variables).length).toBe(100);
     expect(variables.owner49).toBe('owner49');
     expect(variables.name49).toBe('repo49');
+  });
+});
+
+describe('fetchGraphQLBatch', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('happy path: two repos, both populated in returned map', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 100,
+            forkCount: 20,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: { target: { committedDate: '2025-01-02T00:00:00Z' } },
+          },
+          r1: {
+            stargazerCount: 5,
+            forkCount: 1,
+            pushedAt: '2018-06-01T00:00:00Z',
+            isArchived: true,
+            defaultBranchRef: { target: { committedDate: '2018-07-01T00:00:00Z' } },
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999, resetAt: '2025-01-01T00:00:00Z' },
+        },
+      },
+    });
+
+    const result = await fetchGraphQLBatch(['octocat/hello', 'torvalds/linux'], 'ghp_fake');
+
+    expect(result.size).toBe(2);
+    expect(result.get('octocat/hello')).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 100,
+        forks_count: 20,
+        pushed_at: '2025-01-01T00:00:00Z',
+        archived: false,
+        committed_date: '2025-01-02T00:00:00Z',
+      },
+    });
+    expect(result.get('torvalds/linux')).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 5,
+        forks_count: 1,
+        pushed_at: '2018-06-01T00:00:00Z',
+        archived: true,
+        committed_date: '2018-07-01T00:00:00Z',
+      },
+    });
+  });
+
+  test('POSTs to /graphql with bearer token and body containing query + variables', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    await fetchGraphQLBatch(['octocat/hello'], 'ghp_fake');
+    const fetchMock = global.fetch as jest.MockedFunction<typeof fetch>;
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/graphql',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer ghp_fake',
+          'Content-Type': 'application/json',
+        }),
+      })
+    );
+    const call = fetchMock.mock.calls[0];
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.query).toMatch(/r0: repository/);
+    expect(body.variables).toEqual({ owner0: 'octocat', name0: 'hello' });
+  });
+
+  test('persists rate limit from response body', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 1,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4998, resetAt: '2025-01-01T00:00:00Z' },
+        },
+      },
+    });
+    await fetchGraphQLBatch(['octocat/hello'], 'ghp_fake');
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toEqual({ limit: 5000, remaining: 4998 });
+  });
+
+  test('handles null defaultBranchRef (empty repos) without crashing', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 0,
+            forkCount: 0,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    const result = await fetchGraphQLBatch(['empty/repo'], 'ghp_fake');
+    expect(result.get('empty/repo')).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 0,
+        forks_count: 0,
+        pushed_at: '2025-01-01T00:00:00Z',
+        archived: false,
+        committed_date: undefined,
+      },
+    });
+  });
+
+  test('empty input returns empty map without making a request', async () => {
+    const fetchSpy = jest.fn();
+    (global as unknown as { fetch: typeof fetch }).fetch = fetchSpy as unknown as typeof fetch;
+    const result = await fetchGraphQLBatch([], 'ghp_fake');
+    expect(result.size).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test('warns when rateLimit.cost is greater than 1', async () => {
+    const spy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 5, limit: 5000, remaining: 4995 },
+        },
+      },
+    });
+    await fetchGraphQLBatch(['octocat/hello'], 'ghp_fake');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('cost 5'));
+    spy.mockRestore();
   });
 });

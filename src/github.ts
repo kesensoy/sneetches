@@ -173,6 +173,76 @@ export function buildBatchQuery(nwos: string[]): {
   return { query, variables };
 }
 
+// @internal — exported for unit tests. Fires one aliased GraphQL POST for
+// a batch of up to ~50 repos, distributes the results into a Map keyed by
+// "owner/name". Caller (getRepoDataMany) is responsible for chunking.
+// Error distribution via errors[] is added in the next commit.
+export async function fetchGraphQLBatch(
+  nwos: string[],
+  accessToken: string
+): Promise<Map<string, RepoResponse>> {
+  const result = new Map<string, RepoResponse>();
+  if (nwos.length === 0) return result;
+
+  const { query, variables } = buildBatchQuery(nwos);
+  const res = await fetch(GITHUB_GRAPHQL_URL, {
+    method: 'POST',
+    headers: {
+      'User-Agent': 'kesensoy/sneetches',
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+    }
+    throw { ok: false, status: res.status };
+  }
+
+  const body = await res.json();
+  captureRateLimitFromGraphQL(body);
+
+  // Empirically verify that scalar-only batches cost 1 point. A future
+  // GitHub pricing-model change surfaces as a one-time console.warn
+  // instead of a silent rate-limit slowdown.
+  const cost = (body as { data?: { rateLimit?: { cost?: number } } })?.data?.rateLimit?.cost;
+  if (typeof cost === 'number' && cost > 1) {
+    console.warn(
+      `sneetches: GraphQL batch cost ${cost} (expected 1). GitHub may have changed its pricing formula; consider halving the batch size.`
+    );
+  }
+
+  const data = (body as { data?: Record<string, unknown> })?.data ?? {};
+
+  nwos.forEach((nwo, i) => {
+    const repo = data[`r${i}`] as
+      | {
+          stargazerCount: number;
+          forkCount: number;
+          pushedAt: string;
+          isArchived: boolean;
+          defaultBranchRef?: { target?: { committedDate?: string } } | null;
+        }
+      | null
+      | undefined;
+    if (repo) {
+      const json: RepoInfo = {
+        stargazers_count: repo.stargazerCount,
+        forks_count: repo.forkCount,
+        pushed_at: repo.pushedAt,
+        archived: repo.isArchived === true,
+        committed_date: repo.defaultBranchRef?.target?.committedDate,
+      };
+      result.set(nwo, { ok: true, json });
+    }
+  });
+
+  return result;
+}
+
 // GraphQL-path fetcher used by the getRepoData dispatcher when a token is
 // configured. Does NOT interact with the cache — the dispatcher handles
 // that via locallyCached().
