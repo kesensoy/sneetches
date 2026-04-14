@@ -2,11 +2,11 @@ jest.mock('../src/github', () => {
   const actual = jest.requireActual('../src/github');
   return {
     ...actual,
-    getRepoData: jest.fn(),
+    getRepoDataMany: jest.fn(),
   };
 });
 
-import { getRepoData } from '../src/github';
+import { getRepoDataMany } from '../src/github';
 import {
   createAnnotation,
   createErrorAnnotation,
@@ -18,7 +18,23 @@ import {
   __handleSyncStorageChangeForTests,
 } from '../src/content';
 
-const mockedGetRepoData = getRepoData as jest.MockedFunction<typeof getRepoData>;
+const mockedGetRepoDataMany = getRepoDataMany as jest.MockedFunction<typeof getRepoDataMany>;
+
+// Shorthand for the RepoResponse type the production function returns —
+// inferred from the mock so tests don't have to import the private type.
+type MockBatchResponse =
+  Awaited<ReturnType<typeof getRepoDataMany>> extends Map<string, infer V> ? V : never;
+
+// Helper: make getRepoDataMany return a Map that answers every requested
+// nwo with the given fixed response. Keeps tests readable when each
+// scan cares about a single payload for every anchor it finds.
+function mockBatchRespondsWith(response: MockBatchResponse): void {
+  mockedGetRepoDataMany.mockImplementation(async (nwos: string[]) => {
+    const map = new Map<string, MockBatchResponse>();
+    for (const nwo of nwos) map.set(nwo, response);
+    return map;
+  });
+}
 
 describe('createAnnotation', () => {
   const data = {
@@ -367,8 +383,8 @@ describe('startLinkScanner', () => {
       )
     );
     document.body.innerHTML = '';
-    mockedGetRepoData.mockReset();
-    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+    mockedGetRepoDataMany.mockReset();
+    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
   });
 
   afterEach(() => {
@@ -376,7 +392,7 @@ describe('startLinkScanner', () => {
   });
 
   // Helper: wait for MutationObserver debounce + an extra tick for the
-  // microtask from getRepoData's then() to flush. Debounce is 300ms.
+  // microtask from getRepoDataMany's then() to flush. Debounce is 300ms.
   const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
 
   test('annotates repo links added AFTER the scanner is set up (SPA hydration case)', async () => {
@@ -386,7 +402,7 @@ describe('startLinkScanner', () => {
     // the observer must catch links as they appear later.
     startLinkScanner();
     await new Promise((r) => setTimeout(r, 10));
-    expect(mockedGetRepoData).not.toHaveBeenCalled();
+    expect(mockedGetRepoDataMany).not.toHaveBeenCalled();
 
     // Simulate GitHub hydrating README content into the DOM
     const container = document.createElement('div');
@@ -397,7 +413,7 @@ describe('startLinkScanner', () => {
 
     await waitForScanner();
 
-    expect(mockedGetRepoData).toHaveBeenCalledWith('ollama/ollama');
+    expect(mockedGetRepoDataMany).toHaveBeenCalledWith(['ollama/ollama']);
     expect(a.querySelector('.data-sneetch-extension')).not.toBeNull();
   });
 
@@ -412,7 +428,7 @@ describe('startLinkScanner', () => {
     startLinkScanner();
     await waitForScanner();
 
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
 
     // Trigger another mutation — a NEW link so the observer schedules a scan.
@@ -426,8 +442,8 @@ describe('startLinkScanner', () => {
     // Exactly two fetches total — one per distinct link. The ollama link
     // must not have been re-fetched, and it must still have exactly one
     // annotation child.
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
-    expect(mockedGetRepoData).toHaveBeenLastCalledWith('anthropics/claude-code');
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(2);
+    expect(mockedGetRepoDataMany).toHaveBeenLastCalledWith(['anthropics/claude-code']);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
     expect(b.querySelector('.data-sneetch-extension')).not.toBeNull();
   });
@@ -442,12 +458,12 @@ describe('startLinkScanner', () => {
 
     startLinkScanner();
     await waitForScanner();
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
 
     // Wait well beyond another debounce window — if the observer re-queued a
     // scan from its own annotation mutation, it would have fired by now.
     await new Promise((r) => setTimeout(r, 500));
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
   });
 
   test('does not double-fetch when a second scan fires while the first is still in flight', async () => {
@@ -459,11 +475,8 @@ describe('startLinkScanner', () => {
     // the same still-empty anchor (childElementCount === 0 because the
     // promise hasn't resolved) and fire a SECOND getRepoData. Both promises
     // would eventually resolve and each append an annotation — double-up.
-    let resolveFetch: (v: {
-      ok: boolean;
-      json: { forks_count: number; pushed_at: string; stargazers_count: number; archived: boolean };
-    }) => void = () => {};
-    mockedGetRepoData.mockImplementation(
+    let resolveFetch: (v: Map<string, MockBatchResponse>) => void = () => {};
+    mockedGetRepoDataMany.mockImplementation(
       () =>
         new Promise((resolve) => {
           resolveFetch = resolve;
@@ -477,7 +490,7 @@ describe('startLinkScanner', () => {
     startLinkScanner();
     await waitForScanner();
     // First scan found the link and fired one fetch (still pending).
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
 
     // Simulate unrelated GitHub DOM activity — adds a non-annotation node,
@@ -487,10 +500,10 @@ describe('startLinkScanner', () => {
     document.body.appendChild(marker);
     await waitForScanner();
 
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
 
     // Now let the fetch resolve and assert exactly one annotation landed.
-    resolveFetch({ ok: true, json: makeRepoPayload() });
+    resolveFetch(new Map([['ollama/ollama', { ok: true, json: makeRepoPayload() }]]));
     await waitForScanner();
 
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
@@ -512,11 +525,8 @@ describe('startLinkScanner', () => {
     // test invokes the settings-changed code path via a test-only helper
     // rather than by setting a storage key. The production listener and
     // the helper share the same implementation.
-    let firstResolve: (v: {
-      ok: boolean;
-      json: { forks_count: number; pushed_at: string; stargazers_count: number; archived: boolean };
-    }) => void = () => {};
-    mockedGetRepoData.mockImplementationOnce(
+    let firstResolve: (v: Map<string, MockBatchResponse>) => void = () => {};
+    mockedGetRepoDataMany.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           firstResolve = resolve;
@@ -524,7 +534,7 @@ describe('startLinkScanner', () => {
     );
     // Second call (from the post-settings-change rescan) stays pending forever
     // so we can observe the behavior purely through the first call's resolution.
-    mockedGetRepoData.mockImplementationOnce(() => new Promise(() => {}));
+    mockedGetRepoDataMany.mockImplementationOnce(() => new Promise(() => {}));
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
@@ -532,7 +542,7 @@ describe('startLinkScanner', () => {
 
     startLinkScanner();
     await waitForScanner();
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
 
     // Simulate a settings change mid-flight (bumps epoch, clears in-flight
@@ -540,14 +550,14 @@ describe('startLinkScanner', () => {
     // getRepoData for the same anchor under the new epoch.
     __applySettingsChangeForTests();
     await waitForScanner();
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(2);
 
-    // Resolve the first (pre-change, stale-epoch) fetch. Its .then should
-    // see the epoch mismatch and drop the result instead of appending.
-    firstResolve({
-      ok: true,
-      json: makeRepoPayload({ stargazers_count: 9999 }),
-    });
+    // Resolve the first (pre-change, stale-epoch) fetch. Its distribution
+    // loop should see the epoch mismatch and drop the result instead of
+    // appending.
+    firstResolve(
+      new Map([['ollama/ollama', { ok: true, json: makeRepoPayload({ stargazers_count: 9999 }) }]])
+    );
     await new Promise((r) => setTimeout(r, 10));
 
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(0);
@@ -563,7 +573,7 @@ describe('startLinkScanner', () => {
     // annotations and re-render — a visible flicker on every popup
     // interaction. The fix filters the listener so only the keys
     // ACCESS_TOKEN_KEY, SHOW_KEY, and STAR_STYLE_KEY trigger a rescan.
-    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
@@ -571,7 +581,7 @@ describe('startLinkScanner', () => {
 
     startLinkScanner();
     await waitForScanner();
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
 
     // Simulate the popup writing a popup-only key (e.g. the user clicked
@@ -582,7 +592,7 @@ describe('startLinkScanner', () => {
     });
     await waitForScanner();
 
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
 
     // Same check for the other popup-only keys — belt and suspenders.
@@ -597,7 +607,7 @@ describe('startLinkScanner', () => {
     });
     await waitForScanner();
 
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
   });
 
@@ -608,7 +618,7 @@ describe('startLinkScanner', () => {
     // old token couldn't see, etc.) and stale cached payloads would be
     // served forever otherwise. show and star_style only re-render; they
     // don't touch the cache. This test guards that branch specifically.
-    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
@@ -616,7 +626,7 @@ describe('startLinkScanner', () => {
 
     startLinkScanner();
     await waitForScanner();
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
 
     const clearSpy = jest.spyOn(chrome.storage.local, 'clear');
     clearSpy.mockClear();
@@ -629,7 +639,7 @@ describe('startLinkScanner', () => {
     // Exactly one local-cache flush, triggered by the token change.
     expect(clearSpy).toHaveBeenCalledTimes(1);
     // And the rescan fired too (same path as the show/star_style case).
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(2);
 
     clearSpy.mockRestore();
   });
@@ -640,7 +650,7 @@ describe('startLinkScanner', () => {
     // sufficient sentinel — the handler is key-driven, so if show
     // triggers correctly, star_style and access_token will too (plus
     // access_token additionally flushes the local cache).
-    mockedGetRepoData.mockResolvedValue({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
@@ -648,7 +658,7 @@ describe('startLinkScanner', () => {
 
     startLinkScanner();
     await waitForScanner();
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
 
     __handleSyncStorageChangeForTests({
       show: {
@@ -662,7 +672,7 @@ describe('startLinkScanner', () => {
     // annotation, then updateLinks() re-fetches + re-appends with the
     // new settings. Exactly one annotation on the anchor, and a second
     // getRepoData call.
-    expect(mockedGetRepoData).toHaveBeenCalledTimes(2);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(2);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
   });
 
@@ -678,7 +688,7 @@ describe('startLinkScanner', () => {
     startLinkScanner();
     await waitForScanner();
 
-    expect(mockedGetRepoData).not.toHaveBeenCalled();
+    expect(mockedGetRepoDataMany).not.toHaveBeenCalled();
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
   });
 });
@@ -686,7 +696,7 @@ describe('startLinkScanner', () => {
 describe('updateLinks silent-skip handling', () => {
   beforeEach(async () => {
     document.body.innerHTML = '';
-    mockedGetRepoData.mockReset();
+    mockedGetRepoDataMany.mockReset();
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
   });
@@ -697,7 +707,7 @@ describe('updateLinks silent-skip handling', () => {
 
   test('FORBIDDEN silent-skip does not append annotation to anchor', async () => {
     document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
-    mockedGetRepoData.mockResolvedValue({ ok: false, silent: true });
+    mockBatchRespondsWith({ ok: false, silent: true });
 
     // Need to trigger a scan
     startLinkScanner();
@@ -706,5 +716,67 @@ describe('updateLinks silent-skip handling', () => {
 
     const anchor = document.querySelector('a');
     expect(anchor?.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+});
+
+describe('updateLinks batching', () => {
+  beforeEach(async () => {
+    document.body.innerHTML = '';
+    mockedGetRepoDataMany.mockReset();
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        { show: { stars: true, forks: false, update: false }, star_style: 'outline' },
+        resolve
+      )
+    );
+    mockBatchRespondsWith({
+      ok: true,
+      json: {
+        forks_count: 1,
+        pushed_at: '2025-01-01T00:00:00Z',
+        stargazers_count: 10,
+        archived: false,
+      },
+    });
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('a scan with N anchors makes ONE getRepoDataMany call with N nwos', async () => {
+    document.body.innerHTML = `
+      <a href="https://github.com/octocat/hello"></a>
+      <a href="https://github.com/torvalds/linux"></a>
+      <a href="https://github.com/anthropics/claude-code"></a>
+    `;
+    startLinkScanner();
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledWith([
+      'octocat/hello',
+      'torvalds/linux',
+      'anthropics/claude-code',
+    ]);
+    expect(document.querySelectorAll('.data-sneetch-extension')).toHaveLength(3);
+  });
+
+  test('deduplicates repeated nwos in a single scan', async () => {
+    document.body.innerHTML = `
+      <a href="https://github.com/octocat/hello">one</a>
+      <a href="https://github.com/octocat/hello">two</a>
+      <a href="https://github.com/octocat/hello">three</a>
+    `;
+    startLinkScanner();
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Only one unique nwo, so the batch call receives an array of 1.
+    expect(mockedGetRepoDataMany).toHaveBeenCalledTimes(1);
+    expect(mockedGetRepoDataMany).toHaveBeenCalledWith(['octocat/hello']);
+    // But all three anchors get annotated.
+    expect(document.querySelectorAll('.data-sneetch-extension')).toHaveLength(3);
   });
 });

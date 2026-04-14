@@ -1,5 +1,5 @@
 import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
-import { getRepoData, isRepoUrl } from './github';
+import { getRepoDataMany, isRepoUrl } from './github';
 import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
@@ -160,51 +160,67 @@ function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
 async function updateLinks() {
   // Capture the epoch BEFORE the await so that any settings change that
   // fires between here and getSettings() resolving is guaranteed to have
-  // bumped currentEpoch past our captured value. Our .then/.catch epoch
-  // check will then correctly drop our (potentially mixed-state) results
-  // in favor of the post-change rescan that applySettingsChange dispatches.
-  //
-  // Subtle detail: capturing AFTER the await is almost always fine in
-  // practice because Chrome delivers chrome.storage.onChanged as an async
-  // task (not a microtask), so it cannot interleave with the synchronous
-  // continuation between the await resolving and the next line executing.
-  // But capturing BEFORE the await is provably safe regardless of the
-  // implementation's microtask-vs-task boundary, so we do it that way.
+  // bumped currentEpoch past our captured value. Our per-entry epoch
+  // check below will then correctly drop stale results in favor of the
+  // post-change rescan that applySettingsChange dispatches.
   const epoch = currentEpoch;
   const { accessToken, show, starStyle } = await getSettings();
   const links = findUnannotatedRepoLinks();
-  links.forEach((elt) => {
-    const href = elt.href;
-    const m = href.match('^https?://github.com/(.+?)(?:.git)?/?$');
-    if (m) {
-      inFlightAnchors.set(elt, epoch);
-      getRepoData(m[1])
-        .then((res) => {
-          // If our epoch no longer matches, settings changed mid-flight
-          // and a newer scan has taken over (or no scan has rebound the
-          // anchor yet). Either way, silently drop: don't appendChild
-          // with stale closure, and don't delete the map entry (it may
-          // belong to the newer scan's in-flight fetch).
-          if (inFlightAnchors.get(elt) !== epoch) return;
-          inFlightAnchors.delete(elt);
-          if (res.silent) {
-            // FORBIDDEN/scope-missing: don't annotate. User can't see this
-            // repo, so we have nothing useful to say about it.
-            return;
-          }
-          if (res.ok) {
-            elt.appendChild(createAnnotation(res.json!, show, starStyle));
-          } else {
-            elt.appendChild(createErrorAnnotation(res, accessToken));
-          }
-        })
-        .catch((err) => {
-          if (inFlightAnchors.get(elt) !== epoch) return;
-          inFlightAnchors.delete(elt);
-          elt.appendChild(createErrorAnnotation(err, accessToken));
-        });
+
+  // Collect (anchor, nwo) pairs and claim each anchor under the current
+  // epoch upfront. The findUnannotatedRepoLinks filter already excludes
+  // anchors with an inFlightAnchors entry, so same-scan duplicates don't
+  // happen, but we still need to claim before the await so a concurrent
+  // settings change invalidates all of them atomically.
+  const pending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
+  for (const elt of links) {
+    const m = elt.href.match('^https?://github.com/(.+?)(?:.git)?/?$');
+    if (!m) continue;
+    inFlightAnchors.set(elt, epoch);
+    pending.push({ elt, nwo: m[1] });
+  }
+
+  if (pending.length === 0) return;
+
+  // Deduplicate nwos — a single page can have many anchors pointing at
+  // the same repo, and we only need one Map entry per unique nwo.
+  const uniqueNwos = Array.from(new Set(pending.map((p) => p.nwo)));
+
+  let results: Map<
+    string,
+    Awaited<ReturnType<typeof getRepoDataMany>> extends Map<string, infer V> ? V : never
+  >;
+  try {
+    results = (await getRepoDataMany(uniqueNwos)) as typeof results;
+  } catch (err) {
+    // Batch-level failure (network error, 401, 5xx): every anchor in the
+    // pending set gets an error annotation so the user sees the failure
+    // state rather than a silent dead page.
+    for (const { elt } of pending) {
+      if (inFlightAnchors.get(elt) !== epoch) continue;
+      inFlightAnchors.delete(elt);
+      elt.appendChild(createErrorAnnotation(err as { status?: number }, accessToken));
     }
-  });
+    return;
+  }
+
+  for (const { elt, nwo } of pending) {
+    // If the epoch no longer matches, settings changed mid-flight and a
+    // newer scan has taken over. Silently drop: don't appendChild with
+    // stale closure, and don't delete the map entry (it may belong to
+    // the newer scan's in-flight batch).
+    if (inFlightAnchors.get(elt) !== epoch) continue;
+    inFlightAnchors.delete(elt);
+
+    const res = results.get(nwo);
+    if (!res) continue; // defensive — dispatcher should always back-fill
+    if (res.silent) continue; // FORBIDDEN / scope-missing
+    if (res.ok) {
+      elt.appendChild(createAnnotation(res.json!, show, starStyle));
+    } else {
+      elt.appendChild(createErrorAnnotation(res, accessToken));
+    }
+  }
 }
 
 export function createErrorAnnotation(
