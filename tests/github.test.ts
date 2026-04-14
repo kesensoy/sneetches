@@ -3,8 +3,8 @@ import { mockFetch } from './fetch.mock';
 import { TOKEN_VALIDATED_KEY } from '../src/settings';
 
 describe('getRepoData', () => {
-  const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3 };
-  const repoInfo2 = { forks_count: 11, pushed_at: 12, stargazers_count: 13 };
+  const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
+  const repoInfo2 = { forks_count: 11, pushed_at: 12, stargazers_count: 13, archived: false };
 
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
@@ -12,7 +12,7 @@ describe('getRepoData', () => {
   });
 
   test('resolves repo info', async () => {
-    const data = { forks_count: 1, pushed_at: 2, stargazers_count: 3 };
+    const data = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
     mockFetch({ json: data });
     const info = await getRepoData('owner/repo');
     expect(info).toEqual({ ok: true, json: data });

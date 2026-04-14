@@ -71,12 +71,15 @@ interface RepoInfo {
   readonly forks_count: number;
   readonly pushed_at: string;
   readonly stargazers_count: number;
+  readonly archived: boolean;
+  readonly committed_date?: string;
 }
 
 interface RepoResponse {
   readonly ok: boolean;
   readonly status?: number;
   readonly json?: RepoInfo;
+  readonly silent?: boolean;
 }
 
 // Transform a fetch Response into something minimal that can be stored

@@ -216,6 +216,7 @@ describe('startLinkScanner', () => {
     forks_count: 1,
     pushed_at: '2024-01-01',
     stargazers_count: 42,
+    archived: false,
     ...overrides,
   });
 
@@ -322,7 +323,7 @@ describe('startLinkScanner', () => {
     // would eventually resolve and each append an annotation — double-up.
     let resolveFetch: (v: {
       ok: boolean;
-      json: { forks_count: number; pushed_at: string; stargazers_count: number };
+      json: { forks_count: number; pushed_at: string; stargazers_count: number; archived: boolean };
     }) => void = () => {};
     mockedGetRepoData.mockImplementation(
       () =>
@@ -375,7 +376,7 @@ describe('startLinkScanner', () => {
     // the helper share the same implementation.
     let firstResolve: (v: {
       ok: boolean;
-      json: { forks_count: number; pushed_at: string; stargazers_count: number };
+      json: { forks_count: number; pushed_at: string; stargazers_count: number; archived: boolean };
     }) => void = () => {};
     mockedGetRepoData.mockImplementationOnce(
       () =>
