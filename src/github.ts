@@ -1,7 +1,7 @@
 import { locallyCached } from './cache';
 import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const GITHUB_API_URL = 'https://api.github.com/repos/';
 
 export const RATE_LIMIT_KEY = 'rate_limit';
