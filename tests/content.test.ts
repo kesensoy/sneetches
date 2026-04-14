@@ -25,6 +25,7 @@ describe('createAnnotation', () => {
     forks_count: 10,
     pushed_at: '2018-09-10',
     stargazers_count: 10,
+    archived: false,
   };
 
   test('stars annotation uses SVG icon', () => {

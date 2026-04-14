@@ -233,7 +233,7 @@ export function createAnnotation(
     forks_count: number;
     stargazers_count: number;
     pushed_at: string;
-    archived?: boolean;
+    archived: boolean;
     committed_date?: string;
   },
   show: ShowSettings,
