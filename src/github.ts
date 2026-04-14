@@ -105,7 +105,7 @@ interface RepoResponse {
 // ignores the rest of GitHub's REST payload to keep cache entries small.
 // Note: committed_date is intentionally NOT set here. The REST endpoint
 // doesn't return a default-branch commit date; that field is populated
-// only by fetchRepoDataGraphQLSingle via defaultBranchRef.target.committedDate.
+// only by fetchGraphQLBatch via defaultBranchRef.target.committedDate.
 async function marshallableResponse(res: Response): Promise<RepoResponse> {
   const { ok, status } = res;
   if (ok) {
@@ -281,90 +281,6 @@ export async function fetchGraphQLBatch(
   return result;
 }
 
-// GraphQL-path fetcher used by the getRepoData dispatcher when a token is
-// configured. Does NOT interact with the cache — the dispatcher handles
-// that via locallyCached().
-async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Promise<RepoResponse> {
-  const [owner, name] = nwo.split('/');
-  const query = `
-    query GetRepo($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) {
-        stargazerCount
-        forkCount
-        pushedAt
-        isArchived
-        defaultBranchRef {
-          target { ... on Commit { committedDate } }
-        }
-      }
-      rateLimit { cost limit remaining resetAt }
-    }
-  `;
-  const res = await fetch(GITHUB_GRAPHQL_URL, {
-    method: 'POST',
-    headers: {
-      'User-Agent': 'kesensoy/sneetches',
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ query, variables: { owner, name } }),
-  });
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      // Token is invalid or revoked. Clear the persisted "validated"
-      // flag so the popup shows the honest state on next open — mirrors
-      // the same auto-invalidation captureRateLimit does on the REST path
-      // when it observes an unauthenticated-tier rate limit.
-      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
-    }
-    throw { ok: false, status: res.status };
-  }
-
-  const body = await res.json();
-  captureRateLimitFromGraphQL(body);
-
-  const repo = body?.data?.repository;
-  if (repo) {
-    const json: RepoInfo = {
-      stargazers_count: repo.stargazerCount,
-      forks_count: repo.forkCount,
-      pushed_at: repo.pushedAt,
-      archived: repo.isArchived === true,
-      committed_date: repo.defaultBranchRef?.target?.committedDate,
-    };
-    return { ok: true, json };
-  }
-
-  // Repository is null — walk errors[] to determine why.
-  const errors = (body as { errors?: Array<{ type?: string; path?: string[] }> })?.errors;
-  if (errors && errors.length > 0) {
-    const err = errors[0];
-    if (err.type === 'NOT_FOUND') {
-      return { ok: false, status: 404 };
-    }
-    if (err.type === 'FORBIDDEN') {
-      return { ok: false, silent: true };
-    }
-  }
-  throw { ok: false, status: 500 };
-}
-
-// Retrieve repo info from GitHub or from the cache. Successful responses
-// and 404's are cached. Other errors (e.g. 403) are transient and not cached.
-//
-// Dispatches based on token state: GraphQL for PAT users (richer data
-// including committed_date), REST for everyone else.
-export function getRepoData(nwo: string): Promise<RepoResponse> {
-  return locallyCached(nwo, CACHE_VERSION, async () => {
-    const accessToken = await getAccessToken();
-    if (accessToken) {
-      return fetchRepoDataGraphQLSingle(nwo, accessToken);
-    }
-    return fetchRepoDataRESTSingle(nwo);
-  });
-}
-
 const BATCH_SIZE = 50;
 // If we ever see 422 from GitHub on an aliased query, halve this.
 // GitHub's node-count limit is 500,000; scalar-only batches cost 1 point
@@ -378,7 +294,9 @@ const BATCH_SIZE = 50;
 //
 // Per-entry errors (e.g. a rate-limited 403) surface as
 // `{ ok: false, status }` Map entries rather than a top-level throw,
-// so a single bad repo never aborts the whole scan.
+// so a single bad repo never aborts the whole scan. Transport-level
+// failures (network, HTTP 5xx, 401) throw out of the whole batch so
+// updateLinks' catch branch can distribute error annotations.
 export async function getRepoDataMany(nwos: string[]): Promise<Map<string, RepoResponse>> {
   if (nwos.length === 0) return new Map();
 
@@ -389,27 +307,17 @@ export async function getRepoDataMany(nwos: string[]): Promise<Map<string, RepoR
       for (let i = 0; i < missing.length; i += BATCH_SIZE) {
         const chunk = missing.slice(i, i + BATCH_SIZE);
         const batchResult = await fetchGraphQLBatch(chunk, accessToken);
+        // fetchGraphQLBatch guarantees an entry for every requested nwo
+        // (back-fills missing ones as silent). We cache everything it
+        // returns, including FORBIDDEN silent-skips — matches the 1.1.1
+        // behavior of avoiding repeated API hits on private repos within
+        // the 4-hour TTL. Transport failures throw out of the thunk
+        // before reaching this point.
         for (const [nwo, resp] of batchResult) {
-          // Don't cache silent-skip (FORBIDDEN) or transient errors —
-          // only cache successful responses and cached 404's, matching
-          // the single-repo path's behavior.
-          if (resp.ok || resp.status === 404) {
-            merged.set(nwo, resp);
-          }
+          merged.set(nwo, resp);
         }
       }
       return merged;
-    }).then(async (cached) => {
-      // locallyCachedBatch only returns cached/freshly-stored entries.
-      // FORBIDDEN / transient responses were intentionally skipped above,
-      // so re-run the non-cached entries through a final distribution
-      // pass to back-fill them as silent-skips for the caller.
-      const result = new Map<string, RepoResponse>();
-      for (const nwo of nwos) {
-        const hit = cached.get(nwo);
-        result.set(nwo, hit ?? { ok: false, silent: true });
-      }
-      return result;
     });
   }
 

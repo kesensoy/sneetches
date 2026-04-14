@@ -117,7 +117,7 @@ export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
 let linkScanObserver: MutationObserver | null = null;
 let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
 
-// Anchors with a getRepoData() fetch still in flight, mapped to the epoch
+// Anchors with a getRepoDataMany() fetch still in flight, mapped to the epoch
 // at which the fetch was started. Used for two things:
 //
 //   1. Prevent a second debounced scan from re-issuing fetches for links
