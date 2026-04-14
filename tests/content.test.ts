@@ -71,6 +71,18 @@ describe('createAnnotation', () => {
     const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
     expect(elt.title).toContain('2024');
   });
+
+  test('tooltip uses "last updated" wording, not "pushed"', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2018-09-10T00:00:00Z',
+      stargazers_count: 10,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.title).toContain('last updated');
+    expect(elt.title).not.toContain('pushed');
+  });
 });
 
 describe('createErrorAnnotation', () => {

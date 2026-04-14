@@ -266,7 +266,7 @@ export function createAnnotation(
     [
       `${commafy(data.stargazers_count)} stars`,
       `${commafy(data.forks_count)} forks`,
-      `pushed ${displayDate.toLocaleDateString()}`,
+      `last updated ${displayDate.toLocaleDateString()}`,
     ].join('; ') + ' — Sneetches';
   return elt;
 }
