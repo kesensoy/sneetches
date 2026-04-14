@@ -286,3 +286,115 @@ describe('rate limit persistence', () => {
     expect(stored[RATE_LIMIT_KEY]).toBeUndefined();
   });
 });
+
+describe('GraphQL path', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('GraphQL happy path transforms response into RepoInfo', async () => {
+    // Seed a PAT so the dispatcher picks GraphQL
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 612,
+            forkCount: 58,
+            pushedAt: '2025-11-07T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: {
+              target: { committedDate: '2018-09-23T00:00:00Z' },
+            },
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999, resetAt: '2026-04-13T13:00:00Z' },
+        },
+      },
+    });
+
+    const info = await getRepoData('osteele/sneetches');
+    expect(info).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 612,
+        forks_count: 58,
+        pushed_at: '2025-11-07T00:00:00Z',
+        archived: false,
+        committed_date: '2018-09-23T00:00:00Z',
+      },
+    });
+  });
+
+  test('GraphQL path falls back to pushed_at when defaultBranchRef is null', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 0,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+
+    const info = await getRepoData('empty/repo');
+    expect(info.json?.committed_date).toBeUndefined();
+    expect(info.json?.pushed_at).toBe('2024-01-01T00:00:00Z');
+  });
+
+  test('GraphQL path fires POST to /graphql, not REST endpoint', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    const fetchSpy = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 2,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      }),
+      headers: { get: (): string | null => null },
+    }));
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    await getRepoData('owner/repo');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const call = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe('https://api.github.com/graphql');
+    expect(call[1]).toMatchObject({
+      method: 'POST',
+      headers: expect.objectContaining({
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      }),
+    });
+    const body = JSON.parse(call[1].body as string);
+    expect(body.query).toContain('repository(owner: $owner, name: $name)');
+    expect(body.variables).toEqual({ owner: 'owner', name: 'repo' });
+  });
+});
