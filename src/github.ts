@@ -1,4 +1,4 @@
-import { locallyCached, locallyCachedBatch } from './cache';
+import { bulkReadCache, bulkWriteCache, locallyCached, locallyCachedBatch } from './cache';
 import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
 
 const CACHE_VERSION = 2;
@@ -292,6 +292,106 @@ export async function fetchGraphQLBatch(
 // regardless of alias count and use ~50 nodes per batch (4 orders of
 // magnitude of headroom).
 const BATCH_SIZE = 50;
+
+// Streaming repo-data fetcher. Called by the service worker's port
+// handler; does ONE chrome.storage.local.get for all nwos up front,
+// fires the onResults callback immediately with every valid cached
+// entry, then fetches the missing entries in parallel chunks and fires
+// onResults again per chunk as each POST resolves.
+//
+// Why a streaming callback rather than a resolved Map? Because 1.1.3
+// needs progressive reveal on big awesome-list pages: we want the
+// cache-hit subset (and each fresh chunk as it lands) to start
+// annotating immediately, not wait on the slowest chunk. The service
+// worker forwards each onResults call into its own port.postMessage,
+// so the content script gets a stream of chunks in the order they
+// resolve — not in chunk-index order.
+//
+// Contract:
+//   - `onResults` is called synchronously once with the cached subset
+//     as soon as the bulk cache read resolves, ONLY if the cached
+//     subset is non-empty. An empty cache hit skips the first call so
+//     the caller doesn't have to filter zero-entry chunks.
+//   - Each fetched chunk fires its own `onResults` call once its POST
+//     resolves. Chunks run in parallel; callback order matches resolve
+//     order, not chunk index.
+//   - On transport-level failure (HTTP 401 / 5xx / network), the
+//     returned Promise rejects. The caller's catch branch can decide
+//     how to surface the error — in the service worker's case, it
+//     posts a terminal `{type:'error', status}` message.
+//   - Per-entry errors (NOT_FOUND, FORBIDDEN silent-skip) surface as
+//     RepoResponse map entries in the callback, NOT as rejections.
+//
+// Chunking strategy: round-robin into ceil(missing / BATCH_SIZE)
+// equal-sized chunks. This matches 1.1.2 content.ts chunking for the
+// "chunks each span the whole input" property — the first chunk to
+// resolve paints across the full input range, not a contiguous tail.
+export async function fetchRepoDataStreaming(
+  nwos: readonly string[],
+  accessToken: string | undefined,
+  onResults: (chunkResults: Map<string, RepoResponse>) => void
+): Promise<void> {
+  if (nwos.length === 0) return;
+
+  // Phase 1: ONE bulk cache read. Every valid entry fires the callback
+  // as a single batch before any fetches start.
+  const { cached, missing } = await bulkReadCache<RepoResponse, number>(
+    nwos as string[],
+    CACHE_VERSION
+  );
+  if (cached.size > 0) onResults(cached);
+  if (missing.length === 0) return;
+
+  // Phase 2: fetch missing. PAT users get the GraphQL batch path;
+  // unauth users fall back to per-repo REST (parallel).
+  if (accessToken) {
+    // Round-robin into equal-sized chunks so whichever chunk resolves
+    // first paints annotations across the full input range, not a
+    // contiguous slice at one end.
+    const chunkCount = Math.ceil(missing.length / BATCH_SIZE);
+    const chunks: string[][] = Array.from({ length: chunkCount }, () => []);
+    for (let i = 0; i < missing.length; i++) {
+      chunks[i % chunkCount].push(missing[i]);
+    }
+    await Promise.all(
+      chunks.map(async (chunk) => {
+        const chunkResults = await fetchGraphQLBatch(chunk, accessToken);
+        // Write every result — including FORBIDDEN silent-skips — to
+        // the cache. Matches 1.1.1 behavior of avoiding repeated API
+        // hits on private repos within the 4-hour TTL.
+        bulkWriteCache(chunkResults, CACHE_VERSION);
+        onResults(chunkResults);
+      })
+    );
+    return;
+  }
+
+  // Unauthenticated path: parallel per-repo REST. Each resolves with
+  // its own singleton Map. Per-entry transport errors (403 rate-limit,
+  // network failures) surface as RepoResponse map entries rather than
+  // rejecting the whole promise.
+  await Promise.all(
+    missing.map(async (nwo) => {
+      try {
+        const resp = await fetchRepoDataRESTSingle(nwo);
+        const map = new Map([[nwo, resp]]);
+        // Only cache 200 OK and 404 responses. Don't cache 403s — they
+        // represent transient rate-limit state and should retry next
+        // scan.
+        if (resp.ok || resp.status === 404) {
+          bulkWriteCache(map, CACHE_VERSION);
+        }
+        onResults(map);
+      } catch (err) {
+        const status =
+          typeof err === 'object' && err !== null && 'status' in err
+            ? (err as { status?: number }).status
+            : undefined;
+        onResults(new Map([[nwo, { ok: false, status }]]));
+      }
+    })
+  );
+}
 
 // Retrieve repo info for many repos at once. Routes PAT users to the
 // GraphQL batched path (one aliased query per BATCH_SIZE repos); routes

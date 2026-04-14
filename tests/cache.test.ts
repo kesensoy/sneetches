@@ -1,4 +1,11 @@
-import { locallyCached, locallyCachedBatch, getCacheEntryCount, clearCache } from '../src/cache';
+import {
+  bulkReadCache,
+  bulkWriteCache,
+  locallyCached,
+  locallyCachedBatch,
+  getCacheEntryCount,
+  clearCache,
+} from '../src/cache';
 
 describe('locallyCached', () => {
   let thunk: jest.Mock<string>;
@@ -191,6 +198,78 @@ describe('locallyCachedBatch', () => {
     expect(thunk2).toHaveBeenCalledWith(['b']);
     expect(result.get('a')).toBe(1);
     expect(result.get('b')).toBe(99);
+  });
+});
+
+describe('bulkReadCache / bulkWriteCache', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('bulkReadCache returns empty partition for empty input', async () => {
+    const { cached, missing } = await bulkReadCache<number, number>([], 1);
+    expect(cached.size).toBe(0);
+    expect(missing).toEqual([]);
+  });
+
+  test('bulkReadCache reports every key as missing when storage is empty', async () => {
+    const { cached, missing } = await bulkReadCache<number, number>(['a', 'b', 'c'], 1);
+    expect(cached.size).toBe(0);
+    expect(missing).toEqual(['a', 'b', 'c']);
+  });
+
+  test('bulkWriteCache + bulkReadCache round-trip', async () => {
+    const fresh = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    bulkWriteCache(fresh, 1);
+
+    const { cached, missing } = await bulkReadCache<number, number>(['a', 'b'], 1);
+    expect(missing).toEqual([]);
+    expect(cached.get('a')).toBe(1);
+    expect(cached.get('b')).toBe(2);
+  });
+
+  test('bulkReadCache partitions mixed hit/miss', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 100]]), 1);
+    const { cached, missing } = await bulkReadCache<number, number>(['a', 'b'], 1);
+    expect(cached.get('a')).toBe(100);
+    expect(cached.has('b')).toBe(false);
+    expect(missing).toEqual(['b']);
+  });
+
+  test('bulkReadCache treats expired entries as missing', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 1]]), 1);
+    const fourHoursMs = 4 * 3600 * 1000 + 1;
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + fourHoursMs);
+    const { cached, missing } = await bulkReadCache<number, number>(['a'], 1);
+    expect(cached.size).toBe(0);
+    expect(missing).toEqual(['a']);
+    jest.restoreAllMocks();
+  });
+
+  test('bulkReadCache treats stale version entries as missing', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 1]]), 1);
+    const { cached, missing } = await bulkReadCache<number, number>(['a'], 2);
+    expect(cached.size).toBe(0);
+    expect(missing).toEqual(['a']);
+  });
+
+  test('bulkWriteCache is a no-op for an empty map', async () => {
+    bulkWriteCache(new Map<string, number>(), 1);
+    expect(await getCacheEntryCount()).toBe(0);
+  });
+
+  test('bulkWriteCache written entries show up in getCacheEntryCount', async () => {
+    bulkWriteCache(
+      new Map<string, number>([
+        ['repo1', 1],
+        ['repo2', 2],
+      ]),
+      1
+    );
+    expect(await getCacheEntryCount()).toBe(2);
   });
 });
 

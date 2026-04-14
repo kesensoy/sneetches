@@ -1,5 +1,5 @@
 import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
-import { getRepoDataMany, isRepoUrl, RepoResponse } from './github';
+import { isRepoUrl, RepoResponse } from './github';
 import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
@@ -9,6 +9,7 @@ import {
   ShowSettings,
   StarStyle,
 } from './settings';
+import { SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
 import { commafy, humanize, humanizeDate } from './utils';
 
 // Detect and persist whether the authenticated GitHub user has starred
@@ -168,6 +169,65 @@ function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
   ).filter((a) => isRepoLink(a) && !inFlightAnchors.has(a) && !silentSkipAnchors.has(a));
 }
 
+// Open a port to the service worker and return a promise that resolves
+// when the port says 'done' or 'error'. Each 'chunk' message is routed
+// to `onChunk` as it arrives so progressive reveal works: cached repos
+// land in the first chunk, each fetched GraphQL batch lands as its own
+// chunk. The 1.1.3 perf win is that all the storage/fetch work runs in
+// the SW's event loop off the page's main thread.
+//
+// Exported for test injection — tests/content.test.ts overrides this
+// via __setPortFetcherForTests to avoid spinning up the real SW in
+// tests that want to drive fetch behavior through a jest mock. The
+// production path uses the default implementation below.
+type PortFetcher = (
+  nwos: string[],
+  onChunk: (entries: ReadonlyArray<readonly [string, RepoResponse]>) => void
+) => Promise<{ ok: true } | { ok: false; status?: number }>;
+
+const defaultPortFetcher: PortFetcher = (nwos, onChunk) =>
+  new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: SNEETCHES_PORT_NAME });
+    let settled = false;
+    const finish = (result: { ok: true } | { ok: false; status?: number }): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        port.disconnect();
+      } catch {
+        // already disconnected
+      }
+      resolve(result);
+    };
+
+    port.onMessage.addListener((rawMsg: unknown) => {
+      const msg = rawMsg as SneetchesRpcMsg;
+      if (msg.type === 'chunk') {
+        onChunk(msg.entries);
+      } else if (msg.type === 'error') {
+        finish({ ok: false, status: msg.status });
+      } else if (msg.type === 'done') {
+        finish({ ok: true });
+      }
+    });
+    // If the SW tears down the port without a terminal message (e.g.
+    // the worker was killed mid-flight), treat that as a network-level
+    // failure rather than leaving updateLinks hung forever.
+    port.onDisconnect.addListener(() => finish({ ok: false, status: undefined }));
+
+    port.postMessage({ nwos });
+  });
+
+let portFetcher: PortFetcher = defaultPortFetcher;
+
+// Test-only hook: replace the port fetcher with a controllable
+// implementation. Used by tests/content.test.ts to drive chunk/error
+// delivery without depending on the service worker's message loop.
+// Pass `null` to restore the default.
+export function __setPortFetcherForTests(fn: PortFetcher | null): void {
+  portFetcher = fn ?? defaultPortFetcher;
+}
+
 async function updateLinks() {
   // Capture the epoch BEFORE the await so that any settings change that
   // fires between here and getSettings() resolving is guaranteed to have
@@ -197,42 +257,55 @@ async function updateLinks() {
   // the same repo, and we only need one Map entry per unique nwo.
   const uniqueNwos = Array.from(new Set(pending.map((p) => p.nwo)));
 
-  let results: Map<string, RepoResponse>;
-  try {
-    results = await getRepoDataMany(uniqueNwos);
-  } catch (err) {
-    // Batch-level failure (network error, 401, 5xx): every anchor in the
-    // pending set gets an error annotation so the user sees the failure
-    // state rather than a silent dead page.
+  // Group anchors by nwo so each chunk from the service worker can be
+  // distributed to every anchor pointing at the same repo. A single
+  // entry may annotate many anchors in one go.
+  const byNwo = new Map<string, HTMLAnchorElement[]>();
+  for (const { elt, nwo } of pending) {
+    const list = byNwo.get(nwo);
+    if (list) list.push(elt);
+    else byNwo.set(nwo, [elt]);
+  }
+
+  const distributeChunk = (entries: ReadonlyArray<readonly [string, RepoResponse]>): void => {
+    for (const [nwo, res] of entries) {
+      const anchors = byNwo.get(nwo);
+      if (!anchors) continue;
+      for (const elt of anchors) {
+        // Epoch guard: settings may have changed mid-chunk-stream, in
+        // which case a newer scan has taken over this anchor and we
+        // should silently drop the stale result rather than appending.
+        if (inFlightAnchors.get(elt) !== epoch) continue;
+        inFlightAnchors.delete(elt);
+        if (res.silent) {
+          // FORBIDDEN / scope-missing: mark the anchor so subsequent
+          // scans don't re-process it. See the silentSkipAnchors
+          // declaration for rationale — carried forward from the
+          // 1.1.1 greptile fix.
+          silentSkipAnchors.add(elt);
+          continue;
+        }
+        if (res.ok) {
+          elt.appendChild(createAnnotation(res.json!, show, starStyle));
+        } else {
+          elt.appendChild(createErrorAnnotation(res, accessToken));
+        }
+      }
+    }
+  };
+
+  const result = await portFetcher(uniqueNwos, distributeChunk);
+
+  if (!result.ok) {
+    // Batch-level failure (network error, 401, 5xx): every anchor still
+    // in flight under OUR epoch gets an error annotation so the user
+    // sees the failure state rather than a silent dead page. Anchors a
+    // mid-flight settings change has already claimed under a newer
+    // epoch are left alone.
     for (const { elt } of pending) {
       if (inFlightAnchors.get(elt) !== epoch) continue;
       inFlightAnchors.delete(elt);
-      elt.appendChild(createErrorAnnotation(err as { status?: number }, accessToken));
-    }
-    return;
-  }
-
-  for (const { elt, nwo } of pending) {
-    // If the epoch no longer matches, settings changed mid-flight and a
-    // newer scan has taken over. Silently drop: don't appendChild with
-    // stale closure, and don't delete the map entry (it may belong to
-    // the newer scan's in-flight batch).
-    if (inFlightAnchors.get(elt) !== epoch) continue;
-    inFlightAnchors.delete(elt);
-
-    const res = results.get(nwo);
-    if (!res) continue; // defensive — dispatcher should always back-fill
-    if (res.silent) {
-      // FORBIDDEN / scope-missing: mark the anchor so subsequent scans
-      // don't re-process it. See the silentSkipAnchors declaration for
-      // rationale — carried forward from the 1.1.1 greptile fix.
-      silentSkipAnchors.add(elt);
-      continue;
-    }
-    if (res.ok) {
-      elt.appendChild(createAnnotation(res.json!, show, starStyle));
-    } else {
-      elt.appendChild(createErrorAnnotation(res, accessToken));
+      elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
     }
   }
 }

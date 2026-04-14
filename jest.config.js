@@ -8,7 +8,11 @@ module.exports = {
   testRegex: '(/__tests__/.*|(\\.|/).+[_.]test)\\.(jsx?|tsx?)$',
   testPathIgnorePatterns: ['/node_modules/'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
-  setupFiles: ['jest-webextension-mock', './tests/chrome-storage.mock.ts'],
+  setupFiles: [
+    'jest-webextension-mock',
+    './tests/chrome-storage.mock.ts',
+    './tests/port.mock.ts',
+  ],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
       useESM: false

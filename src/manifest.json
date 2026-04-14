@@ -19,6 +19,10 @@
   "icons": {
     "128": "images/icon128.png"
   },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
   "content_scripts": [
     {
       "matches": ["*://*/*"],
