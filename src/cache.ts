@@ -81,12 +81,9 @@ export async function locallyCachedBatch<T, V>(
     toStore[key] = { exp, pay, ver: version };
   }
 
-  if (Object.keys(toStore).length > 0) {
-    chrome.storage.local.set(
-      toStore,
-      () => chrome.runtime.lastError && chrome.storage.local.clear()
-    );
-  }
+  // Unconditional set — matches the single-key locallyCached above. An
+  // empty toStore (thunk returned nothing) is a no-op in the Chrome API.
+  chrome.storage.local.set(toStore, () => chrome.runtime.lastError && chrome.storage.local.clear());
 
   return result;
 }

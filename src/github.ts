@@ -287,11 +287,11 @@ export async function fetchGraphQLBatch(
   return result;
 }
 
-const BATCH_SIZE = 50;
 // If we ever see 422 from GitHub on an aliased query, halve this.
 // GitHub's node-count limit is 500,000; scalar-only batches cost 1 point
 // regardless of alias count and use ~50 nodes per batch (4 orders of
 // magnitude of headroom).
+const BATCH_SIZE = 50;
 
 // Retrieve repo info for many repos at once. Routes PAT users to the
 // GraphQL batched path (one aliased query per BATCH_SIZE repos); routes
