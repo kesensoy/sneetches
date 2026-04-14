@@ -44,6 +44,50 @@ export async function locallyCached<T, V>(
   return pay;
 }
 
+// Array-in / Map-out batch variant of locallyCached. Looks up every key in
+// local storage, calls `thunk` with only the subset that's missing or
+// expired, stores each returned value under its key, and returns a merged
+// Map of all hits (cached + freshly fetched). Keys that the thunk omits
+// from its result are NOT cached — that lets callers distinguish silent-
+// skip responses (FORBIDDEN, etc.) from happy-path hits.
+export async function locallyCachedBatch<T, V>(
+  keys: string[],
+  version: V,
+  thunk: (missing: string[]) => Promise<Map<string, T>>
+): Promise<Map<string, T>> {
+  if (keys.length === 0) return new Map();
+
+  const items = await storageGet(keys);
+  const now = Date.now();
+  const result = new Map<string, T>();
+  const missing: string[] = [];
+
+  for (const key of keys) {
+    const entry = items[key] as Entry<T, V> | undefined;
+    if (entry && entry.exp > now && entry.ver === version) {
+      result.set(key, entry.pay);
+    } else {
+      missing.push(key);
+    }
+  }
+
+  if (missing.length === 0) return result;
+
+  const fresh = await thunk(missing);
+  const toStore: Record<string, Entry<T, V>> = {};
+  const exp = Date.now() + CACHE_DUR_SECONDS * 1000;
+  for (const [key, pay] of fresh) {
+    result.set(key, pay);
+    toStore[key] = { exp, pay, ver: version };
+  }
+
+  // Unconditional set — matches the single-key locallyCached above. An
+  // empty toStore (thunk returned nothing) is a no-op in the Chrome API.
+  chrome.storage.local.set(toStore, () => chrome.runtime.lastError && chrome.storage.local.clear());
+
+  return result;
+}
+
 export function getCacheEntryCount(): Promise<number> {
   return new Promise((resolve, reject) =>
     chrome.storage.local.get(null, (items) =>

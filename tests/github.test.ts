@@ -1,8 +1,24 @@
-import { getRepoData, isRepoUrl, RATE_LIMIT_KEY, validateAccessToken } from '../src/github';
+import {
+  buildBatchQuery,
+  fetchGraphQLBatch,
+  getRepoDataMany,
+  isRepoUrl,
+  RATE_LIMIT_KEY,
+  validateAccessToken,
+} from '../src/github';
 import { mockFetch } from './fetch.mock';
-import { TOKEN_VALIDATED_KEY } from '../src/settings';
+import { ACCESS_TOKEN_KEY, TOKEN_VALIDATED_KEY } from '../src/settings';
 
-describe('getRepoData', () => {
+// Shorthand: call the unauthenticated REST path and pull out the single
+// entry. getRepoDataMany is the public entry point since 1.1.2; these
+// tests exercise its REST-path behavior (caching, 404s, 403s, archived
+// field population) by giving it a one-element nwos array.
+const getOneRest = async (nwo: string) => {
+  const map = await getRepoDataMany([nwo]);
+  return map.get(nwo)!;
+};
+
+describe('getRepoDataMany REST path', () => {
   const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
   const repoInfo2 = { forks_count: 11, pushed_at: 12, stargazers_count: 13, archived: false };
 
@@ -14,55 +30,53 @@ describe('getRepoData', () => {
   test('resolves repo info', async () => {
     const data = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
     mockFetch({ json: data });
-    const info = await getRepoData('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info).toEqual({ ok: true, json: data });
   });
 
   test('caches repo info', async () => {
     mockFetch({ json: repoInfo });
-    await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
     mockFetch({ json: repoInfo2 });
-    const info = await getRepoData('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info).toEqual({ ok: true, json: repoInfo });
   });
 
   test('distinguishes repos', async () => {
     mockFetch({ json: repoInfo });
-    const info1 = await getRepoData('owner/repo');
+    const info1 = await getOneRest('owner/repo');
     mockFetch({ json: repoInfo2 });
-    const info2 = await getRepoData('owner/repo2');
+    const info2 = await getOneRest('owner/repo2');
     expect(info1).toEqual({ ok: true, json: repoInfo });
     expect(info2).toEqual({ ok: true, json: repoInfo2 });
   });
 
-  test("rejects 403's", async () => {
+  test('403 surfaces as per-entry status (not a throw)', async () => {
     mockFetch({ ok: false, status: 403 });
-    await expect(getRepoData('owner/repo')).rejects.toEqual({
-      ok: false,
-      status: 403,
-    });
+    const info = await getOneRest('owner/repo');
+    expect(info).toEqual({ ok: false, status: 403 });
   });
 
   test("resolves 404's", async () => {
     mockFetch({ ok: false, status: 404 });
-    const info = await getRepoData('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info).toEqual({ ok: false, status: 404 });
   });
 
   test("doesn't cache 403's", async () => {
     mockFetch({ ok: false, status: 403 });
-    await expect(getRepoData('owner/repo')).rejects;
+    await getOneRest('owner/repo');
     mockFetch({ json: repoInfo });
-    const info = await getRepoData('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info).toEqual({ ok: true, json: repoInfo });
   });
 
   test("caches 404's", async () => {
     mockFetch({ ok: false, status: 404 });
-    await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
     mockFetch({ ok: false, status: 403 });
-    await getRepoData('owner/repo');
-    const info = await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info).toEqual({ ok: false, status: 404 });
   });
 
@@ -70,7 +84,7 @@ describe('getRepoData', () => {
     mockFetch({
       json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
     });
-    const info = await getRepoData('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info).toEqual({
       ok: true,
       json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
@@ -81,7 +95,7 @@ describe('getRepoData', () => {
     mockFetch({
       json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
     });
-    const info = await getRepoData('owner/repo');
+    const info = await getOneRest('owner/repo');
     expect(info.json?.archived).toBe(false);
   });
 });
@@ -181,7 +195,7 @@ describe('captureRateLimit auto-invalidates token_validated', () => {
         'x-ratelimit-remaining': '59',
       },
     });
-    await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
 
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
       chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
@@ -200,7 +214,7 @@ describe('captureRateLimit auto-invalidates token_validated', () => {
         'x-ratelimit-remaining': '4999',
       },
     });
-    await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
 
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
       chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
@@ -265,7 +279,7 @@ describe('rate limit persistence', () => {
         'x-ratelimit-remaining': '4873',
       },
     });
-    await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
 
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
       chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
@@ -278,7 +292,7 @@ describe('rate limit persistence', () => {
 
   test('does not store rate limit when headers absent', async () => {
     mockFetch({ json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 } });
-    await getRepoData('owner/repo');
+    await getOneRest('owner/repo');
 
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
       chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
@@ -287,169 +301,120 @@ describe('rate limit persistence', () => {
   });
 });
 
-describe('GraphQL path', () => {
+describe('buildBatchQuery', () => {
+  test('generates aliased query with one repository per nwo', () => {
+    const { query, variables } = buildBatchQuery(['octocat/hello', 'torvalds/linux']);
+    expect(query).toMatch(/r0: repository\(owner: \$owner0, name: \$name0\)/);
+    expect(query).toMatch(/r1: repository\(owner: \$owner1, name: \$name1\)/);
+    expect(query).toMatch(/\$owner0: String!/);
+    expect(query).toMatch(/\$name0: String!/);
+    expect(query).toMatch(/\$owner1: String!/);
+    expect(query).toMatch(/\$name1: String!/);
+    expect(variables).toEqual({
+      owner0: 'octocat',
+      name0: 'hello',
+      owner1: 'torvalds',
+      name1: 'linux',
+    });
+  });
+
+  test('includes the scalar fragment fields on every aliased selection', () => {
+    const { query } = buildBatchQuery(['octocat/hello']);
+    expect(query).toMatch(/stargazerCount/);
+    expect(query).toMatch(/forkCount/);
+    expect(query).toMatch(/pushedAt/);
+    expect(query).toMatch(/isArchived/);
+    expect(query).toMatch(/committedDate/);
+  });
+
+  test('includes sibling rateLimit selection for empirical cost tracking', () => {
+    const { query } = buildBatchQuery(['octocat/hello']);
+    expect(query).toMatch(/rateLimit\s*\{[^}]*cost/);
+    expect(query).toMatch(/rateLimit\s*\{[^}]*limit/);
+    expect(query).toMatch(/rateLimit\s*\{[^}]*remaining/);
+  });
+
+  test('handles a single-repo batch', () => {
+    const { query, variables } = buildBatchQuery(['octocat/hello']);
+    expect(query).toMatch(/r0: repository/);
+    expect(query).not.toMatch(/r1:/);
+    expect(variables).toEqual({ owner0: 'octocat', name0: 'hello' });
+  });
+
+  test('handles a full 50-repo batch', () => {
+    const nwos = Array.from({ length: 50 }, (_, i) => `owner${i}/repo${i}`);
+    const { query, variables } = buildBatchQuery(nwos);
+    expect(query).toMatch(/r0: repository/);
+    expect(query).toMatch(/r49: repository/);
+    expect(query).not.toMatch(/r50:/);
+    expect(Object.keys(variables).length).toBe(100);
+    expect(variables.owner49).toBe('owner49');
+    expect(variables.name49).toBe('repo49');
+  });
+});
+
+describe('fetchGraphQLBatch', () => {
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
-    mockFetch({ json: null }); // reset global.fetch to a neutral mock between tests
   });
 
-  test('GraphQL happy path transforms response into RepoInfo', async () => {
-    // Seed a PAT so the dispatcher picks GraphQL
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-
+  test('happy path: two repos, both populated in returned map', async () => {
     mockFetch({
-      ok: true,
-      status: 200,
       json: {
         data: {
-          repository: {
-            stargazerCount: 612,
-            forkCount: 58,
-            pushedAt: '2025-11-07T00:00:00Z',
+          r0: {
+            stargazerCount: 100,
+            forkCount: 20,
+            pushedAt: '2025-01-01T00:00:00Z',
             isArchived: false,
-            defaultBranchRef: {
-              target: { committedDate: '2018-09-23T00:00:00Z' },
-            },
+            defaultBranchRef: { target: { committedDate: '2025-01-02T00:00:00Z' } },
           },
-          rateLimit: { cost: 1, limit: 5000, remaining: 4999, resetAt: '2026-04-13T13:00:00Z' },
-        },
-      },
-    });
-
-    const info = await getRepoData('osteele/sneetches');
-    expect(info).toEqual({
-      ok: true,
-      json: {
-        stargazers_count: 612,
-        forks_count: 58,
-        pushed_at: '2025-11-07T00:00:00Z',
-        archived: false,
-        committed_date: '2018-09-23T00:00:00Z',
-      },
-    });
-  });
-
-  test('GraphQL path falls back to pushed_at when defaultBranchRef is null', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-
-    mockFetch({
-      ok: true,
-      status: 200,
-      json: {
-        data: {
-          repository: {
-            stargazerCount: 0,
-            forkCount: 0,
-            pushedAt: '2024-01-01T00:00:00Z',
-            isArchived: false,
-            defaultBranchRef: null,
-          },
-          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
-        },
-      },
-    });
-
-    const info = await getRepoData('empty/repo');
-    expect(info.json?.committed_date).toBeUndefined();
-    expect(info.json?.pushed_at).toBe('2024-01-01T00:00:00Z');
-  });
-
-  test('GraphQL isArchived: true propagates to RepoInfo.archived', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-
-    mockFetch({
-      ok: true,
-      status: 200,
-      json: {
-        data: {
-          repository: {
-            stargazerCount: 10916,
-            forkCount: 1153,
-            pushedAt: '2016-08-01T00:00:00Z',
+          r1: {
+            stargazerCount: 5,
+            forkCount: 1,
+            pushedAt: '2018-06-01T00:00:00Z',
             isArchived: true,
-            defaultBranchRef: {
-              target: { committedDate: '2016-08-01T00:00:00Z' },
-            },
+            defaultBranchRef: { target: { committedDate: '2018-07-01T00:00:00Z' } },
           },
-          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999, resetAt: '2025-01-01T00:00:00Z' },
         },
       },
     });
 
-    const info = await getRepoData('Shopify/dashing');
-    expect(info.ok).toBe(true);
-    expect(info.json?.archived).toBe(true);
-  });
+    const result = await fetchGraphQLBatch(['octocat/hello', 'torvalds/linux'], 'ghp_fake');
 
-  test('GraphQL null repository with no errors throws { ok: false, status: 500 }', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-    // Malformed success response: data.repository is null but errors[] is
-    // absent. This shouldn't happen in practice but guard against it —
-    // surfacing as 500 lets the catch-all error path render an empty
-    // annotation and log to console instead of silently returning
-    // corrupted data.
-    mockFetch({
+    expect(result.size).toBe(2);
+    expect(result.get('octocat/hello')).toEqual({
       ok: true,
-      status: 200,
-      json: { data: { repository: null } },
-    });
-
-    await expect(getRepoData('malformed/response')).rejects.toEqual({
-      ok: false,
-      status: 500,
-    });
-  });
-
-  test('GraphQL NOT_FOUND returns { ok: false, status: 404 }', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-    mockFetch({
-      ok: true,
-      status: 200,
       json: {
-        data: { repository: null },
-        errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Not found' }],
+        stargazers_count: 100,
+        forks_count: 20,
+        pushed_at: '2025-01-01T00:00:00Z',
+        archived: false,
+        committed_date: '2025-01-02T00:00:00Z',
       },
     });
-
-    const info = await getRepoData('owner/nonexistent');
-    expect(info).toEqual({ ok: false, status: 404 });
-  });
-
-  test('GraphQL NOT_FOUND is cached (like REST 404s)', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-    mockFetch({
+    expect(result.get('torvalds/linux')).toEqual({
       ok: true,
-      status: 200,
       json: {
-        data: { repository: null },
-        errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Not found' }],
+        stargazers_count: 5,
+        forks_count: 1,
+        pushed_at: '2018-06-01T00:00:00Z',
+        archived: true,
+        committed_date: '2018-07-01T00:00:00Z',
       },
     });
-    await getRepoData('owner/nonexistent');
+  });
 
-    // Change the mock; second call should still return cached 404
+  test('POSTs to /graphql with bearer token and body containing query + variables', async () => {
     mockFetch({
-      ok: true,
-      status: 200,
       json: {
         data: {
-          repository: {
+          r0: {
             stargazerCount: 1,
             forkCount: 0,
-            pushedAt: '2024-01-01T00:00:00Z',
+            pushedAt: '2025-01-01T00:00:00Z',
             isArchived: false,
             defaultBranchRef: null,
           },
@@ -457,160 +422,346 @@ describe('GraphQL path', () => {
         },
       },
     });
-    const info = await getRepoData('owner/nonexistent');
-    expect(info).toEqual({ ok: false, status: 404 });
+    await fetchGraphQLBatch(['octocat/hello'], 'ghp_fake');
+    const fetchMock = global.fetch as jest.MockedFunction<typeof fetch>;
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/graphql',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer ghp_fake',
+          'Content-Type': 'application/json',
+        }),
+      })
+    );
+    const call = fetchMock.mock.calls[0];
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.query).toMatch(/r0: repository/);
+    expect(body.variables).toEqual({ owner0: 'octocat', name0: 'hello' });
   });
 
-  test('GraphQL path fires POST to /graphql, not REST endpoint', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-    const fetchSpy = jest.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        data: {
-          repository: {
-            stargazerCount: 1,
-            forkCount: 2,
-            pushedAt: '2024-01-01T00:00:00Z',
-            isArchived: false,
-            defaultBranchRef: null,
-          },
-          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
-        },
-      }),
-      headers: { get: (): string | null => null },
-    }));
-    global.fetch = fetchSpy as unknown as typeof fetch;
-
-    await getRepoData('owner/repo');
-
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const call = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(call[0]).toBe('https://api.github.com/graphql');
-    expect(call[1]).toMatchObject({
-      method: 'POST',
-      headers: expect.objectContaining({
-        Authorization: 'Bearer test-token',
-        'Content-Type': 'application/json',
-      }),
-    });
-    const body = JSON.parse(call[1].body as string);
-    expect(body.query).toContain('repository(owner: $owner, name: $name)');
-    expect(body.variables).toEqual({ owner: 'owner', name: 'repo' });
-  });
-
-  test('GraphQL response writes rate_limit to chrome.storage.local', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
+  test('persists rate limit from response body', async () => {
     mockFetch({
-      ok: true,
-      status: 200,
       json: {
         data: {
-          repository: {
+          r0: {
             stargazerCount: 1,
-            forkCount: 0,
-            pushedAt: '2024-01-01T00:00:00Z',
+            forkCount: 1,
+            pushedAt: '2025-01-01T00:00:00Z',
             isArchived: false,
             defaultBranchRef: null,
           },
-          rateLimit: { cost: 1, limit: 5000, remaining: 4873, resetAt: '2026-04-13T13:00:00Z' },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4998, resetAt: '2025-01-01T00:00:00Z' },
         },
       },
     });
-
-    await getRepoData('owner/repo');
-
+    await fetchGraphQLBatch(['octocat/hello'], 'ghp_fake');
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
       chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
     );
-    expect(stored[RATE_LIMIT_KEY]).toMatchObject({ limit: 5000, remaining: 4873 });
+    expect(stored[RATE_LIMIT_KEY]).toEqual({ limit: 5000, remaining: 4998 });
   });
 
-  test('GraphQL FORBIDDEN returns { ok: false, silent: true }', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
+  test('handles null defaultBranchRef (empty repos) without crashing', async () => {
     mockFetch({
-      ok: true,
-      status: 200,
       json: {
-        data: { repository: null },
-        errors: [{ type: 'FORBIDDEN', path: ['repository'], message: 'Forbidden' }],
+        data: {
+          r0: {
+            stargazerCount: 0,
+            forkCount: 0,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
       },
     });
-
-    const info = await getRepoData('private/repo');
-    expect(info).toEqual({ ok: false, silent: true });
-  });
-
-  test('GraphQL HTTP 403 throws { ok: false, status: 403 }', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-    mockFetch({ ok: false, status: 403 });
-    await expect(getRepoData('owner/repo')).rejects.toEqual({
-      ok: false,
-      status: 403,
+    const result = await fetchGraphQLBatch(['empty/repo'], 'ghp_fake');
+    expect(result.get('empty/repo')).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 0,
+        forks_count: 0,
+        pushed_at: '2025-01-01T00:00:00Z',
+        archived: false,
+        committed_date: undefined,
+      },
     });
   });
 
-  test('GraphQL network failure propagates', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
-    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
-    await expect(getRepoData('owner/repo')).rejects.toThrow('offline');
+  test('empty input returns empty map without making a request', async () => {
+    const fetchSpy = jest.fn();
+    (global as unknown as { fetch: typeof fetch }).fetch = fetchSpy as unknown as typeof fetch;
+    const result = await fetchGraphQLBatch([], 'ghp_fake');
+    expect(result.size).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test('GraphQL HTTP 401 clears TOKEN_VALIDATED_KEY', async () => {
+  test('warns when rateLimit.cost is greater than 1', async () => {
+    const spy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 5, limit: 5000, remaining: 4995 },
+        },
+      },
+    });
+    await fetchGraphQLBatch(['octocat/hello'], 'ghp_fake');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('cost 5'));
+    spy.mockRestore();
+  });
+});
+
+describe('fetchGraphQLBatch error distribution', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('NOT_FOUND path maps to a 404 response for that repo', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 1,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          r1: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [
+          {
+            type: 'NOT_FOUND',
+            path: ['r1'],
+            message: 'Could not resolve to a Repository with the name...',
+          },
+        ],
+      },
+    });
+    const result = await fetchGraphQLBatch(['octocat/hello', 'ghost/gone'], 'ghp_fake');
+    expect(result.get('octocat/hello')?.ok).toBe(true);
+    expect(result.get('ghost/gone')).toEqual({ ok: false, status: 404 });
+  });
+
+  test('FORBIDDEN path maps to a silent-skip response for that repo', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 1,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          r1: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [
+          {
+            type: 'FORBIDDEN',
+            path: ['r1'],
+            message: 'Resource not accessible by integration',
+          },
+        ],
+      },
+    });
+    const result = await fetchGraphQLBatch(['octocat/hello', 'private/repo'], 'ghp_fake');
+    expect(result.get('octocat/hello')?.ok).toBe(true);
+    expect(result.get('private/repo')).toEqual({ ok: false, silent: true });
+  });
+
+  test('other error types become silent-skip + console.error', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch({
+      json: {
+        data: {
+          r0: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [
+          {
+            type: 'INTERNAL',
+            path: ['r0'],
+            message: 'Something went wrong',
+          },
+        ],
+      },
+    });
+    const result = await fetchGraphQLBatch(['some/repo'], 'ghp_fake');
+    expect(result.get('some/repo')).toEqual({ ok: false, silent: true });
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test('HTTP 401 clears TOKEN_VALIDATED_KEY and rejects', async () => {
     await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'bad-token', token_validated: true }, () => resolve())
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true }, () => resolve())
     );
     mockFetch({ ok: false, status: 401 });
-
-    await expect(getRepoData('owner/repo')).rejects.toEqual({
+    await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toEqual({
       ok: false,
       status: 401,
     });
-
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
       chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
     );
     expect(stored[TOKEN_VALIDATED_KEY]).toBe(false);
   });
 
-  test('GraphQL FORBIDDEN is cached (avoids re-hitting API on private repos)', async () => {
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
-    );
+  test('HTTP 5xx propagates as a rejection for the whole batch', async () => {
+    mockFetch({ ok: false, status: 503 });
+    await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toEqual({
+      ok: false,
+      status: 503,
+    });
+  });
+
+  test('errors without a recognized path become silent-skip on all missing entries', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
     mockFetch({
-      ok: true,
-      status: 200,
       json: {
-        data: { repository: null },
-        errors: [{ type: 'FORBIDDEN', path: ['repository'], message: 'Forbidden' }],
+        data: { rateLimit: { cost: 1, limit: 5000, remaining: 4999 } },
+        errors: [{ message: 'Catastrophic failure', type: 'SERVICE_UNAVAILABLE' }],
       },
     });
-    await getRepoData('private/repo');
+    const result = await fetchGraphQLBatch(['some/repo'], 'ghp_fake');
+    expect(result.get('some/repo')).toEqual({ ok: false, silent: true });
+    spy.mockRestore();
+  });
 
-    // Change the mock to a success shape; second call should still
-    // return the cached silent skip. FORBIDDEN caching is intentional —
-    // we avoid hammering the API on private repos that a token can't see.
-    // Users who grant a new scope or make the repo public will see fresh
-    // data after the 4-hour TTL or a manual cache clear.
+  test('network failure (fetch rejects) propagates as a rejection', async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toThrow('offline');
+  });
+});
+
+describe('getRepoDataMany', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('unauthenticated: falls back to per-repo REST', async () => {
     mockFetch({
+      json: { forks_count: 1, pushed_at: '2025-01-01', stargazers_count: 100, archived: false },
+    });
+    const result = await getRepoDataMany(['octocat/hello']);
+    expect(result.size).toBe(1);
+    expect(result.get('octocat/hello')).toEqual({
       ok: true,
-      status: 200,
+      json: { forks_count: 1, pushed_at: '2025-01-01', stargazers_count: 100, archived: false },
+    });
+  });
+
+  test('unauthenticated: REST 403 surfaces as per-entry status (not a throw)', async () => {
+    mockFetch({ ok: false, status: 403 });
+    const result = await getRepoDataMany(['octocat/hello']);
+    expect(result.get('octocat/hello')).toEqual({ ok: false, status: 403 });
+  });
+
+  test('authenticated: routes to GraphQL batch path', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [ACCESS_TOKEN_KEY]: 'ghp_fake' }, () => resolve())
+    );
+    mockFetch({
       json: {
         data: {
-          repository: {
-            stargazerCount: 1,
-            forkCount: 0,
-            pushedAt: '2024-01-01T00:00:00Z',
+          r0: {
+            stargazerCount: 100,
+            forkCount: 20,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: { target: { committedDate: '2025-01-02T00:00:00Z' } },
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    const result = await getRepoDataMany(['octocat/hello']);
+    expect(result.get('octocat/hello')).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 100,
+        forks_count: 20,
+        pushed_at: '2025-01-01T00:00:00Z',
+        archived: false,
+        committed_date: '2025-01-02T00:00:00Z',
+      },
+    });
+  });
+
+  test('authenticated: chunks into batches of 50', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [ACCESS_TOKEN_KEY]: 'ghp_fake' }, () => resolve())
+    );
+    const nwos = Array.from({ length: 120 }, (_, i) => `owner${i}/repo${i}`);
+
+    const makeBatchResponse = (count: number) => {
+      const data: Record<string, unknown> = {
+        rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+      };
+      for (let i = 0; i < count; i++) {
+        data[`r${i}`] = {
+          stargazerCount: i,
+          forkCount: 0,
+          pushedAt: '2025-01-01T00:00:00Z',
+          isArchived: false,
+          defaultBranchRef: null,
+        };
+      }
+      return { data };
+    };
+
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => makeBatchResponse(50),
+        headers: { get: () => null },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => makeBatchResponse(50),
+        headers: { get: () => null },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => makeBatchResponse(20),
+        headers: { get: () => null },
+      });
+    (global as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await getRepoDataMany(nwos);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.size).toBe(120);
+  });
+
+  test('authenticated: caches results, second call hits cache', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [ACCESS_TOKEN_KEY]: 'ghp_fake' }, () => resolve())
+    );
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 100,
+            forkCount: 20,
+            pushedAt: '2025-01-01T00:00:00Z',
             isArchived: false,
             defaultBranchRef: null,
           },
@@ -618,7 +769,45 @@ describe('GraphQL path', () => {
         },
       },
     });
-    const info = await getRepoData('private/repo');
-    expect(info).toEqual({ ok: false, silent: true });
+    await getRepoDataMany(['octocat/hello']);
+
+    global.fetch = jest.fn(() => {
+      throw new Error('should not be called');
+    }) as unknown as typeof fetch;
+
+    const result = await getRepoDataMany(['octocat/hello']);
+    expect(result.get('octocat/hello')?.ok).toBe(true);
+  });
+
+  test('returns empty map for empty input', async () => {
+    const result = await getRepoDataMany([]);
+    expect(result.size).toBe(0);
+  });
+
+  test('authenticated: FORBIDDEN silent-skip is cached on second scan', async () => {
+    // Matches 1.1.1 behavior: private-repo silent skips get cached for
+    // the 4-hour TTL so awesome-list pages with many private repos don't
+    // re-POST on every scan.
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [ACCESS_TOKEN_KEY]: 'ghp_fake' }, () => resolve())
+    );
+    mockFetch({
+      json: {
+        data: {
+          r0: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [{ type: 'FORBIDDEN', path: ['r0'], message: 'Forbidden' }],
+      },
+    });
+    const first = await getRepoDataMany(['private/repo']);
+    expect(first.get('private/repo')).toEqual({ ok: false, silent: true });
+
+    // Second call: mock fetch to throw so we'd notice a re-fetch.
+    global.fetch = jest.fn(() => {
+      throw new Error('should not be called');
+    }) as unknown as typeof fetch;
+    const second = await getRepoDataMany(['private/repo']);
+    expect(second.get('private/repo')).toEqual({ ok: false, silent: true });
   });
 });

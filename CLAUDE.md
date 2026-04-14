@@ -114,7 +114,7 @@ Pre-configured via Husky:
 - ts-jest preset
 - jsdom test environment
 - Chrome extension API mocks via jest-webextension-mock + custom storage mock (`tests/chrome-storage.mock.ts`)
-- All 134 tests passing
+- All 155 tests passing
 
 ## CI/CD
 
@@ -141,7 +141,7 @@ This project was modernized from 2018-era tooling to current standards:
 - Node.js 20+
 - TypeScript 5.7.2
 - Webpack 5.97.1
-- Jest 29.7.0 (134/134 tests passing)
+- Jest 29.7.0 (155/155 tests passing)
 - ESLint 9.17.0 + Prettier 3.4.2
 - Husky 9.1.7 (working commit hooks!)
 - npm (replaced Yarn)
@@ -201,6 +201,37 @@ The 1.1.1 release adds a GraphQL data path for PAT users, an archived-repo indic
 
 ### Backward compatibility
 Existing 1.1.0 `chrome.storage.local` cache entries at `ver: 1` are silently discarded on first post-upgrade access via `locallyCached`'s version check. The PAT-toggle flush at `handleSyncStorageChange` is also unchanged, so switching tokens after upgrade continues to flush local cache cleanly.
+
+## GraphQL Batching + CSS Isolation (1.1.2, 2026)
+
+The 1.1.2 release ships two focused changes: a GraphQL query batching layer for PAT users (optimization, not correctness) and a pre-existing host-page CSS robustness fix. Both were deferred from 1.1.1 so its review surface stayed scoped to the GraphQL-path correctness work.
+
+### What changed
+- **`src/cache.ts`** — new `locallyCachedBatch<T, V>(keys, version, thunk)` export. Array-in / Map-out variant of `locallyCached`: looks up every key, calls the thunk with only the missing subset, stores everything the thunk returns, and merges cached + freshly-fetched entries into one Map. Used by the new batched dispatcher. Thunk-omitted keys are deliberately NOT cached (lets callers distinguish silent-skip from happy-path hits).
+- **`src/github.ts`** — restructured around batching:
+  - New private helper `buildBatchQuery(nwos)`: turns an nwo array into `{ query, variables }` with per-alias variables (`owner0`/`name0`, `owner1`/`name1`, ...) for injection safety. Scalar fragment `F` shared across aliases; top-level `rateLimit { cost limit remaining resetAt }` sibling lets the fetcher empirically verify scalar batches cost 1 point.
+  - New private helper `fetchGraphQLBatch(nwos, token)`: fires one aliased POST for up to 50 repos, parses each `r0..rN` selection back into a `Map<nwo, RepoResponse>`, and applies GraphQL error-distribution rules per the 2026-04-13 research pass: walk `errors[]`, map `path[0]` → alias → nwo, then NOT_FOUND → cached 404, FORBIDDEN → silent skip, any other error type → silent + `console.error`. Emits a one-time `console.warn` if `rateLimit.cost > 1` so a future GitHub pricing-model change surfaces in DevTools. HTTP 401 clears `TOKEN_VALIDATED_KEY` and throws; HTTP 5xx / network failures throw for the whole batch.
+  - New public export `getRepoDataMany(nwos): Promise<Map<string, RepoResponse>>`: the sole public entry point since 1.1.2. PAT users get `locallyCachedBatch` + chunked `fetchGraphQLBatch` at `BATCH_SIZE = 50`. Unauthenticated users get `Promise.all` of per-repo `locallyCached` + `fetchRepoDataRESTSingle` (no REST batch endpoint exists). Per-entry errors surface as Map entries rather than top-level throws — a single bad repo never aborts the whole scan.
+  - Deleted: `getRepoData(nwo)` and `fetchRepoDataGraphQLSingle` — both are dead code once `updateLinks` switches to the batch path.
+- **`src/content.ts`** — `updateLinks` rewrite:
+  - Collect all pending `(anchor, nwo)` pairs in one pass, claim each under the current epoch upfront.
+  - Deduplicate nwos (a page can have many anchors pointing at the same repo).
+  - Call `getRepoDataMany(uniqueNwos)` exactly once per scan.
+  - Distribution loop iterates `pending`, rechecks epoch per entry, and annotates from the returned Map — preserves the 1.1.1 mid-flight-settings-change invalidation semantics.
+  - Batch-level failures (network, 401, 5xx) fall through to the same `createErrorAnnotation` path as the per-repo implementation did.
+- **`src/style.css`** — `font-size: 0.9em` → `font-size: 12px` absolute on both the shared chip rule (`.sneetch-stars`/`.sneetch-forks`/`.sneetch-date`) and the `.sneetch-archived` rule. Pre-existing issue since 2018: on a host page with a 28px base font, 0.9em rendered the chips at ~25px. The `.sneetch-icon` rule stays at `0.9em` because it sizes relative to the chip (now 12px), which is the intended behavior.
+- **Version bumped to 1.1.2.**
+- **Test suite grew from 134 to 155 tests** (21 new: 7 in `tests/cache.test.ts` for `locallyCachedBatch`, 12 in `tests/github.test.ts` split across `buildBatchQuery`/`fetchGraphQLBatch`/`fetchGraphQLBatch error distribution`/`getRepoDataMany`, and 2 in `tests/content.test.ts` for the batching + dedup behavior). The entire `describe('GraphQL path')` block was deleted because its coverage now lives in the `fetchGraphQLBatch` blocks.
+
+### Key design decisions (locked in during 2026-04-13 brainstorm, not re-litigated for 1.1.2)
+- **Architecture B** — `github.ts` owns dispatch via `getRepoDataMany`; `content.ts:updateLinks` doesn't know which transport ran. Precedent: uBlock Origin's content-script-is-DOM-operator pattern.
+- **Batch size 50**, hard-coded constant. Comment next to `BATCH_SIZE` says "if we ever see 422 from GitHub on an aliased query, halve this." GitHub's node-count limit is 500,000; scalar-only batches cost 1 point and use ~50 nodes, giving four orders of magnitude of headroom.
+- **Per-scan flush, no extra coalescing window.** The existing 300ms MutationObserver debounce already coalesces React hydration bursts.
+- **FORBIDDEN silent-skip responses are cached** for the 4-hour TTL, matching 1.1.1 single-repo behavior. Rationale: an awesome-list page with many private repos under a limited-scope PAT should not re-POST on every scan. Users who grant a new scope will see fresh data after the TTL or a manual Clear cache click.
+- **Tests preserve REST-path coverage via a `getOneRest` helper** that calls `getRepoDataMany(['nwo']).get('nwo')` — lets the existing REST tests for caching / 404 / 403 / archived-field semantics ride on the new public API without modification to their assertions.
+
+### Backward compatibility
+`CACHE_VERSION` stays at `2`. The on-disk cache entry shape is unchanged (still `{exp, pay, ver}`), so existing 1.1.1 cache entries are reused as-is — no invalidation required. `RepoInfo` / `RepoResponse` types are unchanged.
 
 ## Extension Features
 

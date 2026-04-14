@@ -1,4 +1,4 @@
-import { locallyCached } from './cache';
+import { locallyCached, locallyCachedBatch } from './cache';
 import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
 
 const CACHE_VERSION = 2;
@@ -93,7 +93,7 @@ interface RepoInfo {
   readonly committed_date?: string;
 }
 
-interface RepoResponse {
+export interface RepoResponse {
   readonly ok: boolean;
   readonly status?: number;
   readonly json?: RepoInfo;
@@ -105,7 +105,7 @@ interface RepoResponse {
 // ignores the rest of GitHub's REST payload to keep cache entries small.
 // Note: committed_date is intentionally NOT set here. The REST endpoint
 // doesn't return a default-branch commit date; that field is populated
-// only by fetchRepoDataGraphQLSingle via defaultBranchRef.target.committedDate.
+// only by fetchGraphQLBatch via defaultBranchRef.target.committedDate.
 async function marshallableResponse(res: Response): Promise<RepoResponse> {
   const { ok, status } = res;
   if (ok) {
@@ -134,25 +134,59 @@ async function fetchRepoDataRESTSingle(nwo: string): Promise<RepoResponse> {
   return marshallableResponse(res);
 }
 
-// GraphQL-path fetcher used by the getRepoData dispatcher when a token is
-// configured. Does NOT interact with the cache — the dispatcher handles
-// that via locallyCached().
-async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Promise<RepoResponse> {
-  const [owner, name] = nwo.split('/');
+// @internal — exported for unit tests only. Builds an aliased GraphQL
+// query for a batch of repos and the matching variables map. Per-alias
+// variables (owner0/name0, owner1/name1, ...) for injection safety;
+// GitHub's schema has no array-of-RepoInput type, so this expands
+// manually. Top-level `rateLimit { cost limit remaining }` lets us
+// empirically verify scalar batches cost 1 point.
+export function buildBatchQuery(nwos: string[]): {
+  query: string;
+  variables: Record<string, string>;
+} {
+  const variables: Record<string, string> = {};
+  const varDecls: string[] = [];
+  const selections: string[] = [];
+
+  nwos.forEach((nwo, i) => {
+    const [owner, name] = nwo.split('/');
+    variables[`owner${i}`] = owner;
+    variables[`name${i}`] = name;
+    varDecls.push(`$owner${i}: String!, $name${i}: String!`);
+    selections.push(`r${i}: repository(owner: $owner${i}, name: $name${i}) { ...F }`);
+  });
+
   const query = `
-    query GetRepo($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) {
-        stargazerCount
-        forkCount
-        pushedAt
-        isArchived
-        defaultBranchRef {
-          target { ... on Commit { committedDate } }
-        }
-      }
+    query GetRepos(${varDecls.join(', ')}) {
+      ${selections.join('\n      ')}
       rateLimit { cost limit remaining resetAt }
     }
+    fragment F on Repository {
+      stargazerCount
+      forkCount
+      pushedAt
+      isArchived
+      defaultBranchRef { target { ... on Commit { committedDate } } }
+    }
   `;
+
+  return { query, variables };
+}
+
+// @internal — exported for unit tests. Fires one aliased GraphQL POST for
+// a batch of up to ~50 repos and distributes the results into a Map keyed
+// by "owner/name". Applies per-path error distribution (NOT_FOUND → cached
+// 404, FORBIDDEN → silent skip, other → silent + console.error) via the
+// errors[] walker below. Caller (getRepoDataMany) is responsible for
+// chunking batches that exceed BATCH_SIZE.
+export async function fetchGraphQLBatch(
+  nwos: string[],
+  accessToken: string
+): Promise<Map<string, RepoResponse>> {
+  const result = new Map<string, RepoResponse>();
+  if (nwos.length === 0) return result;
+
+  const { query, variables } = buildBatchQuery(nwos);
   const res = await fetch(GITHUB_GRAPHQL_URL, {
     method: 'POST',
     headers: {
@@ -160,15 +194,11 @@ async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Pro
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ query, variables: { owner, name } }),
+    body: JSON.stringify({ query, variables }),
   });
 
   if (!res.ok) {
     if (res.status === 401) {
-      // Token is invalid or revoked. Clear the persisted "validated"
-      // flag so the popup shows the honest state on next open — mirrors
-      // the same auto-invalidation captureRateLimit does on the REST path
-      // when it observes an unauthenticated-tier rate limit.
       chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
     }
     throw { ok: false, status: res.status };
@@ -177,45 +207,149 @@ async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Pro
   const body = await res.json();
   captureRateLimitFromGraphQL(body);
 
-  const repo = body?.data?.repository;
-  if (repo) {
-    const json: RepoInfo = {
-      stargazers_count: repo.stargazerCount,
-      forks_count: repo.forkCount,
-      pushed_at: repo.pushedAt,
-      archived: repo.isArchived === true,
-      committed_date: repo.defaultBranchRef?.target?.committedDate,
-    };
-    return { ok: true, json };
+  // Empirically verify that scalar-only batches cost 1 point. A future
+  // GitHub pricing-model change surfaces as a one-time console.warn
+  // instead of a silent rate-limit slowdown.
+  const cost = (body as { data?: { rateLimit?: { cost?: number } } })?.data?.rateLimit?.cost;
+  if (typeof cost === 'number' && cost > 1) {
+    console.warn(
+      `sneetches: GraphQL batch cost ${cost} (expected 1). GitHub may have changed its pricing formula; consider halving the batch size.`
+    );
   }
 
-  // Repository is null — walk errors[] to determine why.
-  const errors = (body as { errors?: Array<{ type?: string; path?: string[] }> })?.errors;
-  if (errors && errors.length > 0) {
-    const err = errors[0];
-    if (err.type === 'NOT_FOUND') {
-      return { ok: false, status: 404 };
+  const data = (body as { data?: Record<string, unknown> })?.data ?? {};
+
+  nwos.forEach((nwo, i) => {
+    const repo = data[`r${i}`] as
+      | {
+          stargazerCount: number;
+          forkCount: number;
+          pushedAt: string;
+          isArchived: boolean;
+          defaultBranchRef?: { target?: { committedDate?: string } } | null;
+        }
+      | null
+      | undefined;
+    if (repo) {
+      const json: RepoInfo = {
+        stargazers_count: repo.stargazerCount,
+        forks_count: repo.forkCount,
+        pushed_at: repo.pushedAt,
+        archived: repo.isArchived === true,
+        committed_date: repo.defaultBranchRef?.target?.committedDate,
+      };
+      result.set(nwo, { ok: true, json });
     }
-    if (err.type === 'FORBIDDEN') {
-      return { ok: false, silent: true };
+  });
+
+  // Walk errors[] and apply per-path distribution rules. Each error's
+  // `path[0]` is the aliased field (r0, r1, ...) — map back to nwo via
+  // index. See GraphQL spec Section 7 for the shape.
+  const errors = (
+    body as {
+      errors?: Array<{ type?: string; path?: (string | number)[]; message?: string }>;
+    }
+  )?.errors;
+  if (errors) {
+    for (const err of errors) {
+      const alias = err.path?.[0];
+      // Match only the exact alias shape our buildBatchQuery emits ("r0",
+      // "r1", …). A looser `startsWith('r')` check would false-match
+      // sibling paths like `rateLimit` and silently swallow their errors.
+      const aliasMatch = typeof alias === 'string' ? alias.match(/^r(\d+)$/) : null;
+      if (!aliasMatch) {
+        console.error('sneetches: GraphQL error without recognized path', err);
+        continue;
+      }
+      const idx = Number(aliasMatch[1]);
+      const nwo = nwos[idx];
+      if (!nwo) continue;
+      if (err.type === 'NOT_FOUND') {
+        result.set(nwo, { ok: false, status: 404 });
+      } else if (err.type === 'FORBIDDEN') {
+        result.set(nwo, { ok: false, silent: true });
+      } else {
+        console.error('sneetches: GraphQL error', err);
+        result.set(nwo, { ok: false, silent: true });
+      }
     }
   }
-  throw { ok: false, status: 500 };
+
+  // Any nwo that ended up with neither a repo nor an error becomes a
+  // silent-skip — protects updateLinks from hanging on missing Map
+  // entries (e.g., path-less errors or partial responses).
+  for (const nwo of nwos) {
+    if (!result.has(nwo)) {
+      result.set(nwo, { ok: false, silent: true });
+    }
+  }
+
+  return result;
 }
 
-// Retrieve repo info from GitHub or from the cache. Successful responses
-// and 404's are cached. Other errors (e.g. 403) are transient and not cached.
+// If we ever see 422 from GitHub on an aliased query, halve this.
+// GitHub's node-count limit is 500,000; scalar-only batches cost 1 point
+// regardless of alias count and use ~50 nodes per batch (4 orders of
+// magnitude of headroom).
+const BATCH_SIZE = 50;
+
+// Retrieve repo info for many repos at once. Routes PAT users to the
+// GraphQL batched path (one aliased query per BATCH_SIZE repos); routes
+// unauthenticated users to parallel per-repo REST calls through the
+// existing single-key cache. Returns a Map keyed by "owner/name".
 //
-// Dispatches based on token state: GraphQL for PAT users (richer data
-// including committed_date), REST for everyone else.
-export function getRepoData(nwo: string): Promise<RepoResponse> {
-  return locallyCached(nwo, CACHE_VERSION, async () => {
-    const accessToken = await getAccessToken();
-    if (accessToken) {
-      return fetchRepoDataGraphQLSingle(nwo, accessToken);
-    }
-    return fetchRepoDataRESTSingle(nwo);
-  });
+// Per-entry errors (e.g. a rate-limited 403) surface as
+// `{ ok: false, status }` Map entries rather than a top-level throw,
+// so a single bad repo never aborts the whole scan. Transport-level
+// failures (network, HTTP 5xx, 401) throw out of the whole batch so
+// updateLinks' catch branch can distribute error annotations.
+export async function getRepoDataMany(nwos: string[]): Promise<Map<string, RepoResponse>> {
+  if (nwos.length === 0) return new Map();
+
+  const accessToken = await getAccessToken();
+  if (accessToken) {
+    return locallyCachedBatch<RepoResponse, number>(nwos, CACHE_VERSION, async (missing) => {
+      const merged = new Map<string, RepoResponse>();
+      for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+        const chunk = missing.slice(i, i + BATCH_SIZE);
+        const batchResult = await fetchGraphQLBatch(chunk, accessToken);
+        // fetchGraphQLBatch guarantees an entry for every requested nwo
+        // (back-fills missing ones as silent). We cache everything it
+        // returns, including FORBIDDEN silent-skips — matches the 1.1.1
+        // behavior of avoiding repeated API hits on private repos within
+        // the 4-hour TTL. Transport failures throw out of the thunk
+        // before reaching this point.
+        for (const [nwo, resp] of batchResult) {
+          merged.set(nwo, resp);
+        }
+      }
+      return merged;
+    });
+  }
+
+  // Unauthenticated path: parallel per-repo REST via the existing
+  // single-key cache. No batching possible (REST has no batch endpoint).
+  const result = new Map<string, RepoResponse>();
+  const responses = await Promise.all(
+    nwos.map((nwo) =>
+      locallyCached(nwo, CACHE_VERSION, () => fetchRepoDataRESTSingle(nwo)).then(
+        (resp): [string, RepoResponse] => [nwo, resp],
+        (err: unknown): [string, RepoResponse] => {
+          // Rate-limit 403s, 5xx, network failures — surface as the
+          // RepoResponse shape so updateLinks can render the error chip.
+          const status =
+            typeof err === 'object' && err !== null && 'status' in err
+              ? (err as { status?: number }).status
+              : undefined;
+          return [nwo, { ok: false, status }];
+        }
+      )
+    )
+  );
+  for (const [nwo, resp] of responses) {
+    result.set(nwo, resp);
+  }
+  return result;
 }
 
 // Paths that start with one of these components aren't repo URLs.
