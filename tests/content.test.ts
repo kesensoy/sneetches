@@ -83,6 +83,25 @@ describe('createAnnotation', () => {
     expect(elt.title).toContain('last updated');
     expect(elt.title).not.toContain('pushed');
   });
+
+  test('each chip has an aria-label for screen readers', () => {
+    const data = {
+      forks_count: 58,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+
+    const starsChip = elt.querySelector('.sneetch-stars');
+    expect(starsChip?.getAttribute('aria-label')).toBe('612 stars');
+
+    const forksChip = elt.querySelector('.sneetch-forks');
+    expect(forksChip?.getAttribute('aria-label')).toBe('58 forks');
+
+    const dateChip = elt.querySelector('.sneetch-date');
+    expect(dateChip?.getAttribute('aria-label')).toMatch(/^last updated/);
+  });
 });
 
 describe('createErrorAnnotation', () => {

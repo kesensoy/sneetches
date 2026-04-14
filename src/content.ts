@@ -244,6 +244,7 @@ export function createAnnotation(
   if (show.stars) {
     const span = document.createElement('span');
     span.className = 'sneetch-stars';
+    span.setAttribute('aria-label', `${commafy(data.stargazers_count)} stars`);
     span.append(humanize(data.stargazers_count) + ' ');
     span.insertAdjacentHTML('beforeend', starIcon('sneetch-icon', starStyle === 'filled'));
     elt.appendChild(span);
@@ -251,6 +252,7 @@ export function createAnnotation(
   if (show.forks) {
     const span = document.createElement('span');
     span.className = 'sneetch-forks';
+    span.setAttribute('aria-label', `${commafy(data.forks_count)} forks`);
     span.append(humanize(data.forks_count) + ' ');
     span.insertAdjacentHTML('beforeend', repoForkedIcon('sneetch-icon'));
     elt.appendChild(span);
@@ -258,6 +260,7 @@ export function createAnnotation(
   if (show.update) {
     const span = document.createElement('span');
     span.className = 'sneetch-date';
+    span.setAttribute('aria-label', `last updated ${displayDate.toLocaleDateString()}`);
     span.insertAdjacentHTML('beforeend', clockIcon('sneetch-icon'));
     span.append(' ' + humanizeDate(displayDate));
     elt.appendChild(span);
