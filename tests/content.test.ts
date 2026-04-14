@@ -143,6 +143,28 @@ describe('createAnnotation', () => {
     expect(elt.classList.contains('is-archived')).toBe(false);
   });
 
+  test('tooltip appends "archived" for archived repos', () => {
+    const data = {
+      forks_count: 58,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 612,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.title).toContain('; archived');
+  });
+
+  test('tooltip does NOT contain "archived" for non-archived repos', () => {
+    const data = {
+      forks_count: 58,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.title).not.toContain('archived');
+  });
+
   test('each chip has an aria-label for screen readers', () => {
     const data = {
       forks_count: 58,

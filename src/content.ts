@@ -277,12 +277,15 @@ export function createAnnotation(
     span.insertAdjacentHTML('beforeend', archiveIcon('sneetch-icon'));
     elt.appendChild(span);
   }
-  elt.title =
-    [
-      `${commafy(data.stargazers_count)} stars`,
-      `${commafy(data.forks_count)} forks`,
-      `last updated ${displayDate.toLocaleDateString()}`,
-    ].join('; ') + ' — Sneetches';
+  const segments = [
+    `${commafy(data.stargazers_count)} stars`,
+    `${commafy(data.forks_count)} forks`,
+    `last updated ${displayDate.toLocaleDateString()}`,
+  ];
+  if (data.archived) {
+    segments.push('archived');
+  }
+  elt.title = segments.join('; ') + ' — Sneetches';
   return elt;
 }
 
