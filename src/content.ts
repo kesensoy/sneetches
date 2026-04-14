@@ -187,6 +187,11 @@ async function updateLinks() {
           // belong to the newer scan's in-flight fetch).
           if (inFlightAnchors.get(elt) !== epoch) return;
           inFlightAnchors.delete(elt);
+          if (res.silent) {
+            // FORBIDDEN/scope-missing: don't annotate. User can't see this
+            // repo, so we have nothing useful to say about it.
+            return;
+          }
           if (res.ok) {
             elt.appendChild(createAnnotation(res.json!, show, starStyle));
           } else {

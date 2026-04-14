@@ -600,3 +600,29 @@ describe('startLinkScanner', () => {
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
   });
 });
+
+describe('updateLinks silent-skip handling', () => {
+  beforeEach(async () => {
+    document.body.innerHTML = '';
+    mockedGetRepoData.mockReset();
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('FORBIDDEN silent-skip does not append annotation to anchor', async () => {
+    document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
+    mockedGetRepoData.mockResolvedValue({ ok: false, silent: true });
+
+    // Need to trigger a scan
+    startLinkScanner();
+    // Wait for the debounce + async fetch resolution
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const anchor = document.querySelector('a');
+    expect(anchor?.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+});
