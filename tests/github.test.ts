@@ -449,4 +449,21 @@ describe('GraphQL path', () => {
     expect(body.query).toContain('repository(owner: $owner, name: $name)');
     expect(body.variables).toEqual({ owner: 'owner', name: 'repo' });
   });
+
+  test('GraphQL FORBIDDEN returns { ok: false, silent: true }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'FORBIDDEN', path: ['repository'], message: 'Forbidden' }],
+      },
+    });
+
+    const info = await getRepoData('private/repo');
+    expect(info).toEqual({ ok: false, silent: true });
+  });
 });

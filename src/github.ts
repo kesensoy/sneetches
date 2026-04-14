@@ -185,7 +185,9 @@ async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Pro
     if (err.type === 'NOT_FOUND') {
       return { ok: false, status: 404 };
     }
-    // FORBIDDEN and other error types handled in the next sub-task.
+    if (err.type === 'FORBIDDEN') {
+      return { ok: false, silent: true };
+    }
   }
   throw { ok: false, status: 500 };
 }
