@@ -102,10 +102,8 @@ async function marshallableResponse(res: Response): Promise<RepoResponse> {
   throw { ok: false, status };
 }
 
-// REST-path single-repo fetcher. The dispatcher in getRepoData wraps this
-// via locallyCached() so the cache is populated regardless of which path
-// ran. The Authorization header handling is temporary — Chunk B will
-// remove it when GraphQL becomes the PAT path.
+// REST-path fetcher used by the getRepoData dispatcher. Does NOT interact
+// with the cache — the dispatcher handles that via locallyCached().
 async function fetchRepoDataRESTSingle(nwo: string): Promise<RepoResponse> {
   const accessToken = await getAccessToken();
   const headers: Record<string, string> = {
@@ -122,10 +120,11 @@ async function fetchRepoDataRESTSingle(nwo: string): Promise<RepoResponse> {
 // Retrieve repo info from GitHub or from the cache. Successful responses
 // and 404's are cached. Other errors (e.g. 403) are transient and not cached.
 //
-// Dispatches based on token state. Currently only routes to REST; a future
-// task in this same PR adds the GraphQL branch for PAT users.
+// Dispatches based on token state. Currently only routes to REST; a
+// later task in this same PR wires the PAT branch to a GraphQL fetcher.
 export function getRepoData(nwo: string): Promise<RepoResponse> {
   return locallyCached(nwo, CACHE_VERSION, async () => {
+    // TODO: when fetchRepoDataGraphQLSingle lands, route PAT users there.
     return fetchRepoDataRESTSingle(nwo);
   });
 }
