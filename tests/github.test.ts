@@ -848,3 +848,125 @@ describe('fetchGraphQLBatch', () => {
     spy.mockRestore();
   });
 });
+
+describe('fetchGraphQLBatch error distribution', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('NOT_FOUND path maps to a 404 response for that repo', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 1,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          r1: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [
+          {
+            type: 'NOT_FOUND',
+            path: ['r1'],
+            message: 'Could not resolve to a Repository with the name...',
+          },
+        ],
+      },
+    });
+    const result = await fetchGraphQLBatch(['octocat/hello', 'ghost/gone'], 'ghp_fake');
+    expect(result.get('octocat/hello')?.ok).toBe(true);
+    expect(result.get('ghost/gone')).toEqual({ ok: false, status: 404 });
+  });
+
+  test('FORBIDDEN path maps to a silent-skip response for that repo', async () => {
+    mockFetch({
+      json: {
+        data: {
+          r0: {
+            stargazerCount: 1,
+            forkCount: 1,
+            pushedAt: '2025-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          r1: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [
+          {
+            type: 'FORBIDDEN',
+            path: ['r1'],
+            message: 'Resource not accessible by integration',
+          },
+        ],
+      },
+    });
+    const result = await fetchGraphQLBatch(['octocat/hello', 'private/repo'], 'ghp_fake');
+    expect(result.get('octocat/hello')?.ok).toBe(true);
+    expect(result.get('private/repo')).toEqual({ ok: false, silent: true });
+  });
+
+  test('other error types become silent-skip + console.error', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch({
+      json: {
+        data: {
+          r0: null,
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+        errors: [
+          {
+            type: 'INTERNAL',
+            path: ['r0'],
+            message: 'Something went wrong',
+          },
+        ],
+      },
+    });
+    const result = await fetchGraphQLBatch(['some/repo'], 'ghp_fake');
+    expect(result.get('some/repo')).toEqual({ ok: false, silent: true });
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test('HTTP 401 clears TOKEN_VALIDATED_KEY and rejects', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true }, () => resolve())
+    );
+    mockFetch({ ok: false, status: 401 });
+    await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toEqual({
+      ok: false,
+      status: 401,
+    });
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(false);
+  });
+
+  test('HTTP 5xx propagates as a rejection for the whole batch', async () => {
+    mockFetch({ ok: false, status: 503 });
+    await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toEqual({
+      ok: false,
+      status: 503,
+    });
+  });
+
+  test('errors without a recognized path become silent-skip on all missing entries', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch({
+      json: {
+        data: { rateLimit: { cost: 1, limit: 5000, remaining: 4999 } },
+        errors: [{ message: 'Catastrophic failure', type: 'SERVICE_UNAVAILABLE' }],
+      },
+    });
+    const result = await fetchGraphQLBatch(['some/repo'], 'ghp_fake');
+    expect(result.get('some/repo')).toEqual({ ok: false, silent: true });
+    spy.mockRestore();
+  });
+});

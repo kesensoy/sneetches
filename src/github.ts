@@ -240,6 +240,44 @@ export async function fetchGraphQLBatch(
     }
   });
 
+  // Walk errors[] and apply per-path distribution rules. Each error's
+  // `path[0]` is the aliased field (r0, r1, ...) — map back to nwo via
+  // index. See GraphQL spec Section 7 for the shape.
+  const errors = (
+    body as {
+      errors?: Array<{ type?: string; path?: (string | number)[]; message?: string }>;
+    }
+  )?.errors;
+  if (errors) {
+    for (const err of errors) {
+      const alias = err.path?.[0];
+      if (typeof alias !== 'string' || !alias.startsWith('r')) {
+        console.error('sneetches: GraphQL error without recognized path', err);
+        continue;
+      }
+      const idx = Number(alias.slice(1));
+      const nwo = nwos[idx];
+      if (!nwo) continue;
+      if (err.type === 'NOT_FOUND') {
+        result.set(nwo, { ok: false, status: 404 });
+      } else if (err.type === 'FORBIDDEN') {
+        result.set(nwo, { ok: false, silent: true });
+      } else {
+        console.error('sneetches: GraphQL error', err);
+        result.set(nwo, { ok: false, silent: true });
+      }
+    }
+  }
+
+  // Any nwo that ended up with neither a repo nor an error becomes a
+  // silent-skip — protects updateLinks from hanging on missing Map
+  // entries (e.g., path-less errors or partial responses).
+  for (const nwo of nwos) {
+    if (!result.has(nwo)) {
+      result.set(nwo, { ok: false, silent: true });
+    }
+  }
+
   return result;
 }
 
