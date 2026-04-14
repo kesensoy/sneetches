@@ -1,4 +1,4 @@
-import { clockIcon, repoForkedIcon, starIcon } from './icons';
+import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
 import { getRepoData, isRepoUrl } from './github';
 import {
   ACCESS_TOKEN_KEY,
@@ -268,6 +268,13 @@ export function createAnnotation(
     span.setAttribute('aria-label', `last updated ${displayDate.toLocaleDateString()}`);
     span.insertAdjacentHTML('beforeend', clockIcon('sneetch-icon'));
     span.append(' ' + humanizeDate(displayDate));
+    elt.appendChild(span);
+  }
+  if (data.archived) {
+    const span = document.createElement('span');
+    span.className = 'sneetch-archived';
+    span.setAttribute('aria-label', 'archived');
+    span.insertAdjacentHTML('beforeend', archiveIcon('sneetch-icon'));
     elt.appendChild(span);
   }
   elt.title =

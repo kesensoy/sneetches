@@ -84,6 +84,43 @@ describe('createAnnotation', () => {
     expect(elt.title).not.toContain('pushed');
   });
 
+  test('renders archive chip when data.archived === true', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const archiveChip = elt.querySelector('.sneetch-archived');
+    expect(archiveChip).not.toBeNull();
+    expect(archiveChip?.querySelector('svg')).not.toBeNull();
+    expect(archiveChip?.getAttribute('aria-label')).toBe('archived');
+  });
+
+  test('omits archive chip when data.archived === false', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.querySelector('.sneetch-archived')).toBeNull();
+  });
+
+  test('archive chip is the LAST child of the annotation', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const children = elt.children;
+    expect(children[children.length - 1].classList.contains('sneetch-archived')).toBe(true);
+  });
+
   test('each chip has an aria-label for screen readers', () => {
     const data = {
       forks_count: 58,
