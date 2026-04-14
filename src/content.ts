@@ -138,6 +138,17 @@ let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
 let currentEpoch = 0;
 let inFlightAnchors: WeakMap<HTMLAnchorElement, number> = new WeakMap();
 
+// Anchors whose fetch resolved as silent-skip (FORBIDDEN / scope-missing).
+// Without this set, a silent-skip anchor would be re-picked-up by every
+// subsequent findUnannotatedRepoLinks call — it has no annotation child
+// (childElementCount === 0), and once we delete it from inFlightAnchors
+// nothing else filters it out. Cache serves the result so there's no
+// HTTP hit, but each scan still spends async work per private repo on
+// pages with many inaccessible repos. Cleared alongside inFlightAnchors
+// in applySettingsChange so a token change gets a fresh look at
+// previously-forbidden repos.
+let silentSkipAnchors: WeakSet<HTMLAnchorElement> = new WeakSet();
+
 const removeLinkAnnotations = () =>
   document.querySelectorAll('.' + ANNOTATION_CLASS).forEach((node) => node.remove());
 
@@ -154,7 +165,7 @@ function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
     document.querySelectorAll<HTMLAnchorElement>(
       'a[href^="https://github.com/"], a[href^="http://github.com/"]'
     )
-  ).filter((a) => isRepoLink(a) && !inFlightAnchors.has(a));
+  ).filter((a) => isRepoLink(a) && !inFlightAnchors.has(a) && !silentSkipAnchors.has(a));
 }
 
 async function updateLinks() {
@@ -189,7 +200,10 @@ async function updateLinks() {
           inFlightAnchors.delete(elt);
           if (res.silent) {
             // FORBIDDEN/scope-missing: don't annotate. User can't see this
-            // repo, so we have nothing useful to say about it.
+            // repo, so we have nothing useful to say about it. Mark the
+            // anchor so subsequent scans don't re-process it (see the
+            // silentSkipAnchors declaration for rationale).
+            silentSkipAnchors.add(elt);
             return;
           }
           if (res.ok) {
@@ -208,16 +222,26 @@ async function updateLinks() {
 }
 
 export function createErrorAnnotation(
-  res: { status?: number; headers?: { get: (_: string) => string } },
+  res: { status?: number; headers?: { get: (_: string) => string | null } },
   accessToken: string,
   reportError: (_: string, ..._2: unknown[]) => void = console.error
 ) {
   if (res.status === 403) {
     const elt = _createAnnotation('⏳');
-    const when = new Date(Number(res.headers!.get('X-RateLimit-Reset')) * 1000);
-    const title = accessToken
-      ? 'The GitHub API rate limit has been exceeded.' + `No API calls are available until ${when}.`
-      : 'Please set up your Github Personal Access Token';
+    // headers may be absent: the fetchers throw plain `{ok: false, status}`
+    // objects without a headers field, so we can't rely on it here.
+    const resetHeader = res.headers?.get('X-RateLimit-Reset');
+    const resetDate = resetHeader ? new Date(Number(resetHeader) * 1000) : null;
+    let title: string;
+    if (!accessToken) {
+      title = 'Please set up your Github Personal Access Token';
+    } else if (resetDate) {
+      title =
+        'The GitHub API rate limit has been exceeded.' +
+        `No API calls are available until ${resetDate}.`;
+    } else {
+      title = 'The GitHub API rate limit has been exceeded.';
+    }
     elt.setAttribute('title', title);
     return elt;
   } else if (res.status === 404) {
@@ -381,6 +405,7 @@ export function startLinkScanner(): void {
 function applySettingsChange(): void {
   currentEpoch++;
   inFlightAnchors = new WeakMap();
+  silentSkipAnchors = new WeakSet();
   removeLinkAnnotations();
   updateAnnotationsFromSettings();
 }
@@ -398,6 +423,7 @@ export function __resetLinkScannerForTests(): void {
     linkScanTimeout = null;
   }
   inFlightAnchors = new WeakMap();
+  silentSkipAnchors = new WeakSet();
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;

@@ -208,6 +208,29 @@ describe('createErrorAnnotation', () => {
     expect(elt.outerHTML).toMatch(/></);
     expect(elt.innerText).toBe('');
   });
+
+  test('with a 403 and NO headers field (as thrown by fetchers)', () => {
+    // fetchRepoDataRESTSingle and fetchRepoDataGraphQLSingle throw plain
+    // `{ ok: false, status }` objects with no `headers` field. Before this
+    // fix, createErrorAnnotation's `res.headers!.get(...)` crashed with a
+    // TypeError before the accessToken branch was reached. Flagged by
+    // greptile as a P2 on PR #3.
+    const elt = createErrorAnnotation({ status: 403 }, '');
+    expect(elt.innerText).toBe('⏳');
+    // Without a headers, the title falls back to the token-setup prompt.
+    expect(elt.getAttribute('title')).toBe('Please set up your Github Personal Access Token');
+  });
+
+  test('with a 403, access token, and NO headers field', () => {
+    // Same defensive case but with a token configured — the title should
+    // mention the rate limit but not include a bogus reset time.
+    const elt = createErrorAnnotation({ status: 403 }, 'ghp_fake');
+    expect(elt.innerText).toBe('⏳');
+    const title = elt.getAttribute('title') ?? '';
+    expect(title).toContain('rate limit');
+    expect(title).not.toContain('undefined');
+    expect(title).not.toContain('NaN');
+  });
 });
 
 describe('detectStarredStateOnSneetchesRepo', () => {
@@ -706,5 +729,28 @@ describe('updateLinks silent-skip handling', () => {
 
     const anchor = document.querySelector('a');
     expect(anchor?.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+
+  test('silent-skip anchor is NOT re-fetched on subsequent mutation-triggered scans', async () => {
+    // Guards the greptile P2 finding: after a FORBIDDEN response, the anchor
+    // has no annotation, so a naive findUnannotatedRepoLinks filter would
+    // pick it back up on every DOM mutation and refetch (cache-hit, but
+    // ongoing async overhead on pages with many private repos). The fix
+    // is a silentSkipAnchors WeakSet that permanently excludes the anchor
+    // from subsequent scans until settings change.
+    document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
+    mockedGetRepoData.mockResolvedValue({ ok: false, silent: true });
+
+    startLinkScanner();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
+
+    // Trigger a second scan via a new mutation. The silent-skipped anchor
+    // must not be re-fetched.
+    const marker = document.createElement('div');
+    document.body.appendChild(marker);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(mockedGetRepoData).toHaveBeenCalledTimes(1);
   });
 });
