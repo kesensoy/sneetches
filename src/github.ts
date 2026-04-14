@@ -174,9 +174,11 @@ export function buildBatchQuery(nwos: string[]): {
 }
 
 // @internal — exported for unit tests. Fires one aliased GraphQL POST for
-// a batch of up to ~50 repos, distributes the results into a Map keyed by
-// "owner/name". Caller (getRepoDataMany) is responsible for chunking.
-// Error distribution via errors[] is added in the next commit.
+// a batch of up to ~50 repos and distributes the results into a Map keyed
+// by "owner/name". Applies per-path error distribution (NOT_FOUND → cached
+// 404, FORBIDDEN → silent skip, other → silent + console.error) via the
+// errors[] walker below. Caller (getRepoDataMany) is responsible for
+// chunking batches that exceed BATCH_SIZE.
 export async function fetchGraphQLBatch(
   nwos: string[],
   accessToken: string
