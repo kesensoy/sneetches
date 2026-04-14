@@ -240,7 +240,7 @@ export function createAnnotation(
   starStyle: StarStyle
 ) {
   const displayDate = new Date(data.committed_date ?? data.pushed_at);
-  const elt = _createAnnotation('');
+  const elt = _createAnnotation('', data.archived ? 'is-archived' : null);
   // Build each stat span by splitting text content from SVG markup: text
   // goes through a text node (escaped) while the SVG icon string is the
   // only thing ever handed to innerHTML-style insertion. Keeps the SVG

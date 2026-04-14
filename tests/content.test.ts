@@ -121,6 +121,28 @@ describe('createAnnotation', () => {
     expect(children[children.length - 1].classList.contains('sneetch-archived')).toBe(true);
   });
 
+  test('wrapper has is-archived class when archived', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.classList.contains('is-archived')).toBe(true);
+  });
+
+  test('wrapper does NOT have is-archived class when not archived', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.classList.contains('is-archived')).toBe(false);
+  });
+
   test('each chip has an aria-label for screen readers', () => {
     const data = {
       forks_count: 58,
