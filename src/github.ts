@@ -101,7 +101,11 @@ interface RepoResponse {
 }
 
 // Transform a fetch Response into something minimal that can be stored
-// in a LocalStorageArea.
+// in a LocalStorageArea. Only extracts the fields RepoInfo declares —
+// ignores the rest of GitHub's REST payload to keep cache entries small.
+// Note: committed_date is intentionally NOT set here. The REST endpoint
+// doesn't return a default-branch commit date; that field is populated
+// only by fetchRepoDataGraphQLSingle via defaultBranchRef.target.committedDate.
 async function marshallableResponse(res: Response): Promise<RepoResponse> {
   const { ok, status } = res;
   if (ok) {

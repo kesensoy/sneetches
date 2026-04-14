@@ -359,6 +359,56 @@ describe('GraphQL path', () => {
     expect(info.json?.pushed_at).toBe('2024-01-01T00:00:00Z');
   });
 
+  test('GraphQL isArchived: true propagates to RepoInfo.archived', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 10916,
+            forkCount: 1153,
+            pushedAt: '2016-08-01T00:00:00Z',
+            isArchived: true,
+            defaultBranchRef: {
+              target: { committedDate: '2016-08-01T00:00:00Z' },
+            },
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+
+    const info = await getRepoData('Shopify/dashing');
+    expect(info.ok).toBe(true);
+    expect(info.json?.archived).toBe(true);
+  });
+
+  test('GraphQL null repository with no errors throws { ok: false, status: 500 }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    // Malformed success response: data.repository is null but errors[] is
+    // absent. This shouldn't happen in practice but guard against it —
+    // surfacing as 500 lets the catch-all error path render an empty
+    // annotation and log to console instead of silently returning
+    // corrupted data.
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: { data: { repository: null } },
+    });
+
+    await expect(getRepoData('malformed/response')).rejects.toEqual({
+      ok: false,
+      status: 500,
+    });
+  });
+
   test('GraphQL NOT_FOUND returns { ok: false, status: 404 }', async () => {
     await new Promise<void>((resolve) =>
       chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())

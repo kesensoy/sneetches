@@ -114,7 +114,7 @@ Pre-configured via Husky:
 - ts-jest preset
 - jsdom test environment
 - Chrome extension API mocks via jest-webextension-mock + custom storage mock (`tests/chrome-storage.mock.ts`)
-- All 132 tests passing
+- All 134 tests passing
 
 ## CI/CD
 
@@ -141,7 +141,7 @@ This project was modernized from 2018-era tooling to current standards:
 - Node.js 20+
 - TypeScript 5.7.2
 - Webpack 5.97.1
-- Jest 29.7.0 (132/132 tests passing)
+- Jest 29.7.0 (134/134 tests passing)
 - ESLint 9.17.0 + Prettier 3.4.2
 - Husky 9.1.7 (working commit hooks!)
 - npm (replaced Yarn)
@@ -174,11 +174,33 @@ The extension popup and options page were fully redesigned as part of the 1.1.0 
 - **`src/cache.ts`** — added `getCacheEntryCount()` and `clearCache()` helpers (both exclude the `rate_limit` key).
 - **`src/settings.ts`** — four new settings: `star_style`, `advanced_open`, `token_validated`, `has_starred`.
 - **Version bumped to 1.1.0.**
-- **Test suite grew from 30 to 132 tests** (all passing).
+- **Test suite grew from 30 to 107 tests** (all passing). Subsequently expanded to 134 in 1.1.1 — see next section.
 
 ### New chrome.storage keys
 - `chrome.storage.sync`: `star_style`, `advanced_open`, `token_validated`, `has_starred`, `toolbar_icon`
 - `chrome.storage.local`: `rate_limit` (stores `{limit, remaining}` from GitHub response headers)
+
+## GraphQL Path + Archived Indicator (1.1.1, 2026)
+
+The 1.1.1 release adds a GraphQL data path for PAT users, an archived-repo indicator, an industry-standard tooltip wording, and closes a screen-reader accessibility gap. No popup UI changes — 1.1.0's visual surface is untouched.
+
+### What changed
+- **`src/github.ts`** — `getRepoData` becomes a dispatcher wrapped by `locallyCached`. When a PAT is present it routes to a new private `fetchRepoDataGraphQLSingle(nwo, token)` which hits `POST https://api.github.com/graphql` with parameterized `$owner`/`$name` variables and extracts `stargazerCount`, `forkCount`, `pushedAt`, `isArchived`, and `defaultBranchRef.target.committedDate`. Unauthenticated users still hit REST via `fetchRepoDataRESTSingle`, which now also passes through the pre-existing `archived` field from the REST response. Added `captureRateLimitFromGraphQL(body)` to persist `{limit, remaining}` from the GraphQL response body (sibling to the existing header-based `captureRateLimit`). GraphQL error handling: `NOT_FOUND` → cached 404, `FORBIDDEN` → silent skip via new `RepoResponse.silent` field, HTTP 401 → clear `TOKEN_VALIDATED_KEY` then throw. `CACHE_VERSION` bumped 1 → 2.
+- **`src/content.ts`** — `createAnnotation` prefers `committed_date ?? pushed_at` for the displayed date, relabels the tooltip from "pushed DATE" to "last updated DATE", sets `aria-label` on every chip for screen reader accessibility, and appends a trailing `.sneetch-archived` chip plus `.is-archived` wrapper modifier when `data.archived === true`. `updateLinks` handles the `res.silent` branch by cleaning up the in-flight entry without appending any annotation.
+- **`src/icons.ts`** — adds `archiveIcon` Octicon export (sits alphabetically first in the path-constants block).
+- **`src/style.css`** — adds `.sneetch-archived` base rule (branded amber `#d97706` on `rgba(217, 119, 6, 0.15)` wash) and `.is-archived` modifier that dims the stars/forks/date siblings to cool `#8a96aa` gray. Design comment explicitly warns against rewriting as a wrapper-level `opacity` rule (which would dim the archive chip too due to CSS opacity cascading).
+- **Version bumped to 1.1.1.**
+- **Test suite grew from 107 to 134 tests** (27 new: 15 in `tests/github.test.ts` for the GraphQL path, 12 in `tests/content.test.ts` for the display-date preference, aria-labels, archive chip rendering, modifier class, and silent-skip handling).
+
+### Key design decisions (locked in during 2026-04-13 brainstorm)
+- **No GraphQL query batching in 1.1.1.** Deferred to 1.1.2 as a focused optimization release. See the `project_1_1_2_graphql_batcher.md` project memory for the pre-locked batching architecture.
+- **Archive chip is unconditional** (not gated on a `show.archived` setting). Small footprint, high signal — promoting to a toggle would be disproportionate.
+- **Visual treatment is Variant M** from the brainstorm mockup (trailing chip position, branded orange color, cool-gray muted siblings, no italic, no strikethrough). The full variant comparison lives at `docs/plans/mockups/archived-annotation-variants.html`.
+- **Tooltip wording is "last updated"** — the convergent industry term across npm/PyPI/crates.io/pkg.go.dev.
+- **`archived: boolean` is required on `RepoInfo`**, populated by both REST and GraphQL paths. `committed_date?: string` is optional and populated only by the GraphQL path.
+
+### Backward compatibility
+Existing 1.1.0 `chrome.storage.local` cache entries at `ver: 1` are silently discarded on first post-upgrade access via `locallyCached`'s version check. The PAT-toggle flush at `handleSyncStorageChange` is also unchanged, so switching tokens after upgrade continues to flush local cache cleanly.
 
 ## Extension Features
 
