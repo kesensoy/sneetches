@@ -33,3 +33,10 @@ export function repoForkedIcon(className = 'sneetch-icon'): string {
 export function clockIcon(className = 'sneetch-icon'): string {
   return svg(CLOCK_PATH, className);
 }
+
+const ARCHIVE_PATH =
+  'M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v2.5A1.75 1.75 0 0 1 14.25 6H14v7.25A2.75 2.75 0 0 1 11.25 16h-6.5A2.75 2.75 0 0 1 2 13.25V6h-.25A1.75 1.75 0 0 1 0 4.25ZM1.75 1.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25Zm1.75 11.75c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V6h-9ZM5.75 9a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5Z';
+
+export function archiveIcon(className = 'sneetch-icon'): string {
+  return svg(ARCHIVE_PATH, className);
+}
