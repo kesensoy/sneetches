@@ -3,8 +3,8 @@ import { mockFetch } from './fetch.mock';
 import { TOKEN_VALIDATED_KEY } from '../src/settings';
 
 describe('getRepoData', () => {
-  const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3 };
-  const repoInfo2 = { forks_count: 11, pushed_at: 12, stargazers_count: 13 };
+  const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
+  const repoInfo2 = { forks_count: 11, pushed_at: 12, stargazers_count: 13, archived: false };
 
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
@@ -12,7 +12,7 @@ describe('getRepoData', () => {
   });
 
   test('resolves repo info', async () => {
-    const data = { forks_count: 1, pushed_at: 2, stargazers_count: 3 };
+    const data = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
     mockFetch({ json: data });
     const info = await getRepoData('owner/repo');
     expect(info).toEqual({ ok: true, json: data });
@@ -64,6 +64,25 @@ describe('getRepoData', () => {
     await getRepoData('owner/repo');
     const info = await getRepoData('owner/repo');
     expect(info).toEqual({ ok: false, status: 404 });
+  });
+
+  test('REST response populates archived field', async () => {
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
+    });
+    const info = await getRepoData('owner/repo');
+    expect(info).toEqual({
+      ok: true,
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
+    });
+  });
+
+  test('REST response defaults archived to false when absent', async () => {
+    mockFetch({
+      json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
+    });
+    const info = await getRepoData('owner/repo');
+    expect(info.json?.archived).toBe(false);
   });
 });
 
@@ -265,5 +284,341 @@ describe('rate limit persistence', () => {
       chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
     );
     expect(stored[RATE_LIMIT_KEY]).toBeUndefined();
+  });
+});
+
+describe('GraphQL path', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    mockFetch({ json: null }); // reset global.fetch to a neutral mock between tests
+  });
+
+  test('GraphQL happy path transforms response into RepoInfo', async () => {
+    // Seed a PAT so the dispatcher picks GraphQL
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 612,
+            forkCount: 58,
+            pushedAt: '2025-11-07T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: {
+              target: { committedDate: '2018-09-23T00:00:00Z' },
+            },
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999, resetAt: '2026-04-13T13:00:00Z' },
+        },
+      },
+    });
+
+    const info = await getRepoData('osteele/sneetches');
+    expect(info).toEqual({
+      ok: true,
+      json: {
+        stargazers_count: 612,
+        forks_count: 58,
+        pushed_at: '2025-11-07T00:00:00Z',
+        archived: false,
+        committed_date: '2018-09-23T00:00:00Z',
+      },
+    });
+  });
+
+  test('GraphQL path falls back to pushed_at when defaultBranchRef is null', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 0,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+
+    const info = await getRepoData('empty/repo');
+    expect(info.json?.committed_date).toBeUndefined();
+    expect(info.json?.pushed_at).toBe('2024-01-01T00:00:00Z');
+  });
+
+  test('GraphQL isArchived: true propagates to RepoInfo.archived', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 10916,
+            forkCount: 1153,
+            pushedAt: '2016-08-01T00:00:00Z',
+            isArchived: true,
+            defaultBranchRef: {
+              target: { committedDate: '2016-08-01T00:00:00Z' },
+            },
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+
+    const info = await getRepoData('Shopify/dashing');
+    expect(info.ok).toBe(true);
+    expect(info.json?.archived).toBe(true);
+  });
+
+  test('GraphQL null repository with no errors throws { ok: false, status: 500 }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    // Malformed success response: data.repository is null but errors[] is
+    // absent. This shouldn't happen in practice but guard against it —
+    // surfacing as 500 lets the catch-all error path render an empty
+    // annotation and log to console instead of silently returning
+    // corrupted data.
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: { data: { repository: null } },
+    });
+
+    await expect(getRepoData('malformed/response')).rejects.toEqual({
+      ok: false,
+      status: 500,
+    });
+  });
+
+  test('GraphQL NOT_FOUND returns { ok: false, status: 404 }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Not found' }],
+      },
+    });
+
+    const info = await getRepoData('owner/nonexistent');
+    expect(info).toEqual({ ok: false, status: 404 });
+  });
+
+  test('GraphQL NOT_FOUND is cached (like REST 404s)', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Not found' }],
+      },
+    });
+    await getRepoData('owner/nonexistent');
+
+    // Change the mock; second call should still return cached 404
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    const info = await getRepoData('owner/nonexistent');
+    expect(info).toEqual({ ok: false, status: 404 });
+  });
+
+  test('GraphQL path fires POST to /graphql, not REST endpoint', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    const fetchSpy = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 2,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      }),
+      headers: { get: (): string | null => null },
+    }));
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    await getRepoData('owner/repo');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const call = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe('https://api.github.com/graphql');
+    expect(call[1]).toMatchObject({
+      method: 'POST',
+      headers: expect.objectContaining({
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      }),
+    });
+    const body = JSON.parse(call[1].body as string);
+    expect(body.query).toContain('repository(owner: $owner, name: $name)');
+    expect(body.variables).toEqual({ owner: 'owner', name: 'repo' });
+  });
+
+  test('GraphQL response writes rate_limit to chrome.storage.local', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4873, resetAt: '2026-04-13T13:00:00Z' },
+        },
+      },
+    });
+
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toMatchObject({ limit: 5000, remaining: 4873 });
+  });
+
+  test('GraphQL FORBIDDEN returns { ok: false, silent: true }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'FORBIDDEN', path: ['repository'], message: 'Forbidden' }],
+      },
+    });
+
+    const info = await getRepoData('private/repo');
+    expect(info).toEqual({ ok: false, silent: true });
+  });
+
+  test('GraphQL HTTP 403 throws { ok: false, status: 403 }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({ ok: false, status: 403 });
+    await expect(getRepoData('owner/repo')).rejects.toEqual({
+      ok: false,
+      status: 403,
+    });
+  });
+
+  test('GraphQL network failure propagates', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    await expect(getRepoData('owner/repo')).rejects.toThrow('offline');
+  });
+
+  test('GraphQL HTTP 401 clears TOKEN_VALIDATED_KEY', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'bad-token', token_validated: true }, () => resolve())
+    );
+    mockFetch({ ok: false, status: 401 });
+
+    await expect(getRepoData('owner/repo')).rejects.toEqual({
+      ok: false,
+      status: 401,
+    });
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(false);
+  });
+
+  test('GraphQL FORBIDDEN is cached (avoids re-hitting API on private repos)', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'FORBIDDEN', path: ['repository'], message: 'Forbidden' }],
+      },
+    });
+    await getRepoData('private/repo');
+
+    // Change the mock to a success shape; second call should still
+    // return the cached silent skip. FORBIDDEN caching is intentional —
+    // we avoid hammering the API on private repos that a token can't see.
+    // Users who grant a new scope or make the repo public will see fresh
+    // data after the 4-hour TTL or a manual cache clear.
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    const info = await getRepoData('private/repo');
+    expect(info).toEqual({ ok: false, silent: true });
   });
 });

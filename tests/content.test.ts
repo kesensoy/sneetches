@@ -25,6 +25,7 @@ describe('createAnnotation', () => {
     forks_count: 10,
     pushed_at: '2018-09-10',
     stargazers_count: 10,
+    archived: false,
   };
 
   test('stars annotation uses SVG icon', () => {
@@ -45,6 +46,143 @@ describe('createAnnotation', () => {
       'outline'
     );
     expect(elt.outerHTML).not.toBe(outlineElt.outerHTML);
+  });
+
+  test('prefers committed_date over pushed_at when present', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2025-11-07T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+      committed_date: '2018-09-23T00:00:00Z',
+    };
+    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    // Tooltip should reflect the committed_date (2018), not pushed_at (2025)
+    expect(elt.title).toContain('2018');
+    expect(elt.title).not.toContain('2025');
+  });
+
+  test('falls back to pushed_at when committed_date is undefined', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2024-06-15T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    expect(elt.title).toContain('2024');
+  });
+
+  test('tooltip uses "last updated" wording, not "pushed"', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2018-09-10T00:00:00Z',
+      stargazers_count: 10,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.title).toContain('last updated');
+    expect(elt.title).not.toContain('pushed');
+  });
+
+  test('renders archive chip when data.archived === true', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const archiveChip = elt.querySelector('.sneetch-archived');
+    expect(archiveChip).not.toBeNull();
+    expect(archiveChip?.querySelector('svg')).not.toBeNull();
+    expect(archiveChip?.getAttribute('aria-label')).toBe('archived');
+  });
+
+  test('omits archive chip when data.archived === false', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.querySelector('.sneetch-archived')).toBeNull();
+  });
+
+  test('archive chip is the LAST child of the annotation', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const children = elt.children;
+    expect(children[children.length - 1].classList.contains('sneetch-archived')).toBe(true);
+  });
+
+  test('wrapper has is-archived class when archived', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.classList.contains('is-archived')).toBe(true);
+  });
+
+  test('wrapper does NOT have is-archived class when not archived', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 10,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.classList.contains('is-archived')).toBe(false);
+  });
+
+  test('tooltip appends "archived" for archived repos', () => {
+    const data = {
+      forks_count: 58,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 612,
+      archived: true,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.title).toContain('; archived');
+  });
+
+  test('tooltip does NOT contain "archived" for non-archived repos', () => {
+    const data = {
+      forks_count: 58,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    expect(elt.title).not.toContain('archived');
+  });
+
+  test('each chip has an aria-label for screen readers', () => {
+    const data = {
+      forks_count: 58,
+      pushed_at: '2021-03-14T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+
+    const starsChip = elt.querySelector('.sneetch-stars');
+    expect(starsChip?.getAttribute('aria-label')).toBe('612 stars');
+
+    const forksChip = elt.querySelector('.sneetch-forks');
+    expect(forksChip?.getAttribute('aria-label')).toBe('58 forks');
+
+    const dateChip = elt.querySelector('.sneetch-date');
+    expect(dateChip?.getAttribute('aria-label')).toMatch(/^last updated/);
   });
 });
 
@@ -216,6 +354,7 @@ describe('startLinkScanner', () => {
     forks_count: 1,
     pushed_at: '2024-01-01',
     stargazers_count: 42,
+    archived: false,
     ...overrides,
   });
 
@@ -322,7 +461,7 @@ describe('startLinkScanner', () => {
     // would eventually resolve and each append an annotation — double-up.
     let resolveFetch: (v: {
       ok: boolean;
-      json: { forks_count: number; pushed_at: string; stargazers_count: number };
+      json: { forks_count: number; pushed_at: string; stargazers_count: number; archived: boolean };
     }) => void = () => {};
     mockedGetRepoData.mockImplementation(
       () =>
@@ -375,7 +514,7 @@ describe('startLinkScanner', () => {
     // the helper share the same implementation.
     let firstResolve: (v: {
       ok: boolean;
-      json: { forks_count: number; pushed_at: string; stargazers_count: number };
+      json: { forks_count: number; pushed_at: string; stargazers_count: number; archived: boolean };
     }) => void = () => {};
     mockedGetRepoData.mockImplementationOnce(
       () =>
@@ -541,5 +680,31 @@ describe('startLinkScanner', () => {
 
     expect(mockedGetRepoData).not.toHaveBeenCalled();
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+});
+
+describe('updateLinks silent-skip handling', () => {
+  beforeEach(async () => {
+    document.body.innerHTML = '';
+    mockedGetRepoData.mockReset();
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('FORBIDDEN silent-skip does not append annotation to anchor', async () => {
+    document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
+    mockedGetRepoData.mockResolvedValue({ ok: false, silent: true });
+
+    // Need to trigger a scan
+    startLinkScanner();
+    // Wait for the debounce + async fetch resolution
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const anchor = document.querySelector('a');
+    expect(anchor?.querySelector('.data-sneetch-extension')).toBeNull();
   });
 });

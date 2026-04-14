@@ -37,6 +37,35 @@
   opacity: 0.7;
 }
 
+/* Archive chip — branded amber, always at full brightness. NOT included
+   in the general chip dim rule below because it carries the "archived"
+   status signal and must stay legible when siblings are muted. */
+.data-sneetch-extension .sneetch-archived {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(217, 119, 6, 0.15);
+  color: #d97706;
+  margin: 0 1px;
+  font-size: 0.9em;
+}
+
+/* Archived-state modifier on the wrapper. Dims stars/forks/date into
+   cool gray ("frozen" look) while leaving the archive chip at full
+   brightness.
+   IMPORTANT: do NOT rewrite this as `opacity` on the .data-sneetch-extension
+   wrapper — opacity cascades multiplicatively and children cannot un-mute
+   themselves, so the archive chip would get dimmed along with its siblings.
+   The three individual-chip selectors below are what keeps the archive
+   chip legible. */
+.data-sneetch-extension.is-archived .sneetch-stars,
+.data-sneetch-extension.is-archived .sneetch-forks,
+.data-sneetch-extension.is-archived .sneetch-date {
+  color: #8a96aa;
+  background: rgba(138, 150, 170, 0.04);
+  opacity: 0.55;
+}
+
 .fork-flag.lovely-forks-addon .data-sneetch-extension {
   display: none;
 }

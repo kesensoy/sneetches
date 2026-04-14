@@ -1,4 +1,4 @@
-import { clockIcon, repoForkedIcon, starIcon } from './icons';
+import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
 import { getRepoData, isRepoUrl } from './github';
 import {
   ACCESS_TOKEN_KEY,
@@ -187,6 +187,11 @@ async function updateLinks() {
           // belong to the newer scan's in-flight fetch).
           if (inFlightAnchors.get(elt) !== epoch) return;
           inFlightAnchors.delete(elt);
+          if (res.silent) {
+            // FORBIDDEN/scope-missing: don't annotate. User can't see this
+            // repo, so we have nothing useful to say about it.
+            return;
+          }
           if (res.ok) {
             elt.appendChild(createAnnotation(res.json!, show, starStyle));
           } else {
@@ -224,12 +229,18 @@ export function createErrorAnnotation(
 }
 
 export function createAnnotation(
-  data: { forks_count: number; stargazers_count: number; pushed_at: string },
+  data: {
+    forks_count: number;
+    stargazers_count: number;
+    pushed_at: string;
+    archived: boolean;
+    committed_date?: string;
+  },
   show: ShowSettings,
   starStyle: StarStyle
 ) {
-  const pushedAt = new Date(data.pushed_at);
-  const elt = _createAnnotation('');
+  const displayDate = new Date(data.committed_date ?? data.pushed_at);
+  const elt = _createAnnotation('', data.archived ? 'is-archived' : null);
   // Build each stat span by splitting text content from SVG markup: text
   // goes through a text node (escaped) while the SVG icon string is the
   // only thing ever handed to innerHTML-style insertion. Keeps the SVG
@@ -238,6 +249,7 @@ export function createAnnotation(
   if (show.stars) {
     const span = document.createElement('span');
     span.className = 'sneetch-stars';
+    span.setAttribute('aria-label', `${commafy(data.stargazers_count)} stars`);
     span.append(humanize(data.stargazers_count) + ' ');
     span.insertAdjacentHTML('beforeend', starIcon('sneetch-icon', starStyle === 'filled'));
     elt.appendChild(span);
@@ -245,6 +257,7 @@ export function createAnnotation(
   if (show.forks) {
     const span = document.createElement('span');
     span.className = 'sneetch-forks';
+    span.setAttribute('aria-label', `${commafy(data.forks_count)} forks`);
     span.append(humanize(data.forks_count) + ' ');
     span.insertAdjacentHTML('beforeend', repoForkedIcon('sneetch-icon'));
     elt.appendChild(span);
@@ -252,16 +265,27 @@ export function createAnnotation(
   if (show.update) {
     const span = document.createElement('span');
     span.className = 'sneetch-date';
+    span.setAttribute('aria-label', `last updated ${displayDate.toLocaleDateString()}`);
     span.insertAdjacentHTML('beforeend', clockIcon('sneetch-icon'));
-    span.append(' ' + humanizeDate(pushedAt));
+    span.append(' ' + humanizeDate(displayDate));
     elt.appendChild(span);
   }
-  elt.title =
-    [
-      `${commafy(data.stargazers_count)} stars`,
-      `${commafy(data.forks_count)} forks`,
-      `pushed ${pushedAt.toLocaleDateString()}`,
-    ].join('; ') + ' — Sneetches';
+  if (data.archived) {
+    const span = document.createElement('span');
+    span.className = 'sneetch-archived';
+    span.setAttribute('aria-label', 'archived');
+    span.insertAdjacentHTML('beforeend', archiveIcon('sneetch-icon'));
+    elt.appendChild(span);
+  }
+  const segments = [
+    `${commafy(data.stargazers_count)} stars`,
+    `${commafy(data.forks_count)} forks`,
+    `last updated ${displayDate.toLocaleDateString()}`,
+  ];
+  if (data.archived) {
+    segments.push('archived');
+  }
+  elt.title = segments.join('; ') + ' — Sneetches';
   return elt;
 }
 

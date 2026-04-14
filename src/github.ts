@@ -1,8 +1,9 @@
 import { locallyCached } from './cache';
 import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const GITHUB_API_URL = 'https://api.github.com/repos/';
+const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
 
 export const RATE_LIMIT_KEY = 'rate_limit';
 
@@ -67,24 +68,54 @@ function captureRateLimit(res: HasHeaders): void {
   }
 }
 
+// Captures rate-limit info from a GraphQL response body. Writes the same
+// { limit, remaining } shape the REST path captureRateLimit writes, so
+// getStoredRateLimit() and its consumers don't need to know which source
+// produced the data.
+function captureRateLimitFromGraphQL(body: unknown): void {
+  const rateLimit = (body as { data?: { rateLimit?: { limit?: number; remaining?: number } } })
+    ?.data?.rateLimit;
+  if (rateLimit && typeof rateLimit.limit === 'number' && typeof rateLimit.remaining === 'number') {
+    chrome.storage.local.set({
+      [RATE_LIMIT_KEY]: {
+        limit: rateLimit.limit,
+        remaining: rateLimit.remaining,
+      },
+    });
+  }
+}
+
 interface RepoInfo {
   readonly forks_count: number;
   readonly pushed_at: string;
   readonly stargazers_count: number;
+  readonly archived: boolean;
+  readonly committed_date?: string;
 }
 
 interface RepoResponse {
   readonly ok: boolean;
   readonly status?: number;
   readonly json?: RepoInfo;
+  readonly silent?: boolean;
 }
 
 // Transform a fetch Response into something minimal that can be stored
-// in a LocalStorageArea.
+// in a LocalStorageArea. Only extracts the fields RepoInfo declares —
+// ignores the rest of GitHub's REST payload to keep cache entries small.
+// Note: committed_date is intentionally NOT set here. The REST endpoint
+// doesn't return a default-branch commit date; that field is populated
+// only by fetchRepoDataGraphQLSingle via defaultBranchRef.target.committedDate.
 async function marshallableResponse(res: Response): Promise<RepoResponse> {
   const { ok, status } = res;
   if (ok) {
-    const json = await res.json();
+    const raw = await res.json();
+    const json: RepoInfo = {
+      forks_count: raw.forks_count,
+      pushed_at: raw.pushed_at,
+      stargazers_count: raw.stargazers_count,
+      archived: raw.archived === true,
+    };
     return { ok: true, json };
   }
   if (status === 404) {
@@ -93,20 +124,97 @@ async function marshallableResponse(res: Response): Promise<RepoResponse> {
   throw { ok: false, status };
 }
 
+// Simpler REST fetcher — no Authorization header, since the dispatcher
+// now routes PAT users to the GraphQL path.
+async function fetchRepoDataRESTSingle(nwo: string): Promise<RepoResponse> {
+  const res = await fetch(GITHUB_API_URL + nwo, {
+    headers: { 'User-Agent': 'kesensoy/sneetches' },
+  });
+  captureRateLimit(res);
+  return marshallableResponse(res);
+}
+
+// GraphQL-path fetcher used by the getRepoData dispatcher when a token is
+// configured. Does NOT interact with the cache — the dispatcher handles
+// that via locallyCached().
+async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Promise<RepoResponse> {
+  const [owner, name] = nwo.split('/');
+  const query = `
+    query GetRepo($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        stargazerCount
+        forkCount
+        pushedAt
+        isArchived
+        defaultBranchRef {
+          target { ... on Commit { committedDate } }
+        }
+      }
+      rateLimit { cost limit remaining resetAt }
+    }
+  `;
+  const res = await fetch(GITHUB_GRAPHQL_URL, {
+    method: 'POST',
+    headers: {
+      'User-Agent': 'kesensoy/sneetches',
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query, variables: { owner, name } }),
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      // Token is invalid or revoked. Clear the persisted "validated"
+      // flag so the popup shows the honest state on next open — mirrors
+      // the same auto-invalidation captureRateLimit does on the REST path
+      // when it observes an unauthenticated-tier rate limit.
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+    }
+    throw { ok: false, status: res.status };
+  }
+
+  const body = await res.json();
+  captureRateLimitFromGraphQL(body);
+
+  const repo = body?.data?.repository;
+  if (repo) {
+    const json: RepoInfo = {
+      stargazers_count: repo.stargazerCount,
+      forks_count: repo.forkCount,
+      pushed_at: repo.pushedAt,
+      archived: repo.isArchived === true,
+      committed_date: repo.defaultBranchRef?.target?.committedDate,
+    };
+    return { ok: true, json };
+  }
+
+  // Repository is null — walk errors[] to determine why.
+  const errors = (body as { errors?: Array<{ type?: string; path?: string[] }> })?.errors;
+  if (errors && errors.length > 0) {
+    const err = errors[0];
+    if (err.type === 'NOT_FOUND') {
+      return { ok: false, status: 404 };
+    }
+    if (err.type === 'FORBIDDEN') {
+      return { ok: false, silent: true };
+    }
+  }
+  throw { ok: false, status: 500 };
+}
+
 // Retrieve repo info from GitHub or from the cache. Successful responses
 // and 404's are cached. Other errors (e.g. 403) are transient and not cached.
+//
+// Dispatches based on token state: GraphQL for PAT users (richer data
+// including committed_date), REST for everyone else.
 export function getRepoData(nwo: string): Promise<RepoResponse> {
   return locallyCached(nwo, CACHE_VERSION, async () => {
     const accessToken = await getAccessToken();
-    const headers: Record<string, string> = {
-      'User-Agent': 'kesensoy/sneetches',
-    };
     if (accessToken) {
-      headers.Authorization = `Bearer ${accessToken}`;
+      return fetchRepoDataGraphQLSingle(nwo, accessToken);
     }
-    const res = await fetch(GITHUB_API_URL + nwo, { headers });
-    captureRateLimit(res);
-    return marshallableResponse(res);
+    return fetchRepoDataRESTSingle(nwo);
   });
 }
 
