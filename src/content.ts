@@ -224,11 +224,17 @@ export function createErrorAnnotation(
 }
 
 export function createAnnotation(
-  data: { forks_count: number; stargazers_count: number; pushed_at: string },
+  data: {
+    forks_count: number;
+    stargazers_count: number;
+    pushed_at: string;
+    archived?: boolean;
+    committed_date?: string;
+  },
   show: ShowSettings,
   starStyle: StarStyle
 ) {
-  const pushedAt = new Date(data.pushed_at);
+  const displayDate = new Date(data.committed_date ?? data.pushed_at);
   const elt = _createAnnotation('');
   // Build each stat span by splitting text content from SVG markup: text
   // goes through a text node (escaped) while the SVG icon string is the
@@ -253,14 +259,14 @@ export function createAnnotation(
     const span = document.createElement('span');
     span.className = 'sneetch-date';
     span.insertAdjacentHTML('beforeend', clockIcon('sneetch-icon'));
-    span.append(' ' + humanizeDate(pushedAt));
+    span.append(' ' + humanizeDate(displayDate));
     elt.appendChild(span);
   }
   elt.title =
     [
       `${commafy(data.stargazers_count)} stars`,
       `${commafy(data.forks_count)} forks`,
-      `pushed ${pushedAt.toLocaleDateString()}`,
+      `pushed ${displayDate.toLocaleDateString()}`,
     ].join('; ') + ' — Sneetches';
   return elt;
 }

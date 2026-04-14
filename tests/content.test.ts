@@ -46,6 +46,31 @@ describe('createAnnotation', () => {
     );
     expect(elt.outerHTML).not.toBe(outlineElt.outerHTML);
   });
+
+  test('prefers committed_date over pushed_at when present', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2025-11-07T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+      committed_date: '2018-09-23T00:00:00Z',
+    };
+    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    // Tooltip should reflect the committed_date (2018), not pushed_at (2025)
+    expect(elt.title).toContain('2018');
+    expect(elt.title).not.toContain('2025');
+  });
+
+  test('falls back to pushed_at when committed_date is undefined', () => {
+    const data = {
+      forks_count: 10,
+      pushed_at: '2024-06-15T00:00:00Z',
+      stargazers_count: 612,
+      archived: false,
+    };
+    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    expect(elt.title).toContain('2024');
+  });
 });
 
 describe('createErrorAnnotation', () => {
