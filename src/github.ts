@@ -134,6 +134,45 @@ async function fetchRepoDataRESTSingle(nwo: string): Promise<RepoResponse> {
   return marshallableResponse(res);
 }
 
+// @internal — exported for unit tests only. Builds an aliased GraphQL
+// query for a batch of repos and the matching variables map. Per-alias
+// variables (owner0/name0, owner1/name1, ...) for injection safety;
+// GitHub's schema has no array-of-RepoInput type, so this expands
+// manually. Top-level `rateLimit { cost limit remaining }` lets us
+// empirically verify scalar batches cost 1 point.
+export function buildBatchQuery(nwos: string[]): {
+  query: string;
+  variables: Record<string, string>;
+} {
+  const variables: Record<string, string> = {};
+  const varDecls: string[] = [];
+  const selections: string[] = [];
+
+  nwos.forEach((nwo, i) => {
+    const [owner, name] = nwo.split('/');
+    variables[`owner${i}`] = owner;
+    variables[`name${i}`] = name;
+    varDecls.push(`$owner${i}: String!, $name${i}: String!`);
+    selections.push(`r${i}: repository(owner: $owner${i}, name: $name${i}) { ...F }`);
+  });
+
+  const query = `
+    query GetRepos(${varDecls.join(', ')}) {
+      ${selections.join('\n      ')}
+      rateLimit { cost limit remaining resetAt }
+    }
+    fragment F on Repository {
+      stargazerCount
+      forkCount
+      pushedAt
+      isArchived
+      defaultBranchRef { target { ... on Commit { committedDate } } }
+    }
+  `;
+
+  return { query, variables };
+}
+
 // GraphQL-path fetcher used by the getRepoData dispatcher when a token is
 // configured. Does NOT interact with the cache — the dispatcher handles
 // that via locallyCached().

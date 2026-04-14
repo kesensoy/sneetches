@@ -1,4 +1,10 @@
-import { getRepoData, isRepoUrl, RATE_LIMIT_KEY, validateAccessToken } from '../src/github';
+import {
+  buildBatchQuery,
+  getRepoData,
+  isRepoUrl,
+  RATE_LIMIT_KEY,
+  validateAccessToken,
+} from '../src/github';
 import { mockFetch } from './fetch.mock';
 import { TOKEN_VALIDATED_KEY } from '../src/settings';
 
@@ -620,5 +626,57 @@ describe('GraphQL path', () => {
     });
     const info = await getRepoData('private/repo');
     expect(info).toEqual({ ok: false, silent: true });
+  });
+});
+
+describe('buildBatchQuery', () => {
+  test('generates aliased query with one repository per nwo', () => {
+    const { query, variables } = buildBatchQuery(['octocat/hello', 'torvalds/linux']);
+    expect(query).toMatch(/r0: repository\(owner: \$owner0, name: \$name0\)/);
+    expect(query).toMatch(/r1: repository\(owner: \$owner1, name: \$name1\)/);
+    expect(query).toMatch(/\$owner0: String!/);
+    expect(query).toMatch(/\$name0: String!/);
+    expect(query).toMatch(/\$owner1: String!/);
+    expect(query).toMatch(/\$name1: String!/);
+    expect(variables).toEqual({
+      owner0: 'octocat',
+      name0: 'hello',
+      owner1: 'torvalds',
+      name1: 'linux',
+    });
+  });
+
+  test('includes the scalar fragment fields on every aliased selection', () => {
+    const { query } = buildBatchQuery(['octocat/hello']);
+    expect(query).toMatch(/stargazerCount/);
+    expect(query).toMatch(/forkCount/);
+    expect(query).toMatch(/pushedAt/);
+    expect(query).toMatch(/isArchived/);
+    expect(query).toMatch(/committedDate/);
+  });
+
+  test('includes sibling rateLimit selection for empirical cost tracking', () => {
+    const { query } = buildBatchQuery(['octocat/hello']);
+    expect(query).toMatch(/rateLimit\s*\{[^}]*cost/);
+    expect(query).toMatch(/rateLimit\s*\{[^}]*limit/);
+    expect(query).toMatch(/rateLimit\s*\{[^}]*remaining/);
+  });
+
+  test('handles a single-repo batch', () => {
+    const { query, variables } = buildBatchQuery(['octocat/hello']);
+    expect(query).toMatch(/r0: repository/);
+    expect(query).not.toMatch(/r1:/);
+    expect(variables).toEqual({ owner0: 'octocat', name0: 'hello' });
+  });
+
+  test('handles a full 50-repo batch', () => {
+    const nwos = Array.from({ length: 50 }, (_, i) => `owner${i}/repo${i}`);
+    const { query, variables } = buildBatchQuery(nwos);
+    expect(query).toMatch(/r0: repository/);
+    expect(query).toMatch(/r49: repository/);
+    expect(query).not.toMatch(/r50:/);
+    expect(Object.keys(variables).length).toBe(100);
+    expect(variables.owner49).toBe('owner49');
+    expect(variables.name49).toBe('repo49');
   });
 });
