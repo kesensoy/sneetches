@@ -14,7 +14,10 @@
   border-radius: 3px;
   background: rgba(128, 128, 128, 0.1);
   margin: 0 1px;
-  font-size: 0.9em;
+  /* Absolute 12px so a host page with a 28px base font doesn't scale our
+     chips to 25px. Keep .sneetch-icon at 0.9em below — it's sized
+     relative to the chip, not the host page. */
+  font-size: 12px;
 }
 
 .data-sneetch-extension .sneetch-stars {
@@ -47,7 +50,7 @@
   background: rgba(217, 119, 6, 0.15);
   color: #d97706;
   margin: 0 1px;
-  font-size: 0.9em;
+  font-size: 12px;
 }
 
 /* Archived-state modifier on the wrapper. Dims stars/forks/date into
