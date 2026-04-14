@@ -1,4 +1,4 @@
-import { locallyCached } from './cache';
+import { locallyCached, locallyCachedBatch } from './cache';
 import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
 
 const CACHE_VERSION = 2;
@@ -363,6 +363,79 @@ export function getRepoData(nwo: string): Promise<RepoResponse> {
     }
     return fetchRepoDataRESTSingle(nwo);
   });
+}
+
+const BATCH_SIZE = 50;
+// If we ever see 422 from GitHub on an aliased query, halve this.
+// GitHub's node-count limit is 500,000; scalar-only batches cost 1 point
+// regardless of alias count and use ~50 nodes per batch (4 orders of
+// magnitude of headroom).
+
+// Retrieve repo info for many repos at once. Routes PAT users to the
+// GraphQL batched path (one aliased query per BATCH_SIZE repos); routes
+// unauthenticated users to parallel per-repo REST calls through the
+// existing single-key cache. Returns a Map keyed by "owner/name".
+//
+// Per-entry errors (e.g. a rate-limited 403) surface as
+// `{ ok: false, status }` Map entries rather than a top-level throw,
+// so a single bad repo never aborts the whole scan.
+export async function getRepoDataMany(nwos: string[]): Promise<Map<string, RepoResponse>> {
+  if (nwos.length === 0) return new Map();
+
+  const accessToken = await getAccessToken();
+  if (accessToken) {
+    return locallyCachedBatch<RepoResponse, number>(nwos, CACHE_VERSION, async (missing) => {
+      const merged = new Map<string, RepoResponse>();
+      for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+        const chunk = missing.slice(i, i + BATCH_SIZE);
+        const batchResult = await fetchGraphQLBatch(chunk, accessToken);
+        for (const [nwo, resp] of batchResult) {
+          // Don't cache silent-skip (FORBIDDEN) or transient errors —
+          // only cache successful responses and cached 404's, matching
+          // the single-repo path's behavior.
+          if (resp.ok || resp.status === 404) {
+            merged.set(nwo, resp);
+          }
+        }
+      }
+      return merged;
+    }).then(async (cached) => {
+      // locallyCachedBatch only returns cached/freshly-stored entries.
+      // FORBIDDEN / transient responses were intentionally skipped above,
+      // so re-run the non-cached entries through a final distribution
+      // pass to back-fill them as silent-skips for the caller.
+      const result = new Map<string, RepoResponse>();
+      for (const nwo of nwos) {
+        const hit = cached.get(nwo);
+        result.set(nwo, hit ?? { ok: false, silent: true });
+      }
+      return result;
+    });
+  }
+
+  // Unauthenticated path: parallel per-repo REST via the existing
+  // single-key cache. No batching possible (REST has no batch endpoint).
+  const result = new Map<string, RepoResponse>();
+  const responses = await Promise.all(
+    nwos.map((nwo) =>
+      locallyCached(nwo, CACHE_VERSION, () => fetchRepoDataRESTSingle(nwo)).then(
+        (resp): [string, RepoResponse] => [nwo, resp],
+        (err: unknown): [string, RepoResponse] => {
+          // Rate-limit 403s, 5xx, network failures — surface as the
+          // RepoResponse shape so updateLinks can render the error chip.
+          const status =
+            typeof err === 'object' && err !== null && 'status' in err
+              ? (err as { status?: number }).status
+              : undefined;
+          return [nwo, { ok: false, status }];
+        }
+      )
+    )
+  );
+  for (const [nwo, resp] of responses) {
+    result.set(nwo, resp);
+  }
+  return result;
 }
 
 // Paths that start with one of these components aren't repo URLs.
