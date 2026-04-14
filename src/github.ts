@@ -160,6 +160,13 @@ async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Pro
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      // Token is invalid or revoked. Clear the persisted "validated"
+      // flag so the popup shows the honest state on next open — mirrors
+      // the same auto-invalidation captureRateLimit does on the REST path
+      // when it observes an unauthenticated-tier rate limit.
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+    }
     throw { ok: false, status: res.status };
   }
 

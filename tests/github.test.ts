@@ -291,6 +291,7 @@ describe('GraphQL path', () => {
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    mockFetch({ json: null }); // reset global.fetch to a neutral mock between tests
   });
 
   test('GraphQL happy path transforms response into RepoInfo', async () => {
@@ -513,5 +514,61 @@ describe('GraphQL path', () => {
     );
     global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(getRepoData('owner/repo')).rejects.toThrow('offline');
+  });
+
+  test('GraphQL HTTP 401 clears TOKEN_VALIDATED_KEY', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'bad-token', token_validated: true }, () => resolve())
+    );
+    mockFetch({ ok: false, status: 401 });
+
+    await expect(getRepoData('owner/repo')).rejects.toEqual({
+      ok: false,
+      status: 401,
+    });
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(false);
+  });
+
+  test('GraphQL FORBIDDEN is cached (avoids re-hitting API on private repos)', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'FORBIDDEN', path: ['repository'], message: 'Forbidden' }],
+      },
+    });
+    await getRepoData('private/repo');
+
+    // Change the mock to a success shape; second call should still
+    // return the cached silent skip. FORBIDDEN caching is intentional —
+    // we avoid hammering the API on private repos that a token can't see.
+    // Users who grant a new scope or make the repo public will see fresh
+    // data after the 4-hour TTL or a manual cache clear.
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    const info = await getRepoData('private/repo');
+    expect(info).toEqual({ ok: false, silent: true });
   });
 });
