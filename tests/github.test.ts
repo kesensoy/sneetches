@@ -450,6 +450,35 @@ describe('GraphQL path', () => {
     expect(body.variables).toEqual({ owner: 'owner', name: 'repo' });
   });
 
+  test('GraphQL response writes rate_limit to chrome.storage.local', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4873, resetAt: '2026-04-13T13:00:00Z' },
+        },
+      },
+    });
+
+    await getRepoData('owner/repo');
+
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toMatchObject({ limit: 5000, remaining: 4873 });
+  });
+
   test('GraphQL FORBIDDEN returns { ok: false, silent: true }', async () => {
     await new Promise<void>((resolve) =>
       chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
