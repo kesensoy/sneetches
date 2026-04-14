@@ -495,4 +495,23 @@ describe('GraphQL path', () => {
     const info = await getRepoData('private/repo');
     expect(info).toEqual({ ok: false, silent: true });
   });
+
+  test('GraphQL HTTP 403 throws { ok: false, status: 403 }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({ ok: false, status: 403 });
+    await expect(getRepoData('owner/repo')).rejects.toEqual({
+      ok: false,
+      status: 403,
+    });
+  });
+
+  test('GraphQL network failure propagates', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    await expect(getRepoData('owner/repo')).rejects.toThrow('offline');
+  });
 });
