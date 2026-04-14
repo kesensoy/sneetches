@@ -178,8 +178,15 @@ async function fetchRepoDataGraphQLSingle(nwo: string, accessToken: string): Pro
     return { ok: true, json };
   }
 
-  // Error path — walk errors[] in later sub-tasks. For now, throw to
-  // match the existing REST path's behavior for unexpected responses.
+  // Repository is null — walk errors[] to determine why.
+  const errors = (body as { errors?: Array<{ type?: string; path?: string[] }> })?.errors;
+  if (errors && errors.length > 0) {
+    const err = errors[0];
+    if (err.type === 'NOT_FOUND') {
+      return { ok: false, status: 404 };
+    }
+    // FORBIDDEN and other error types handled in the next sub-task.
+  }
   throw { ok: false, status: 500 };
 }
 

@@ -358,6 +358,58 @@ describe('GraphQL path', () => {
     expect(info.json?.pushed_at).toBe('2024-01-01T00:00:00Z');
   });
 
+  test('GraphQL NOT_FOUND returns { ok: false, status: 404 }', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Not found' }],
+      },
+    });
+
+    const info = await getRepoData('owner/nonexistent');
+    expect(info).toEqual({ ok: false, status: 404 });
+  });
+
+  test('GraphQL NOT_FOUND is cached (like REST 404s)', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
+    );
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: { repository: null },
+        errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Not found' }],
+      },
+    });
+    await getRepoData('owner/nonexistent');
+
+    // Change the mock; second call should still return cached 404
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: {
+        data: {
+          repository: {
+            stargazerCount: 1,
+            forkCount: 0,
+            pushedAt: '2024-01-01T00:00:00Z',
+            isArchived: false,
+            defaultBranchRef: null,
+          },
+          rateLimit: { cost: 1, limit: 5000, remaining: 4999 },
+        },
+      },
+    });
+    const info = await getRepoData('owner/nonexistent');
+    expect(info).toEqual({ ok: false, status: 404 });
+  });
+
   test('GraphQL path fires POST to /graphql, not REST endpoint', async () => {
     await new Promise<void>((resolve) =>
       chrome.storage.sync.set({ access_token: 'test-token' }, () => resolve())
