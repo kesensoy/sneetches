@@ -26,14 +26,17 @@
 import { spawn } from 'child_process';
 import { promises as fs, existsSync } from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import puppeteer, { Browser, ConsoleMessage, Target } from 'puppeteer';
 
 const DEFAULT_TARGET_URL = 'https://github.com/miantiao-me/awesome-homelab';
 const CAPTURE_TIMEOUT_MS = 60_000;
 const POST_CAPTURE_DRAIN_MS = 500;
 const SW_TARGET_TIMEOUT_MS = 15_000;
-const PROBE_PROFILE_DIR = path.join(os.homedir(), '.sneetches-probe', 'profile');
+// Profile dir lives inside the repo at .sneetches-probe/profile/
+// rather than ~/.sneetches-probe/ so it's co-located with the code
+// that uses it and easy to nuke with a repo-rooted rm -rf. Gitignored
+// via the `.sneetches-probe/` rule in .gitignore.
+const PROBE_PROFILE_DIR = path.resolve(process.cwd(), '.sneetches-probe', 'profile');
 
 interface Args {
   url: string;
@@ -42,12 +45,20 @@ interface Args {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = { url: DEFAULT_TARGET_URL };
+  const requireValue = (flag: string, i: number): string => {
+    if (i + 1 >= argv.length) {
+      throw new Error(`[probe-run] ${flag} requires a value`);
+    }
+    return argv[i + 1];
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--url') {
-      args.url = argv[++i];
+      args.url = requireValue('--url', i);
+      i++;
     } else if (a === '--label') {
-      args.label = argv[++i];
+      args.label = requireValue('--label', i);
+      i++;
     } else if (a === '--help' || a === '-h') {
       console.log('Usage: npm run probe [-- --url URL] [--label LABEL]');
       process.exit(0);
@@ -96,25 +107,45 @@ async function loadEnvProbe(): Promise<void> {
   }
 }
 
-async function isStale(file: string, thresholdMs: number): Promise<boolean> {
-  try {
-    const stat = await fs.stat(file);
-    return Date.now() - stat.mtimeMs > thresholdMs;
-  } catch {
-    return true;
-  }
+// Recursively find the newest mtime under a directory. Used to decide
+// if the build output is stale relative to the source tree.
+async function newestMtime(dir: string): Promise<number> {
+  let newest = 0;
+  const walk = async (d: string): Promise<void> => {
+    const entries = await fs.readdir(d, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile()) {
+        const stat = await fs.stat(full);
+        if (stat.mtimeMs > newest) newest = stat.mtimeMs;
+      }
+    }
+  };
+  await walk(dir);
+  return newest;
 }
 
 async function ensureDevBuild(): Promise<string> {
   const buildPath = path.resolve(process.cwd(), 'build');
   const manifestPath = path.join(buildPath, 'manifest.json');
   const contentPath = path.join(buildPath, 'content.js');
-  // Trigger a rebuild if: build is missing, stale (>60s), or looks
-  // like a production build (no SNEETCHES_PROBE envelope, because
-  // Terser's pure_funcs stripped it). The probe canary doubles as
-  // the "is this a dev build?" check.
-  let needsBuild =
-    !existsSync(manifestPath) || !existsSync(contentPath) || (await isStale(contentPath, 60_000));
+  // Trigger a rebuild if: build is missing, older than anything in
+  // src/, or looks like a production build (no SNEETCHES_PROBE
+  // envelope, because Terser's pure_funcs stripped it). Comparing
+  // mtime against the src/ tree rather than a wall-clock threshold
+  // catches the "edited src, saved, ran probe" case that a fixed
+  // staleness window would miss.
+  let needsBuild = !existsSync(manifestPath) || !existsSync(contentPath);
+  if (!needsBuild) {
+    const buildMtime = (await fs.stat(contentPath)).mtimeMs;
+    const srcMtime = await newestMtime(path.resolve(process.cwd(), 'src'));
+    if (srcMtime > buildMtime) {
+      console.log('[probe-run] src/ newer than build/; rebuilding');
+      needsBuild = true;
+    }
+  }
   if (!needsBuild) {
     const existing = await fs.readFile(contentPath, 'utf-8');
     if (!existing.includes('SNEETCHES_PROBE')) {
@@ -158,6 +189,37 @@ async function findServiceWorkerTarget(browser: Browser): Promise<Target> {
   );
 }
 
+// Wait for the service-worker isolated world to have `chrome.storage`
+// available. Puppeteer can return a worker handle for a SW target
+// that was discovered before its script finished loading, in which
+// case `chrome` is undefined inside `worker.evaluate` and any
+// storage access throws. Poll the worker with a lightweight check
+// until it stabilizes.
+async function waitForServiceWorkerReady(
+  worker: NonNullable<Awaited<ReturnType<Target['worker']>>>,
+  maxMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    try {
+      const ready = await worker.evaluate(() => {
+        return (
+          typeof chrome !== 'undefined' &&
+          typeof chrome.storage !== 'undefined' &&
+          typeof chrome.storage.sync !== 'undefined'
+        );
+      });
+      if (ready) return;
+    } catch {
+      // worker.evaluate itself can throw if the SW is mid-restart
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(
+    `[probe-run] service worker did not expose chrome.storage.sync within ${maxMs}ms`
+  );
+}
+
 // Inject the GitHub PAT into the extension's chrome.storage.sync iff
 // it's not already there. Persistent profile means most runs are a
 // no-op on this step, which is the intended behavior — changing the
@@ -169,6 +231,7 @@ async function ensurePatConfigured(browser: Browser, pat: string): Promise<void>
   if (!worker) {
     throw new Error('[probe-run] service worker target has no worker handle');
   }
+  await waitForServiceWorkerReady(worker);
   const existing = await worker.evaluate(async () => {
     return new Promise<string | undefined>((resolve) => {
       chrome.storage.sync.get(['access_token'], (r) => resolve(r.access_token));
@@ -334,8 +397,66 @@ async function main(): Promise<void> {
     return p.entries.some((e) => e.phase === 'pending-collected');
   };
 
+  // Shared envelope ingestion. Both page-level and service-worker
+  // console capture routes call this with a pre-parsed JSON string.
+  // Synchronous from the caller's perspective: no awaits inside, so
+  // `lastRealCaptureAt` is updated before the caller's event handler
+  // returns.
+  const ingestEnvelope = (jsonStr: string, source: 'page' | 'sw'): void => {
+    try {
+      const payload = JSON.parse(jsonStr) as ProbePayload;
+      captured.push(payload);
+      if (isRealCapture(payload)) {
+        lastRealCaptureAt = Date.now();
+      }
+    } catch (err) {
+      console.warn(`[probe-run] failed to parse SNEETCHES_PROBE payload from ${source}:`, err);
+    }
+  };
+
   try {
     await ensurePatConfigured(browser, pat);
+
+    // Wire service-worker console capture via a dedicated CDP session
+    // on the SW target. `page.on('console', ...)` only fires for page
+    // console events — SW console.log calls live in their own target's
+    // protocol stream and need an explicit Runtime.consoleAPICalled
+    // subscription to reach us. We attach to any SW target that
+    // already exists (the common case after ensurePatConfigured, which
+    // already waited for the SW target to register) and also wire a
+    // `targetcreated` handler so late-registering SW targets are
+    // captured too.
+    const attachedSwUrls = new Set<string>();
+    const attachToSwTarget = async (target: Target): Promise<void> => {
+      if (target.type() !== 'service_worker') return;
+      const url = target.url();
+      if (!url.endsWith('service-worker.js')) return;
+      if (attachedSwUrls.has(url)) return;
+      attachedSwUrls.add(url);
+      try {
+        const cdp = await target.createCDPSession();
+        await cdp.send('Runtime.enable');
+        cdp.on(
+          'Runtime.consoleAPICalled',
+          (params: { args: Array<{ type: string; value?: unknown }> }) => {
+            if (params.args.length < 2) return;
+            const first = params.args[0]?.value;
+            if (first !== 'SNEETCHES_PROBE') return;
+            const second = params.args[1]?.value;
+            if (typeof second !== 'string') return;
+            ingestEnvelope(second, 'sw');
+          }
+        );
+      } catch (err) {
+        console.warn('[probe-run] failed to attach SW console listener:', err);
+      }
+    };
+    for (const t of browser.targets()) {
+      await attachToSwTarget(t);
+    }
+    browser.on('targetcreated', (t) => {
+      void attachToSwTarget(t);
+    });
 
     console.log('[probe-run] opening page + wiring console listener');
     const page = await browser.newPage();
@@ -350,13 +471,9 @@ async function main(): Promise<void> {
           const tag = (await handles[0].jsonValue()) as string;
           if (tag !== 'SNEETCHES_PROBE') return;
           const jsonStr = (await handles[1].jsonValue()) as string;
-          const payload = JSON.parse(jsonStr) as ProbePayload;
-          captured.push(payload);
-          if (isRealCapture(payload)) {
-            lastRealCaptureAt = Date.now();
-          }
+          ingestEnvelope(jsonStr, 'page');
         } catch (err) {
-          console.warn('[probe-run] failed to parse SNEETCHES_PROBE payload:', err);
+          console.warn('[probe-run] failed to resolve page console args:', err);
         }
       })();
     };

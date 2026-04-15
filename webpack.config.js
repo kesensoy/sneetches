@@ -66,6 +66,16 @@ module.exports = (_env, argv) => {
                   // `if (!__DEBUG__) return;` guard at the top of each
                   // function body, this produces zero bytes of probe
                   // code in the prod bundle.
+                  //
+                  // IMPORTANT: these names are keyed on the
+                  // `import * as probe from './debug/probe';` form at
+                  // the call site. If someone refactors to a named
+                  // import (`import { mark, dump, reset } from ...`),
+                  // these match nothing and the explicit pure_funcs
+                  // safety net disappears. The `if (!__DEBUG__)` guard
+                  // body-pruning still works even then, but the real
+                  // canary is `npm run test:dce` — always re-run it
+                  // after changing probe import shapes.
                   pure_funcs: [
                     'probe.mark',
                     'probe.dump',

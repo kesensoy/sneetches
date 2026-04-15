@@ -397,6 +397,13 @@ async function runPreload(): Promise<void> {
   // and we'll skip the assignment — preventing a stale map from
   // clobbering a just-invalidated cache.
   const gen = ++preloadGeneration;
+  // Preload gets its own envelope, emitted via probe.dump('preload')
+  // in the finally below. Without this, the preload marks would
+  // accumulate in the entries array until the first updateLinks scan
+  // fires probe.reset() and wipes them — the harness would never
+  // see preload timing data. The reset() here clears any stale
+  // entries from a previous runPreload invocation (test reruns).
+  probe.reset();
   probe.mark(probe.Phase.PRELOAD_START);
   try {
     const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
@@ -411,6 +418,8 @@ async function runPreload(): Promise<void> {
     if (gen === preloadGeneration) {
       inMemoryRepoCache = new Map();
     }
+  } finally {
+    probe.dump('preload');
   }
 }
 
