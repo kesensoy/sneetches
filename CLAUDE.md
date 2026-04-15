@@ -254,7 +254,7 @@ The 1.1.3 release moves the repo-data hot path out of the content script and int
 - **`tests/content.test.ts`** — migrated from `jest.mock('../src/github')` + `getRepoDataMany` stub to `__setPortFetcherForTests(portFetcherMock)`. All 40 existing behavior tests ported (epoch invalidation, silent-skip WeakSet, popup-only key filter, access_token cache flush, batching + dedup) — nothing lost.
 - **`tests/github.test.ts`** — `getRepoDataMany` describe blocks renamed to `fetchRepoDataStreaming`, tests migrated via a new `fetchReposMap` helper that drives streaming and collects chunks into a Map. Preserves all REST-path and PAT-path test coverage.
 - **Version bumped to 1.1.3.**
-- **Test suite grew from 155 to 179** (24 new: 13 service-worker, 8 bulkCache, 3 hand-rolled port mock scaffolding).
+- **Test suite grew from 158 to 179** (21 new: 13 service-worker protocol tests, 8 `bulkReadCache` / `bulkWriteCache` tests). `tests/port.mock.ts` is infrastructure, not a test file — no `test()` calls. The 158 baseline matches the pre-1.1.3 jest count on branch `1.1.3` at merge commit `4d42d12`; the 155 mentioned in the 1.1.2 CLAUDE.md section was a slight undercount.
 
 ### Measured impact
 - **Warm cache on awesome-homelab**: 12.9s → **6.1s** (−6.8s, −53%). The scan-silence window dropped from 8.7s to ~1s; the 5s port round-trip remains as the dominant ceiling.

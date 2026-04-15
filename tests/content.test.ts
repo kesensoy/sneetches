@@ -875,3 +875,121 @@ describe('updateLinks batching', () => {
     expect(document.querySelectorAll('.data-sneetch-extension')).toHaveLength(3);
   });
 });
+
+describe('scan scheduler behavior', () => {
+  // Guards the 1.1.3 scheduler rework: leading-edge MutationObserver
+  // trigger + cumulative max-wait + rolling debounce. Each test isolates
+  // one aspect of the scheduler without relying on wall-clock timing
+  // precision (which is inherently flaky in jsdom).
+  beforeAll(() => {
+    __setPortFetcherForTests(portFetcherMock);
+  });
+
+  afterAll(() => {
+    __setPortFetcherForTests(null);
+  });
+
+  beforeEach(async () => {
+    document.body.innerHTML = '';
+    portFetcherMock.mockReset();
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        { show: { stars: true, forks: false, update: false }, star_style: 'outline' },
+        resolve
+      )
+    );
+    portFetcherMock.mockImplementation(async (_nwos, _onChunk) => ({ ok: true }));
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('leading-edge MO trigger fires a scan before the debounce window elapses', async () => {
+    // The scheduler rework added a leading-edge path where the MutationObserver
+    // callback fires updateLinks directly (as a microtask) when a github.com
+    // anchor is added to the DOM, bypassing the 300ms rolling debounce and
+    // 500ms max-wait setTimeout. This test verifies the leading-edge path
+    // runs BEFORE either setTimeout could have fired, by giving it less
+    // than 200ms (< both debounce and max-wait) after the mutation.
+    startLinkScanner();
+    // Wait a tick for startLinkScanner to attach its observer.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(portFetcherMock).not.toHaveBeenCalled();
+
+    // Insert a real repo-link anchor. The observer should fire a
+    // microtask-scheduled scan immediately from inside the MO callback.
+    const a = document.createElement('a');
+    a.href = 'https://github.com/octocat/hello';
+    document.body.appendChild(a);
+
+    // 150ms is well under LINK_SCAN_DEBOUNCE_MS (300ms) and
+    // LINK_SCAN_MAX_WAIT_MS (500ms). If the leading-edge path is working,
+    // the port fetcher should already have been called by now.
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(portFetcherMock).toHaveBeenCalledTimes(1);
+    expect(portFetcherMock).toHaveBeenCalledWith(['octocat/hello'], expect.any(Function));
+  });
+
+  test('leading-edge throttle: rapid mutations do not fire a scan per mutation', async () => {
+    // LEADING_EDGE_MIN_INTERVAL_MS throttles the leading-edge path at
+    // 100ms. A burst of mutations that each contain a github.com anchor
+    // should fire AT MOST one leading-edge scan per 100ms window, not
+    // one per mutation. Test: insert many anchors rapidly, then assert
+    // we didn't fire N scans.
+    startLinkScanner();
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Insert 10 anchors in rapid succession. Each appendChild triggers
+    // a MutationObserver callback. Without the throttle, each MO would
+    // fire a leading-edge scan → 10 port fetcher calls.
+    for (let i = 0; i < 10; i++) {
+      const a = document.createElement('a');
+      a.href = `https://github.com/owner${i}/repo${i}`;
+      document.body.appendChild(a);
+    }
+
+    // Wait a short time — less than the 100ms throttle interval plus
+    // a buffer. Some observer callbacks should have fired, but throttled.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // At most 1 scan should have fired during this 50ms window.
+    // findUnannotatedRepoLinks catches all 10 anchors in one pass, so
+    // the single leading-edge scan sees all of them at once.
+    expect(portFetcherMock.mock.calls.length).toBeLessThanOrEqual(1);
+    if (portFetcherMock.mock.calls.length === 1) {
+      // If a scan did fire, it should have found all 10 nwos in one call.
+      const [nwos] = portFetcherMock.mock.calls[0];
+      expect(nwos).toHaveLength(10);
+    }
+  });
+
+  test('fireScan clears both timers so neither can fire a second redundant scan', async () => {
+    // The fireScan helper is the single entry point for running a
+    // productive scan. When it runs (via leading-edge, rolling debounce,
+    // OR max-wait), it must clear BOTH the rolling debounce timer and
+    // the max-wait timer so the next-scheduled one of them can't fire a
+    // second scan a few hundred ms later. This test triggers a scan via
+    // the leading-edge path, waits long enough that both setTimeouts
+    // would have fired if not cleared (300ms + 500ms + buffer), and
+    // asserts only ONE scan fired.
+    startLinkScanner();
+    await new Promise((r) => setTimeout(r, 10));
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/octocat/hello';
+    document.body.appendChild(a);
+
+    // Wait past both debounce and max-wait deadlines.
+    // LINK_SCAN_DEBOUNCE_MS = 300, LINK_SCAN_MAX_WAIT_MS = 500.
+    // 800ms comfortably passes both.
+    await new Promise((r) => setTimeout(r, 800));
+
+    // Exactly one scan — leading-edge ran, cleared both timers, neither
+    // subsequently fired a redundant scan.
+    expect(portFetcherMock).toHaveBeenCalledTimes(1);
+  });
+});

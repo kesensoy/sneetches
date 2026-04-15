@@ -68,6 +68,15 @@ chrome.runtime.onConnect.addListener((port) => {
   // scans and makes service-worker-termination behavior less fraught
   // (a terminated worker just means the next scan opens a fresh port).
   const onMessage = (msg: unknown): void => {
+    // Defensive: remove the listener as soon as the first message is
+    // being processed. The protocol is explicitly single-shot (one
+    // request per connection), but removing the listener here means a
+    // misbehaving caller that posts a second message on the same port
+    // before the first `finally` disconnect runs doesn't kick off a
+    // second concurrent handleFetchReposRequest. In-flight listener is
+    // gone before any second message can reach it.
+    port.onMessage.removeListener(onMessage);
+
     const req = msg as FetchReposRequest;
     handleFetchReposRequest(req, (out) => {
       // Guard against posting on an already-closed port. disconnect()

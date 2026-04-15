@@ -16,9 +16,9 @@ function storageGet(keys: string[]): Promise<Record<string, unknown>> {
 
 const RATE_LIMIT_KEY = 'rate_limit';
 // Duplicated from github.ts rather than imported to avoid circular deps:
-// github.ts already imports locallyCached from cache.ts, so importing back
-// would create cache.ts ← github.ts ← cache.ts. Duplication is the lesser evil.
-// Keep these two constants in sync.
+// github.ts already imports bulkReadCache/bulkWriteCache from cache.ts,
+// so importing back would create cache.ts ← github.ts ← cache.ts.
+// Duplication is the lesser evil. Keep these two constants in sync.
 
 // If local storage contains an unexpired cache entry for `key` with the
 // specified version, return its value. Otherwise call `thunk`, store its

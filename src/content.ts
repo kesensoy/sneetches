@@ -178,11 +178,11 @@ let lastLeadingEdgeAt = 0;
 //      pending, and both waves try to annotate the same anchors).
 //
 //   2. Drop stale-settings results when `chrome.storage.onChanged` fires
-//      mid-fetch. Settings changes bump `currentEpoch`, and each fetch's
-//      .then/.catch compares its captured epoch against the current map
-//      entry — if they no longer match, the result is dropped rather
-//      than appended, and the fresh rescan (under the new settings) is
-//      allowed to produce the live annotation.
+//      mid-fetch. Settings changes bump `currentEpoch`, and each chunk's
+//      distributeChunk loop compares its captured epoch against the
+//      current map entry — if they no longer match, the chunk's entries
+//      are silently dropped instead of appended, and the fresh rescan
+//      (under the new settings) is allowed to produce the live annotation.
 //
 // WeakMap auto-releases entries if an anchor is removed from the DOM
 // before its fetch resolves, so nothing to clean up on long-lived pages.
