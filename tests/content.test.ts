@@ -10,6 +10,8 @@ import {
   __handleSyncStorageChangeForTests,
   __setPortFetcherForTests,
   __getCachedSettingsForTests,
+  __setInMemoryRepoCacheForTests,
+  __getInMemoryRepoCacheForTests,
 } from '../src/content';
 
 // Alias retained so the existing call sites don't all change names.
@@ -874,6 +876,43 @@ describe('updateLinks batching', () => {
     expect(portFetcherMock).toHaveBeenCalledWith(['octocat/hello'], expect.any(Function));
     // But all three anchors get annotated.
     expect(document.querySelectorAll('.data-sneetch-extension')).toHaveLength(3);
+  });
+});
+
+describe('in-memory repo cache hooks', () => {
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('__setInMemoryRepoCacheForTests stores a Map', () => {
+    const seed = new Map<string, RepoResponse>([
+      [
+        'owner/repo',
+        {
+          ok: true,
+          json: {
+            forks_count: 1,
+            stargazers_count: 2,
+            pushed_at: '2024-01-01',
+            archived: false,
+          },
+        },
+      ],
+    ]);
+    __setInMemoryRepoCacheForTests(seed);
+    expect(__getInMemoryRepoCacheForTests()).toBe(seed);
+  });
+
+  test('__setInMemoryRepoCacheForTests null clears the map', () => {
+    __setInMemoryRepoCacheForTests(new Map());
+    __setInMemoryRepoCacheForTests(null);
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('__resetLinkScannerForTests clears the in-memory cache', () => {
+    __setInMemoryRepoCacheForTests(new Map([['a/b', { ok: true } as RepoResponse]]));
+    __resetLinkScannerForTests();
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
   });
 });
 

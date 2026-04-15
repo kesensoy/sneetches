@@ -304,6 +304,43 @@ type CachedSettings = Awaited<ReturnType<typeof getSettings>>;
 let cachedSettings: CachedSettings | null = null;
 let cachedSettingsPromise: Promise<CachedSettings> | null = null;
 
+// In-memory mirror of chrome.storage.local's repo-cache entries.
+//
+// 1.1.4 pre-reads chrome.storage.local ONCE at content-script module
+// load (document_start) and holds the result here. updateLinks then
+// serves cache-hit anchors synchronously from this Map inside the MO
+// microtask, bypassing the service-worker port entirely for entries
+// that are already cached — eliminating the ~4.5s phase-C queueing
+// cost measured on awesome-list pages on 1.1.3.
+//
+// null = not yet populated (preload still in flight, or tests haven't
+// seeded). A null check in updateLinks falls through to the port path
+// for every anchor in that case. Empty Map = preload completed but
+// found nothing cached; also falls through to the port. Non-empty Map
+// = fast path available.
+//
+// The SW still writes fresh entries back to chrome.storage.local as
+// it always has; those writes are NOT mirrored back into this Map
+// live. Subsequent page loads re-read the updated cache via the next
+// document_start preload, which is the right TTL granularity — we
+// accept that the current scan's NEW cache hits stay in memory via
+// the SW path (unchanged) without also populating the in-memory Map.
+let inMemoryRepoCache: Map<string, RepoResponse> | null = null;
+
+// Test-only helper: directly set (or clear with `null`) the in-memory
+// repo cache. Lets tests seed a deterministic map without depending on
+// chrome.storage.local timing or the async preload promise.
+export function __setInMemoryRepoCacheForTests(map: Map<string, RepoResponse> | null): void {
+  inMemoryRepoCache = map;
+}
+
+// Test-only helper: read the current in-memory repo cache. Used to
+// verify that the preload populated it correctly and that
+// invalidation clears it.
+export function __getInMemoryRepoCacheForTests(): Map<string, RepoResponse> | null {
+  return inMemoryRepoCache;
+}
+
 async function getCachedSettings(): Promise<CachedSettings> {
   if (cachedSettings) return cachedSettings;
   if (cachedSettingsPromise) return cachedSettingsPromise;
@@ -727,6 +764,7 @@ export function __resetLinkScannerForTests(): void {
   inFlightAnchors = new WeakMap();
   silentSkipAnchors = new WeakSet();
   invalidateCachedSettings();
+  inMemoryRepoCache = null;
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
