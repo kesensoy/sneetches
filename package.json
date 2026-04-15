@@ -26,6 +26,7 @@
     "prepare": "husky",
     "sampler": "python3 -m http.server 8000 & open-cli http://localhost:8000/examples/sampler",
     "test": "jest",
+    "test:dce": "npm run build && if grep -q 'SNEETCHES_PROBE' build/content.js build/service-worker.js build/options.js; then echo 'FAIL: SNEETCHES_PROBE leaked into prod bundle' && exit 1; else echo 'OK: no probe envelope in prod bundle'; fi",
     "watch": "webpack --mode development --watch"
   },
   "repository": {
