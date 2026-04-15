@@ -13,6 +13,9 @@ module.exports = {
     './tests/chrome-storage.mock.ts',
     './tests/port.mock.ts',
   ],
+  globals: {
+    __DEBUG__: true
+  },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
       useESM: false
