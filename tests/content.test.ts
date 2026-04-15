@@ -300,11 +300,7 @@ describe('createErrorAnnotation', () => {
     });
 
     test('tooltip includes the HTTP status code', () => {
-      const elt = createErrorAnnotation(
-        { status: 500, headers },
-        '',
-        (..._: unknown[]) => null
-      );
+      const elt = createErrorAnnotation({ status: 500, headers }, '', (..._: unknown[]) => null);
       expect(elt.getAttribute('title')).toBe("Couldn't fetch repository info (status 500)");
     });
 
