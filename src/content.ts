@@ -1,5 +1,6 @@
+import { readAllCachedRepos } from './cache';
 import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
-import { isRepoUrl, RepoResponse } from './github';
+import { isRepoUrl, RepoResponse, CACHE_VERSION } from './github';
 import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
@@ -304,6 +305,112 @@ type CachedSettings = Awaited<ReturnType<typeof getSettings>>;
 let cachedSettings: CachedSettings | null = null;
 let cachedSettingsPromise: Promise<CachedSettings> | null = null;
 
+// In-memory mirror of chrome.storage.local's repo-cache entries.
+//
+// 1.1.4 pre-reads chrome.storage.local ONCE at content-script module
+// load (document_start) and holds the result here. updateLinks then
+// serves cache-hit anchors synchronously from this Map inside the MO
+// microtask, bypassing the service-worker port entirely for entries
+// that are already cached — eliminating the ~4.5s phase-C queueing
+// cost measured on awesome-list pages on 1.1.3.
+//
+// null = not yet populated (preload still in flight, or tests haven't
+// seeded). A null check in updateLinks falls through to the port path
+// for every anchor in that case. Empty Map = preload completed but
+// found nothing cached; also falls through to the port. Non-empty Map
+// = fast path available.
+//
+// The SW still writes fresh entries back to chrome.storage.local as
+// it always has; those writes are NOT mirrored back into this Map
+// live. Subsequent page loads re-read the updated cache via the next
+// document_start preload, which is the right TTL granularity — we
+// accept that the current scan's NEW cache hits stay in memory via
+// the SW path (unchanged) without also populating the in-memory Map.
+let inMemoryRepoCache: Map<string, RepoResponse> | null = null;
+
+// Test-only helper: directly set (or clear with `null`) the in-memory
+// repo cache. Lets tests seed a deterministic map without depending on
+// chrome.storage.local timing or the async preload promise.
+export function __setInMemoryRepoCacheForTests(map: Map<string, RepoResponse> | null): void {
+  inMemoryRepoCache = map;
+}
+
+// Test-only helper: read the current in-memory repo cache. Used to
+// verify that the preload populated it correctly and that
+// invalidation clears it.
+export function __getInMemoryRepoCacheForTests(): Map<string, RepoResponse> | null {
+  return inMemoryRepoCache;
+}
+
+// Preload promise — tests can await this to ensure the initial
+// chrome.storage.local read has completed before driving updateLinks.
+// Production code never awaits it; updateLinks checks `inMemoryRepoCache`
+// directly and falls through to the port path if it's still null
+// (preload hasn't resolved yet).
+let inMemoryRepoCachePromise: Promise<void> | null = null;
+
+// Generation counter for in-flight preload cancellation. runPreload()
+// captures this at the start of each run; if handleSyncStorageChange
+// (or a test reset) bumps it while the preload is awaiting its storage
+// read, the captured gen no longer matches the current value and the
+// preload's pending assignment into inMemoryRepoCache is skipped.
+// Without this guard, a token change firing during the ~234ms preload
+// window lets the in-flight preload stomp the newly-null cache with
+// stale pre-change data, defeating the invalidation.
+let preloadGeneration = 0;
+
+// Test-only helper: expose the preload promise so tests can await it
+// after seeding chrome.storage.local with cache entries. Also used by
+// tests that want to verify the initial preload populated correctly.
+export function __getPreloadPromiseForTests(): Promise<void> | null {
+  return inMemoryRepoCachePromise;
+}
+
+// Test-only helper: re-fire the preload against the current
+// chrome.storage.local state. Lets a test seed storage, then trigger
+// a fresh preload, then await it, and finally assert against
+// inMemoryRepoCache. Without this, tests would be stuck with whatever
+// the module-load preload happened to read.
+export function __rerunPreloadForTests(): Promise<void> {
+  inMemoryRepoCachePromise = runPreload();
+  return inMemoryRepoCachePromise;
+}
+
+// The actual preload work. Reads every cache entry from
+// chrome.storage.local in one IPC and writes the resulting Map into
+// inMemoryRepoCache. On rejection, installs an empty Map instead of
+// leaving inMemoryRepoCache null — we'd rather fall through to the
+// port path on the current scan than hang forever in "preload in
+// flight" state.
+async function runPreload(): Promise<void> {
+  // Capture the generation at the start of this run. If a token
+  // change (or a test-only rerun) bumps preloadGeneration while we're
+  // awaiting the storage read, our captured gen will no longer match
+  // and we'll skip the assignment — preventing a stale map from
+  // clobbering a just-invalidated cache.
+  const gen = ++preloadGeneration;
+  try {
+    const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
+    if (gen === preloadGeneration) {
+      inMemoryRepoCache = map;
+    }
+    // else: our generation was superseded (token change or test
+    // rerun); drop the result on the floor.
+  } catch (e) {
+    console.error('[sneetches] preload failed, falling back to empty cache:', e);
+    if (gen === preloadGeneration) {
+      inMemoryRepoCache = new Map();
+    }
+  }
+}
+
+// Fire the preload at content-script module load. Not awaited —
+// updateLinks handles the "not yet populated" case by falling through
+// to the port path. On awesome-list pages, React hydration takes long
+// enough that the 234ms preload (measured 2026-04-15) resolves well
+// before the first repo anchor appears and the MO fires a scan.
+inMemoryRepoCachePromise = runPreload();
+
 async function getCachedSettings(): Promise<CachedSettings> {
   if (cachedSettings) return cachedSettings;
   if (cachedSettingsPromise) return cachedSettingsPromise;
@@ -333,21 +440,49 @@ function invalidateCachedSettings(): void {
   cachedSettingsPromise = null;
 }
 
+// Apply one repo response to one anchor. Shared between the in-memory
+// cache fast path (1.1.4) and the port-fetcher chunk distribution loop.
+// Per-entry epoch guard: a mid-flight settings change bumps
+// `currentEpoch`, and any anchor still claimed under the OLD epoch
+// should be silently dropped here rather than painted over. The fresh
+// rescan dispatched by `applySettingsChange` is responsible for
+// producing the live annotation under the new settings.
+function paintResult(
+  elt: HTMLAnchorElement,
+  res: RepoResponse,
+  show: ShowSettings,
+  starStyle: StarStyle,
+  accessToken: string,
+  epoch: number
+): void {
+  if (inFlightAnchors.get(elt) !== epoch) return;
+  inFlightAnchors.delete(elt);
+  if (res.silent) {
+    silentSkipAnchors.add(elt);
+    return;
+  }
+  if (res.ok) {
+    elt.appendChild(createAnnotation(res.json!, show, starStyle));
+  } else {
+    elt.appendChild(createErrorAnnotation(res, accessToken));
+  }
+}
+
 async function updateLinks() {
-  // Capture the epoch BEFORE the await so that any settings change that
-  // fires between here and getCachedSettings() resolving is guaranteed
-  // to have bumped currentEpoch past our captured value. Our per-entry
-  // epoch check below will then correctly drop stale results in favor
-  // of the post-change rescan that applySettingsChange dispatches.
+  // Capture the epoch BEFORE the await so that any settings change
+  // that fires between here and getCachedSettings() resolving is
+  // guaranteed to have bumped currentEpoch past our captured value.
+  // Our per-entry epoch check below will then correctly drop stale
+  // results in favor of the post-change rescan that
+  // applySettingsChange dispatches.
   const epoch = currentEpoch;
   const { accessToken, show, starStyle } = await getCachedSettings();
   const links = findUnannotatedRepoLinks();
 
-  // Collect (anchor, nwo) pairs and claim each anchor under the current
-  // epoch upfront. The findUnannotatedRepoLinks filter already excludes
-  // anchors with an inFlightAnchors entry, so same-scan duplicates don't
-  // happen, but we still need to claim before the await so a concurrent
-  // settings change invalidates all of them atomically.
+  // Collect (anchor, nwo) pairs and claim each anchor under the
+  // current epoch upfront. Same semantics as pre-1.1.4: claim happens
+  // before the await so a concurrent settings change invalidates
+  // everything atomically.
   const pending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
   for (const elt of links) {
     const m = elt.href.match('^https?://github.com/(.+?)(?:.git)?/?$');
@@ -358,15 +493,53 @@ async function updateLinks() {
 
   if (pending.length === 0) return;
 
-  // Deduplicate nwos — a single page can have many anchors pointing at
-  // the same repo, and we only need one Map entry per unique nwo.
-  const uniqueNwos = Array.from(new Set(pending.map((p) => p.nwo)));
+  // 1.1.4 fast path: check the in-memory cache preloaded at
+  // document_start. Anchors whose nwo is in the Map are painted
+  // synchronously from memory — zero port round-trip, runs inside
+  // the MutationObserver microtask. Misses fall through to the SW
+  // port path unchanged.
+  //
+  // The in-memory cache is read-only from the content script's
+  // perspective; the SW still owns all writes to chrome.storage.local.
+  // Fresh fetches from the port path populate the persistent cache
+  // for NEXT page load's preload — we accept that the current scan's
+  // new cache hits don't live-update inMemoryRepoCache.
+  //
+  // NOTE: paintResult deletes each painted anchor from inFlightAnchors
+  // as a side effect. The batch-level error handler below (for the
+  // port path's transport failure case) correctly re-checks
+  // inFlightAnchors.get(elt) === epoch before appending an error
+  // annotation, so cached-path anchors that have already been drained
+  // from the map won't get a second error annotation stacked on top.
+  // Preserve that guard if you refactor the error path.
+  const uncachedPending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
+  if (inMemoryRepoCache) {
+    for (const p of pending) {
+      const cached = inMemoryRepoCache.get(p.nwo);
+      if (cached) {
+        paintResult(p.elt, cached, show, starStyle, accessToken, epoch);
+      } else {
+        uncachedPending.push(p);
+      }
+    }
+  } else {
+    // Preload hasn't resolved yet (or a token-change invalidation
+    // cleared the Map). Fall through to the port path for every
+    // pending anchor — same behavior as 1.1.3.
+    uncachedPending.push(...pending);
+  }
 
-  // Group anchors by nwo so each chunk from the service worker can be
-  // distributed to every anchor pointing at the same repo. A single
-  // entry may annotate many anchors in one go.
+  if (uncachedPending.length === 0) return;
+
+  // Deduplicate nwos across the uncached subset — a single page can
+  // have many anchors pointing at the same repo, and we only need
+  // one Map entry per unique nwo.
+  const uniqueNwos = Array.from(new Set(uncachedPending.map((p) => p.nwo)));
+
+  // Group anchors by nwo so each chunk from the service worker can
+  // distribute to every anchor pointing at the same repo.
   const byNwo = new Map<string, HTMLAnchorElement[]>();
-  for (const { elt, nwo } of pending) {
+  for (const { elt, nwo } of uncachedPending) {
     const list = byNwo.get(nwo);
     if (list) list.push(elt);
     else byNwo.set(nwo, [elt]);
@@ -377,24 +550,7 @@ async function updateLinks() {
       const anchors = byNwo.get(nwo);
       if (!anchors) continue;
       for (const elt of anchors) {
-        // Epoch guard: settings may have changed mid-chunk-stream, in
-        // which case a newer scan has taken over this anchor and we
-        // should silently drop the stale result rather than appending.
-        if (inFlightAnchors.get(elt) !== epoch) continue;
-        inFlightAnchors.delete(elt);
-        if (res.silent) {
-          // FORBIDDEN / scope-missing: mark the anchor so subsequent
-          // scans don't re-process it. See the silentSkipAnchors
-          // declaration for rationale — carried forward from the
-          // 1.1.1 greptile fix.
-          silentSkipAnchors.add(elt);
-          continue;
-        }
-        if (res.ok) {
-          elt.appendChild(createAnnotation(res.json!, show, starStyle));
-        } else {
-          elt.appendChild(createErrorAnnotation(res, accessToken));
-        }
+        paintResult(elt, res, show, starStyle, accessToken, epoch);
       }
     }
   };
@@ -402,12 +558,13 @@ async function updateLinks() {
   const result = await portFetcher(uniqueNwos, distributeChunk);
 
   if (!result.ok) {
-    // Batch-level failure (network error, 401, 5xx): every anchor still
-    // in flight under OUR epoch gets an error annotation so the user
-    // sees the failure state rather than a silent dead page. Anchors a
-    // mid-flight settings change has already claimed under a newer
-    // epoch are left alone.
-    for (const { elt } of pending) {
+    // Batch-level failure (network error, 401, 5xx): every anchor
+    // still in flight under OUR epoch in the uncached subset gets an
+    // error annotation. Cached-path anchors are already painted and
+    // cleared from inFlightAnchors, so they're untouched here — the
+    // `inFlightAnchors.get(elt) !== epoch` guard skips any anchor
+    // already drained by the fast path.
+    for (const { elt } of uncachedPending) {
       if (inFlightAnchors.get(elt) !== epoch) continue;
       inFlightAnchors.delete(elt);
       elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
@@ -716,6 +873,13 @@ export function __resetLinkScannerForTests(): void {
   inFlightAnchors = new WeakMap();
   silentSkipAnchors = new WeakSet();
   invalidateCachedSettings();
+  inMemoryRepoCache = null;
+  inMemoryRepoCachePromise = null;
+  // Bump the preload generation so any in-flight runPreload from a
+  // previous test's module-load (or __rerunPreloadForTests call) will
+  // see gen mismatch and drop its result instead of stomping state
+  // that the next test is about to seed.
+  preloadGeneration++;
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
@@ -756,6 +920,11 @@ function handleSyncStorageChange(changes: { [key: string]: chrome.storage.Storag
   const accessTokenChange = changes[ACCESS_TOKEN_KEY];
   if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
     chrome.storage.local.clear();
+    inMemoryRepoCache = null;
+    // Cancel any in-flight preload from before the token change — its
+    // pending assignment into inMemoryRepoCache would otherwise stomp
+    // the null we just set with stale pre-change data.
+    preloadGeneration++;
   }
   applySettingsChange();
 }
@@ -770,9 +939,86 @@ export function __handleSyncStorageChangeForTests(changes: {
   handleSyncStorageChange(changes);
 }
 
-startLinkScanner();
-detectStarredStateOnSneetchesRepo();
+// Handle a local-storage-change batch. We only care about repo-cache
+// entry REMOVALS — if any nwo-shaped key (one that contains "/") was
+// removed (oldValue present, newValue undefined), invalidate the
+// in-memory mirror because it's now out of sync with disk.
+//
+// Only removals trigger invalidation. Fresh writes from the SW's
+// bulkWriteCache path fire onChanged with `newValue` set (either
+// oldValue+newValue for updates, or just newValue for new keys) —
+// those are the normal cache-population flow and must NOT wipe the
+// in-memory mirror, otherwise every scan would clobber the cache we
+// just populated.
+//
+// rate_limit (the only non-cache key in chrome.storage.local today)
+// is filtered out via the slash check. If it were removed alone, we
+// wouldn't want to invalidate the repo cache over a rate-limit
+// tombstone.
+//
+// Greptile P2 (2026-04-15): without this branch, the options-page
+// "Clear cache" button wipes disk state but the current page keeps
+// painting from stale in-memory data until the tab reloads.
+function handleLocalStorageChange(changes: { [key: string]: chrome.storage.StorageChange }): void {
+  for (const [key, change] of Object.entries(changes)) {
+    if (!key.includes('/')) continue;
+    if (change.oldValue !== undefined && change.newValue === undefined) {
+      inMemoryRepoCache = null;
+      // Cancel any in-flight preload so it can't stomp this null
+      // with data it read before the removal event fired. Same
+      // mechanism handleSyncStorageChange uses for the access-token
+      // invalidation path.
+      preloadGeneration++;
+      return;
+    }
+  }
+}
+
+// Test-only helper: drive the local-storage-changed code path with a
+// synthetic changes object. The custom Chrome storage mock doesn't
+// fire onChanged events from remove() calls, so tests exercising the
+// clear-cache invalidation need to invoke the handler directly.
+export function __handleLocalStorageChangeForTests(changes: {
+  [key: string]: chrome.storage.StorageChange;
+}): void {
+  handleLocalStorageChange(changes);
+}
+
+// DOM-dependent initialization: wait for <body> before installing the
+// MutationObserver that startLinkScanner and
+// detectStarredStateOnSneetchesRepo need. At run_at: "document_start"
+// (1.1.4), the parser may not have reached <body> yet when this script
+// runs. Per feedback_main_thread_contention_timing.md, use a MO on
+// documentElement instead of DOMContentLoaded / setTimeout — MO
+// callbacks drain as microtasks between React's tasks, reliably under
+// main-thread contention, while setTimeout-based scheduling can delay
+// multi-second.
+function initializeDomDependentFeatures(): void {
+  startLinkScanner();
+  detectStarredStateOnSneetchesRepo();
+}
+
+if (document.body) {
+  // Body already exists — either run_at: "document_idle" injection
+  // (legacy) or a jsdom test environment that pre-creates body. Run
+  // synchronously.
+  initializeDomDependentFeatures();
+} else {
+  // document_start injection: body hasn't parsed yet. Watch
+  // documentElement for the first childList mutation that adds body,
+  // then fire init and disconnect. This is a microtask-scoped signal
+  // that fires the moment the HTML parser inserts <body>, with no
+  // task-queue delay.
+  const bodyWaitObserver = new MutationObserver(() => {
+    if (document.body) {
+      bodyWaitObserver.disconnect();
+      initializeDomDependentFeatures();
+    }
+  });
+  bodyWaitObserver.observe(document.documentElement, { childList: true });
+}
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'sync') handleSyncStorageChange(changes);
+  else if (namespace === 'local') handleLocalStorageChange(changes);
 });

@@ -136,6 +136,42 @@ export function bulkWriteCache<T, V>(fresh: Map<string, T>, version: V): void {
   chrome.storage.local.set(toStore, () => chrome.runtime.lastError && chrome.storage.local.clear());
 }
 
+// Read EVERY cached repo entry from chrome.storage.local in a single
+// get(null) call and return a Map keyed by the repo key. Filters:
+//   - skips non-cache keys (rate_limit, anything without a "/")
+//   - skips entries whose `ver` differs from the requested version
+//   - skips expired entries (exp <= now)
+//   - silently drops malformed entries (missing exp / pay / ver)
+//
+// Used by the 1.1.4 content-script preload path at document_start,
+// where the DOM is still empty and we can't scope the read to a
+// specific nwo list. The full-read cost is bounded by storage size —
+// 2026-04-15 probe measured 234ms for 705 entries / 150KB on
+// awesome-homelab, which comfortably beats React's hydration latency
+// under normal conditions.
+export async function readAllCachedRepos<T, V>(version: V): Promise<Map<string, T>> {
+  const items = await new Promise<Record<string, unknown>>((resolve, reject) =>
+    chrome.storage.local.get(null, (result) =>
+      chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve(result)
+    )
+  );
+  const now = Date.now();
+  const map = new Map<string, T>();
+  for (const [key, value] of Object.entries(items)) {
+    // Cache keys are always nwo-shaped ("owner/name"). The only other
+    // key `cache.ts` consumers write today is `rate_limit`, but guard
+    // by the "/" shape so new non-cache keys don't leak in.
+    if (!key.includes('/')) continue;
+    const entry = value as Entry<T, V> | undefined;
+    if (!entry) continue;
+    if (entry.ver !== version) continue;
+    if (typeof entry.exp !== 'number' || entry.exp <= now) continue;
+    if (entry.pay === undefined) continue;
+    map.set(key, entry.pay);
+  }
+  return map;
+}
+
 export function getCacheEntryCount(): Promise<number> {
   return new Promise((resolve, reject) =>
     chrome.storage.local.get(null, (items) =>

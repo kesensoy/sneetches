@@ -5,6 +5,7 @@ import {
   locallyCachedBatch,
   getCacheEntryCount,
   clearCache,
+  readAllCachedRepos,
 } from '../src/cache';
 
 describe('locallyCached', () => {
@@ -296,5 +297,84 @@ describe('clearCache', () => {
       chrome.storage.local.get(['rate_limit'], (items) => resolve(items))
     );
     expect(stored.rate_limit).toBeDefined();
+  });
+});
+
+describe('readAllCachedRepos', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('returns empty Map when storage is empty', async () => {
+    const result = await readAllCachedRepos<string, number>(1);
+    expect(result.size).toBe(0);
+  });
+
+  test('returns only entries matching the requested version', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/repo-v1': { exp: now + 60_000, pay: 'v1-payload', ver: 1 },
+          'owner/repo-v2': { exp: now + 60_000, pay: 'v2-payload', ver: 2 },
+        },
+        resolve
+      )
+    );
+    const result = await readAllCachedRepos<string, number>(2);
+    expect(result.size).toBe(1);
+    expect(result.get('owner/repo-v2')).toBe('v2-payload');
+    expect(result.has('owner/repo-v1')).toBe(false);
+  });
+
+  test('drops expired entries', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/fresh': { exp: now + 60_000, pay: 'fresh', ver: 1 },
+          'owner/stale': { exp: now - 60_000, pay: 'stale', ver: 1 },
+        },
+        resolve
+      )
+    );
+    const result = await readAllCachedRepos<string, number>(1);
+    expect(result.get('owner/fresh')).toBe('fresh');
+    expect(result.has('owner/stale')).toBe(false);
+  });
+
+  test('skips non-cache keys (rate_limit, etc.)', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/repo': { exp: now + 60_000, pay: 'repo-data', ver: 1 },
+          rate_limit: { limit: 5000, remaining: 4999 },
+        },
+        resolve
+      )
+    );
+    const result = await readAllCachedRepos<string, number>(1);
+    expect(result.size).toBe(1);
+    expect(result.get('owner/repo')).toBe('repo-data');
+    expect(result.has('rate_limit')).toBe(false);
+  });
+
+  test('silently skips malformed entries (missing fields)', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/good': { exp: now + 60_000, pay: 'good', ver: 1 },
+          'owner/noexp': { pay: 'bad', ver: 1 },
+          'owner/nover': { exp: now + 60_000, pay: 'bad' },
+          'owner/nopay': { exp: now + 60_000, ver: 1 },
+        },
+        resolve
+      )
+    );
+    const result = await readAllCachedRepos<string, number>(1);
+    expect(result.size).toBe(1);
+    expect(result.get('owner/good')).toBe('good');
   });
 });

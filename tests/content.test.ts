@@ -8,8 +8,13 @@ import {
   __resetLinkScannerForTests,
   __applySettingsChangeForTests,
   __handleSyncStorageChangeForTests,
+  __handleLocalStorageChangeForTests,
   __setPortFetcherForTests,
   __getCachedSettingsForTests,
+  __setInMemoryRepoCacheForTests,
+  __getInMemoryRepoCacheForTests,
+  __rerunPreloadForTests,
+  __getPreloadPromiseForTests,
 } from '../src/content';
 
 // Alias retained so the existing call sites don't all change names.
@@ -877,6 +882,43 @@ describe('updateLinks batching', () => {
   });
 });
 
+describe('in-memory repo cache hooks', () => {
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('__setInMemoryRepoCacheForTests stores a Map', () => {
+    const seed = new Map<string, RepoResponse>([
+      [
+        'owner/repo',
+        {
+          ok: true,
+          json: {
+            forks_count: 1,
+            stargazers_count: 2,
+            pushed_at: '2024-01-01',
+            archived: false,
+          },
+        },
+      ],
+    ]);
+    __setInMemoryRepoCacheForTests(seed);
+    expect(__getInMemoryRepoCacheForTests()).toBe(seed);
+  });
+
+  test('__setInMemoryRepoCacheForTests null clears the map', () => {
+    __setInMemoryRepoCacheForTests(new Map());
+    __setInMemoryRepoCacheForTests(null);
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('__resetLinkScannerForTests clears the in-memory cache', () => {
+    __setInMemoryRepoCacheForTests(new Map([['a/b', { ok: true } as RepoResponse]]));
+    __resetLinkScannerForTests();
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+});
+
 describe('scan scheduler behavior', () => {
   // Guards the 1.1.3 scheduler rework: leading-edge MutationObserver
   // trigger + cumulative max-wait + rolling debounce. Each test isolates
@@ -1062,5 +1104,456 @@ describe('scan scheduler behavior', () => {
     // Exactly one scan — leading-edge ran, cleared both timers, neither
     // subsequently fired a redundant scan.
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('in-memory repo cache preload', () => {
+  const freshEntry = (nwo: string, stars: number) => ({
+    [nwo]: {
+      exp: Date.now() + 60_000,
+      ver: 2,
+      pay: {
+        ok: true,
+        json: {
+          forks_count: 0,
+          stargazers_count: stars,
+          pushed_at: '2024-01-01',
+          archived: false,
+        },
+      },
+    },
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    __resetLinkScannerForTests();
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('preload populates inMemoryRepoCache from storage', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        { ...freshEntry('ollama/ollama', 42), ...freshEntry('vercel/next.js', 100) },
+        resolve
+      )
+    );
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map).not.toBeNull();
+    expect(map!.size).toBe(2);
+    expect(map!.get('ollama/ollama')?.json?.stargazers_count).toBe(42);
+    expect(map!.get('vercel/next.js')?.json?.stargazers_count).toBe(100);
+  });
+
+  test('preload skips expired entries', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/fresh': { exp: now + 60_000, ver: 2, pay: { ok: true } },
+          'owner/stale': { exp: now - 60_000, ver: 2, pay: { ok: true } },
+        },
+        resolve
+      )
+    );
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map!.has('owner/fresh')).toBe(true);
+    expect(map!.has('owner/stale')).toBe(false);
+  });
+
+  test('preload skips entries with wrong version', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/v1': { exp: Date.now() + 60_000, ver: 1, pay: { ok: true } },
+          'owner/v2': { exp: Date.now() + 60_000, ver: 2, pay: { ok: true } },
+        },
+        resolve
+      )
+    );
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map!.has('owner/v2')).toBe(true);
+    expect(map!.has('owner/v1')).toBe(false);
+  });
+
+  test('preload results in empty Map when storage is empty', async () => {
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map).not.toBeNull();
+    expect(map!.size).toBe(0);
+  });
+});
+
+describe('in-memory cache fast path', () => {
+  const freshResponse = (stars: number): RepoResponse => ({
+    ok: true,
+    json: {
+      forks_count: 0,
+      stargazers_count: stars,
+      pushed_at: '2024-01-01',
+      archived: false,
+    },
+  });
+
+  beforeAll(() => {
+    __setPortFetcherForTests(portFetcherMock);
+  });
+  afterAll(() => {
+    __setPortFetcherForTests(null);
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        { show: { stars: true, forks: false, update: false }, star_style: 'outline' },
+        resolve
+      )
+    );
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    document.body.innerHTML = '';
+    portFetcherMock.mockReset();
+    // Port-path sentinel: any uncached nwo falls through and gets 999
+    // stars from the mock. Cached nwos get whatever the seeded Map
+    // says, NOT 999. Mismatched values are how we tell which path
+    // served each anchor.
+    mockBatchRespondsWith(freshResponse(999));
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
+
+  test('cached anchors are painted from memory without calling the port', async () => {
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    const annotation = a.querySelector('.data-sneetch-extension');
+    expect(annotation).not.toBeNull();
+    expect(annotation?.textContent).toContain('42');
+  });
+
+  test('uncached anchors fall through to the port fetcher', async () => {
+    __setInMemoryRepoCacheForTests(new Map());
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/vercel/next.js';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
+    expect(a.querySelector('.data-sneetch-extension')?.textContent).toContain('999');
+  });
+
+  test('mixed cached + uncached: only misses go through the port', async () => {
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    const a1 = document.createElement('a');
+    a1.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a1);
+
+    const a2 = document.createElement('a');
+    a2.href = 'https://github.com/vercel/next.js';
+    document.body.appendChild(a2);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledTimes(1);
+    expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
+    expect(a1.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+    expect(a2.querySelector('.data-sneetch-extension')?.textContent).toContain('999');
+  });
+
+  test('null in-memory cache (preload not resolved) falls through entirely to port', async () => {
+    __setInMemoryRepoCacheForTests(null);
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledWith(['ollama/ollama'], expect.any(Function));
+  });
+
+  test('silent-skip entries in the in-memory cache populate silentSkipAnchors', async () => {
+    __setInMemoryRepoCacheForTests(
+      // Minimal silent-skip RepoResponse — json/status/headers not needed
+      // for this path; paintResult routes on `silent: true`.
+      new Map([['private/repo', { ok: false, silent: true } as RepoResponse]])
+    );
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/private/repo';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    // First scan: no port call, no annotation — paintResult's silent
+    // branch adds the anchor to silentSkipAnchors and returns.
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+
+    // Trigger a second scan by adding an unrelated node. If the anchor
+    // wasn't in silentSkipAnchors, findUnannotatedRepoLinks would re-pick
+    // it up (childElementCount === 0 and no inFlightAnchors entry), and
+    // paintResult would fire again. We verify the WeakSet population
+    // indirectly: the second scan must still not touch this anchor.
+    const trigger = document.createElement('div');
+    document.body.appendChild(trigger);
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+
+  test('deduplicated nwos: cached repo shared across multiple anchors paints once from memory', async () => {
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    const a1 = document.createElement('a');
+    a1.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a1);
+
+    const a2 = document.createElement('a');
+    a2.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a2);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(a1.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+    expect(a2.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+  });
+
+  test('port-path transport failure does not error-annotate cached-path anchors', async () => {
+    // Fast path serves one anchor from memory; the port then fails for
+    // the other anchor. The cached anchor must keep its successful
+    // annotation and NOT get an error chip stacked on top, because
+    // paintResult already drained it from inFlightAnchors and the
+    // error handler's epoch guard correctly skips it.
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    // Override the port mock to simulate a batch-level failure
+    // (network error, 5xx, 401) — the port fetcher resolves with
+    // { ok: false, status: 500 } and does NOT call the chunk callback.
+    portFetcherMock.mockImplementation(async () => {
+      return { ok: false, status: 500 };
+    });
+
+    const cached = document.createElement('a');
+    cached.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(cached);
+
+    const uncached = document.createElement('a');
+    uncached.href = 'https://github.com/vercel/next.js';
+    document.body.appendChild(uncached);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    // Cached anchor: one clean fast-path annotation with "42" stars.
+    // No error chip, no duplicate annotation.
+    const cachedAnnotations = cached.querySelectorAll('.data-sneetch-extension');
+    expect(cachedAnnotations).toHaveLength(1);
+    expect(cachedAnnotations[0].textContent).toContain('42');
+
+    // Uncached anchor: exactly one error annotation from the batch-level
+    // failure handler. Default error for status 500 is an empty-text
+    // annotation per createErrorAnnotation's else branch.
+    const uncachedAnnotations = uncached.querySelectorAll('.data-sneetch-extension');
+    expect(uncachedAnnotations).toHaveLength(1);
+
+    // Port was called with ONLY the uncached nwo (dedup + split working).
+    expect(portFetcherMock).toHaveBeenCalledTimes(1);
+    expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
+  });
+});
+
+describe('in-memory cache invalidation on settings change', () => {
+  const freshResponse = (): RepoResponse => ({
+    ok: true,
+    json: {
+      forks_count: 0,
+      stargazers_count: 1,
+      pushed_at: '2024-01-01',
+      archived: false,
+    },
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    __resetLinkScannerForTests();
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('access-token change clears inMemoryRepoCache', () => {
+    __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
+    __handleSyncStorageChangeForTests({
+      access_token: { oldValue: 'old', newValue: 'new' },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('show-setting change does NOT clear inMemoryRepoCache', () => {
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleSyncStorageChangeForTests({
+      show: {
+        oldValue: { stars: true, forks: false, update: false },
+        newValue: { stars: true, forks: true, update: false },
+      },
+    });
+    // Repo data is still valid — only rendering changed. Map is
+    // unchanged; applySettingsChange's rescan reads the same Map and
+    // re-paints with the new toggles.
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+  });
+
+  test('star_style change does NOT clear inMemoryRepoCache', () => {
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleSyncStorageChangeForTests({
+      star_style: { oldValue: 'outline', newValue: 'filled' },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+  });
+
+  test('in-flight preload from before token change does not stomp invalidated cache', async () => {
+    // Seed chrome.storage.local with stale token-era data that the
+    // in-flight preload will read.
+    const staleData = {
+      exp: Date.now() + 60_000,
+      ver: 2,
+      pay: {
+        ok: true,
+        json: {
+          forks_count: 0,
+          stargazers_count: 999,
+          pushed_at: '2024-01-01',
+          archived: false,
+        },
+      },
+    };
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set({ 'stale/repo': staleData }, resolve)
+    );
+
+    // Kick off a preload — this is the "in-flight" preload that will
+    // read the stale data.
+    const inflightPreload = __rerunPreloadForTests();
+
+    // Simulate a token-change event firing BEFORE the in-flight preload
+    // resolves. handleSyncStorageChange clears storage, nulls the
+    // in-memory cache, and (with the fix) invalidates the in-flight
+    // preload's generation so its pending assignment becomes a no-op.
+    __handleSyncStorageChangeForTests({
+      access_token: { oldValue: 'old-token', newValue: 'new-token' },
+    });
+
+    // Now drain the in-flight preload. Without the generation guard,
+    // this would stomp inMemoryRepoCache back to { 'stale/repo': ... }.
+    // With the guard, the assignment is skipped and inMemoryRepoCache
+    // stays null.
+    await inflightPreload;
+
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+});
+
+describe('in-memory cache invalidation on local storage clear', () => {
+  const freshResponse = (): RepoResponse => ({
+    ok: true,
+    json: {
+      forks_count: 0,
+      stargazers_count: 1,
+      pushed_at: '2024-01-01',
+      archived: false,
+    },
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    __resetLinkScannerForTests();
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('removal of a repo-cache entry clears inMemoryRepoCache', () => {
+    __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
+    __handleLocalStorageChangeForTests({
+      'a/b': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('full cache clear (multiple removals) clears inMemoryRepoCache', () => {
+    __setInMemoryRepoCacheForTests(
+      new Map([
+        ['a/b', freshResponse()],
+        ['c/d', freshResponse()],
+      ])
+    );
+    __handleLocalStorageChangeForTests({
+      'a/b': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
+      'c/d': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
+      rate_limit: { oldValue: { limit: 5000, remaining: 4999 }, newValue: undefined },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('fresh cache write (SW bulkWriteCache) does NOT clear inMemoryRepoCache', () => {
+    // A fresh write has both oldValue and newValue set (or only
+    // newValue for a brand-new key). The SW's bulkWriteCache path
+    // fires this shape on every scan — it must NOT invalidate the
+    // in-memory mirror, otherwise every scan would wipe the cache
+    // we're trying to use.
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleLocalStorageChangeForTests({
+      'new/repo': { newValue: { exp: 123, pay: {}, ver: 2 } },
+      'existing/repo': {
+        oldValue: { exp: 100, pay: {}, ver: 2 },
+        newValue: { exp: 456, pay: {}, ver: 2 },
+      },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+  });
+
+  test('rate_limit removal alone does NOT clear inMemoryRepoCache', () => {
+    // rate_limit is not a cache key (no slash). If it's the only key
+    // in a change batch, do not invalidate — rate_limit removals
+    // don't represent a cache clear semantics.
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleLocalStorageChangeForTests({
+      rate_limit: { oldValue: { limit: 5000, remaining: 4999 }, newValue: undefined },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
 });
