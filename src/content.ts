@@ -939,8 +939,39 @@ export function __handleSyncStorageChangeForTests(changes: {
   handleSyncStorageChange(changes);
 }
 
-startLinkScanner();
-detectStarredStateOnSneetchesRepo();
+// DOM-dependent initialization: wait for <body> before installing the
+// MutationObserver that startLinkScanner and
+// detectStarredStateOnSneetchesRepo need. At run_at: "document_start"
+// (1.1.4), the parser may not have reached <body> yet when this script
+// runs. Per feedback_main_thread_contention_timing.md, use a MO on
+// documentElement instead of DOMContentLoaded / setTimeout — MO
+// callbacks drain as microtasks between React's tasks, reliably under
+// main-thread contention, while setTimeout-based scheduling can delay
+// multi-second.
+function initializeDomDependentFeatures(): void {
+  startLinkScanner();
+  detectStarredStateOnSneetchesRepo();
+}
+
+if (document.body) {
+  // Body already exists — either run_at: "document_idle" injection
+  // (legacy) or a jsdom test environment that pre-creates body. Run
+  // synchronously.
+  initializeDomDependentFeatures();
+} else {
+  // document_start injection: body hasn't parsed yet. Watch
+  // documentElement for the first childList mutation that adds body,
+  // then fire init and disconnect. This is a microtask-scoped signal
+  // that fires the moment the HTML parser inserts <body>, with no
+  // task-queue delay.
+  const bodyWaitObserver = new MutationObserver(() => {
+    if (document.body) {
+      bodyWaitObserver.disconnect();
+      initializeDomDependentFeatures();
+    }
+  });
+  bodyWaitObserver.observe(document.documentElement, { childList: true });
+}
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'sync') handleSyncStorageChange(changes);
