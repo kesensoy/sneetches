@@ -375,7 +375,8 @@ export function __rerunPreloadForTests(): Promise<void> {
 async function runPreload(): Promise<void> {
   try {
     inMemoryRepoCache = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
-  } catch {
+  } catch (e) {
+    console.error('[sneetches] preload failed, falling back to empty cache:', e);
     inMemoryRepoCache = new Map();
   }
 }
@@ -811,6 +812,7 @@ export function __resetLinkScannerForTests(): void {
   silentSkipAnchors = new WeakSet();
   invalidateCachedSettings();
   inMemoryRepoCache = null;
+  inMemoryRepoCachePromise = null;
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
