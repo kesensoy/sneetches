@@ -333,6 +333,34 @@ function invalidateCachedSettings(): void {
   cachedSettingsPromise = null;
 }
 
+// Apply one repo response to one anchor. Shared between the in-memory
+// cache fast path (1.1.4) and the port-fetcher chunk distribution loop.
+// Per-entry epoch guard: a mid-flight settings change bumps
+// `currentEpoch`, and any anchor still claimed under the OLD epoch
+// should be silently dropped here rather than painted over. The fresh
+// rescan dispatched by `applySettingsChange` is responsible for
+// producing the live annotation under the new settings.
+function paintResult(
+  elt: HTMLAnchorElement,
+  res: RepoResponse,
+  show: ShowSettings,
+  starStyle: StarStyle,
+  accessToken: string,
+  epoch: number
+): void {
+  if (inFlightAnchors.get(elt) !== epoch) return;
+  inFlightAnchors.delete(elt);
+  if (res.silent) {
+    silentSkipAnchors.add(elt);
+    return;
+  }
+  if (res.ok) {
+    elt.appendChild(createAnnotation(res.json!, show, starStyle));
+  } else {
+    elt.appendChild(createErrorAnnotation(res, accessToken));
+  }
+}
+
 async function updateLinks() {
   // Capture the epoch BEFORE the await so that any settings change that
   // fires between here and getCachedSettings() resolving is guaranteed
@@ -377,24 +405,7 @@ async function updateLinks() {
       const anchors = byNwo.get(nwo);
       if (!anchors) continue;
       for (const elt of anchors) {
-        // Epoch guard: settings may have changed mid-chunk-stream, in
-        // which case a newer scan has taken over this anchor and we
-        // should silently drop the stale result rather than appending.
-        if (inFlightAnchors.get(elt) !== epoch) continue;
-        inFlightAnchors.delete(elt);
-        if (res.silent) {
-          // FORBIDDEN / scope-missing: mark the anchor so subsequent
-          // scans don't re-process it. See the silentSkipAnchors
-          // declaration for rationale — carried forward from the
-          // 1.1.1 greptile fix.
-          silentSkipAnchors.add(elt);
-          continue;
-        }
-        if (res.ok) {
-          elt.appendChild(createAnnotation(res.json!, show, starStyle));
-        } else {
-          elt.appendChild(createErrorAnnotation(res, accessToken));
-        }
+        paintResult(elt, res, show, starStyle, accessToken, epoch);
       }
     }
   };
