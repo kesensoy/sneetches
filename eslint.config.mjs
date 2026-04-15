@@ -39,6 +39,18 @@ export default tseslint.config(
   },
   eslintConfigPrettier,
   {
+    // scripts/ is the dev-tooling tree (probe-run, etc.). It interops with
+    // CJS-first packages (chrome-remote-interface) via `require()`, and its
+    // skeletons can land before the symbols they declare are wired up. Loosen
+    // the two rules that collide with that workflow; everything else still
+    // applies.
+    files: ['scripts/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+    },
+  },
+  {
     ignores: ['node_modules/', 'build/', 'dist/', '*.js', '*.mjs', 'webpack.config.js', 'jest.config.js'],
   }
 );
