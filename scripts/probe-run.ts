@@ -1,44 +1,39 @@
 #!/usr/bin/env node
 // Local dev measurement harness.
 //
-// Launches Chrome with a temp copy of the user's real profile loaded,
-// attaches to it via CDP through --remote-debugging-port=9222, listens
-// for SNEETCHES_PROBE console events from the extension, and writes
-// the captured payloads to docs/plans/probe-runs/<timestamp>.json.
+// Drives a perf probe against the sneetches Chrome extension without
+// touching the user's real Chrome. The flow is:
 //
+//   1. Load .env.probe at the repo root (for SNEETCHES_PROBE_GITHUB_PAT)
+//   2. Build the extension in development mode (unless fresh)
+//   3. Launch Chrome for Testing via Puppeteer with the unpacked
+//      extension loaded via `enableExtensions`, using a persistent
+//      profile dir at ~/.sneetches-probe/profile/
+//   4. Attach to the extension's service-worker target and inject the
+//      PAT into chrome.storage.sync if it's not already there
+//   5. Open a new page, wire a console listener, navigate to the
+//      target URL, wait for the SNEETCHES_PROBE envelope, drain for
+//      500ms, close the browser
+//   6. Write the captured payloads to docs/plans/probe-runs/ and print
+//      a diff table against the most recent previous run
+//
+// Design doc: docs/plans/2026-04-15-1.1.6-dev-instrumentation-design.md
 // Usage:
 //   npm run probe
 //   npm run probe -- --url https://github.com/some/list
 //   npm run probe -- --label my-experiment
-//
-// Design doc: docs/plans/2026-04-15-1.1.6-dev-instrumentation-design.md
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import { promises as fs, existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import puppeteer, { Browser, ConsoleMessage, Target } from 'puppeteer';
 
-// chrome-remote-interface ships CJS-first; import via require for cleanest typing.
-
-const CDP: (options?: {
-  port?: number;
-  target?: (
-    targets: Array<{ url: string; type: string; webSocketDebuggerUrl: string }>
-  ) => { url: string; type: string; webSocketDebuggerUrl: string } | undefined;
-}) => Promise<{
-  Runtime: {
-    enable: () => Promise<void>;
-    consoleAPICalled: (
-      handler: (params: { args: Array<{ value?: unknown }>; type: string }) => void
-    ) => void;
-  };
-  close: () => Promise<void>;
-}> = require('chrome-remote-interface');
-
-const DEBUG_PORT = 9222;
 const DEFAULT_TARGET_URL = 'https://github.com/miantiao-me/awesome-homelab';
 const CAPTURE_TIMEOUT_MS = 60_000;
 const POST_CAPTURE_DRAIN_MS = 500;
+const SW_TARGET_TIMEOUT_MS = 15_000;
+const PROBE_PROFILE_DIR = path.join(os.homedir(), '.sneetches-probe', 'profile');
 
 interface Args {
   url: string;
@@ -68,35 +63,37 @@ function slugify(s: string): string {
     .toLowerCase();
 }
 
-function getDefaultChromeProfilePath(): string {
-  const home = os.homedir();
-  switch (process.platform) {
-    case 'darwin':
-      return path.join(home, 'Library/Application Support/Google/Chrome/Default');
-    case 'linux':
-      return path.join(home, '.config/google-chrome/Default');
-    case 'win32':
-      return path.join(home, 'AppData/Local/Google/Chrome/User Data/Default');
-    default:
-      throw new Error(`Unsupported platform: ${process.platform}`);
+// Minimal .env parser. Reads the repo-root .env.probe (if present) and
+// sets any KEY=VALUE pairs into process.env. Skips comments, blank
+// lines, and ignores quoted values' surrounding quotes. Silent no-op
+// if the file doesn't exist — the script will fail later at the PAT
+// check with a clear error.
+async function loadEnvProbe(): Promise<void> {
+  const envPath = path.resolve(process.cwd(), '.env.probe');
+  let content: string;
+  try {
+    content = await fs.readFile(envPath, 'utf-8');
+  } catch {
+    return;
   }
-}
-
-function getChromeExecutable(): string {
-  switch (process.platform) {
-    case 'darwin':
-      return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    case 'linux':
-      return 'google-chrome';
-    case 'win32':
-      return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-    default:
-      throw new Error(`Unsupported platform: ${process.platform}`);
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    // Don't overwrite anything already set in the shell environment
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
   }
-}
-
-async function copyProfile(src: string, dest: string): Promise<void> {
-  await fs.cp(src, dest, { recursive: true, errorOnExist: false });
 }
 
 async function isStale(file: string, thresholdMs: number): Promise<boolean> {
@@ -108,38 +105,25 @@ async function isStale(file: string, thresholdMs: number): Promise<boolean> {
   }
 }
 
-async function waitForDebugPort(maxMs = 10_000): Promise<void> {
-  const http = require('http');
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    const reached = await new Promise<boolean>((resolve) => {
-      const req = http.get(
-        `http://localhost:${DEBUG_PORT}/json/version`,
-        (res: { statusCode?: number; resume?: () => void }) => {
-          resolve(res.statusCode === 200);
-          res.resume?.();
-        }
-      );
-      req.on('error', () => resolve(false));
-      req.setTimeout(500, () => {
-        req.destroy();
-        resolve(false);
-      });
-    });
-    if (reached) return;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  throw new Error(`Chrome did not expose --remote-debugging-port=${DEBUG_PORT} within ${maxMs}ms`);
-}
-
 async function ensureDevBuild(): Promise<string> {
   const buildPath = path.resolve(process.cwd(), 'build');
   const manifestPath = path.join(buildPath, 'manifest.json');
   const contentPath = path.join(buildPath, 'content.js');
-  const needsBuild =
+  // Trigger a rebuild if: build is missing, stale (>60s), or looks
+  // like a production build (no SNEETCHES_PROBE envelope, because
+  // Terser's pure_funcs stripped it). The probe canary doubles as
+  // the "is this a dev build?" check.
+  let needsBuild =
     !existsSync(manifestPath) || !existsSync(contentPath) || (await isStale(contentPath, 60_000));
+  if (!needsBuild) {
+    const existing = await fs.readFile(contentPath, 'utf-8');
+    if (!existing.includes('SNEETCHES_PROBE')) {
+      console.log('[probe-run] existing build/ is a production build; rebuilding in dev mode');
+      needsBuild = true;
+    }
+  }
   if (needsBuild) {
-    console.log('[probe-run] build/ missing or stale; running `npm run dev`...');
+    console.log('[probe-run] running `npm run dev`...');
     await new Promise<void>((resolve, reject) => {
       const b = spawn('npm', ['run', 'dev'], { stdio: 'inherit' });
       b.on('exit', (code) =>
@@ -147,7 +131,7 @@ async function ensureDevBuild(): Promise<string> {
       );
     });
   }
-  // Sanity check: probe envelope should exist in the dev bundle
+  // Post-build sanity check
   const content = await fs.readFile(contentPath, 'utf-8');
   if (!content.includes('SNEETCHES_PROBE')) {
     throw new Error(
@@ -155,6 +139,58 @@ async function ensureDevBuild(): Promise<string> {
     );
   }
   return buildPath;
+}
+
+// Find (or wait for) the extension's service worker target so we can
+// inject settings via chrome.storage.sync from inside the SW context.
+// MV3 SWs register asynchronously after the extension loads; on a
+// cold profile the target may not exist yet when we first check.
+async function findServiceWorkerTarget(browser: Browser): Promise<Target> {
+  // Check existing targets first — on warm profiles the SW is already up.
+  for (const t of browser.targets()) {
+    if (t.type() === 'service_worker' && t.url().endsWith('service-worker.js')) {
+      return t;
+    }
+  }
+  return browser.waitForTarget(
+    (t) => t.type() === 'service_worker' && t.url().endsWith('service-worker.js'),
+    { timeout: SW_TARGET_TIMEOUT_MS }
+  );
+}
+
+// Inject the GitHub PAT into the extension's chrome.storage.sync iff
+// it's not already there. Persistent profile means most runs are a
+// no-op on this step, which is the intended behavior — changing the
+// PAT on every run would wipe the local cache via the extension's
+// handleSyncStorageChange handler and we'd always measure cold cache.
+async function ensurePatConfigured(browser: Browser, pat: string): Promise<void> {
+  const swTarget = await findServiceWorkerTarget(browser);
+  const worker = await swTarget.worker();
+  if (!worker) {
+    throw new Error('[probe-run] service worker target has no worker handle');
+  }
+  const existing = await worker.evaluate(async () => {
+    return new Promise<string | undefined>((resolve) => {
+      chrome.storage.sync.get(['access_token'], (r) => resolve(r.access_token));
+    });
+  });
+  if (existing === pat) {
+    console.log('[probe-run] PAT already configured in persistent profile');
+    return;
+  }
+  if (existing) {
+    console.log('[probe-run] PAT in profile differs from env; updating');
+  } else {
+    console.log('[probe-run] PAT not set in profile; injecting');
+  }
+  await worker.evaluate(async (token: string) => {
+    return new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: token, token_validated: true }, () => resolve());
+    });
+  }, pat);
+  // Small pause so the SW's own settings-change listeners settle
+  // before we start measuring.
+  await new Promise((r) => setTimeout(r, 500));
 }
 
 interface ProbeEntry {
@@ -198,7 +234,6 @@ async function printDiffAgainstLatest(runsDir: string, currentPath: string): Pro
   const current: ProbeRun = JSON.parse(await fs.readFile(currentPath, 'utf-8'));
   const previous: ProbeRun = JSON.parse(await fs.readFile(previousPath, 'utf-8'));
 
-  // Diff per ctx (cs vs sw)
   for (const ctx of ['cs', 'sw'] as const) {
     const cur = current.payloads.find((p) => p.ctx === ctx);
     const prev = previous.payloads.find((p) => p.ctx === ctx);
@@ -220,7 +255,6 @@ async function printDiffAgainstLatest(runsDir: string, currentPath: string): Pro
         c !== undefined && p !== undefined ? `${c - p >= 0 ? '+' : ''}${(c - p).toFixed(0)}` : '—';
       rows.push([phase, pStr, cStr, delta]);
     }
-    // Simple ASCII table
     const widths = [0, 0, 0, 0];
     for (const row of rows) {
       for (let i = 0; i < 4; i++) {
@@ -236,137 +270,162 @@ async function printDiffAgainstLatest(runsDir: string, currentPath: string): Pro
 }
 
 async function main(): Promise<void> {
+  await loadEnvProbe();
+
   const args = parseArgs(process.argv.slice(2));
   console.log(`[probe-run] target URL: ${args.url}`);
 
-  // Prepare temp profile
-  const profileSrc = process.env.SNEETCHES_CHROME_PROFILE_SRC || getDefaultChromeProfilePath();
-  if (!existsSync(profileSrc)) {
-    throw new Error(`Chrome profile not found at ${profileSrc}. Set SNEETCHES_CHROME_PROFILE_SRC.`);
+  const pat = process.env.SNEETCHES_PROBE_GITHUB_PAT;
+  if (!pat) {
+    throw new Error(
+      '[probe-run] SNEETCHES_PROBE_GITHUB_PAT not set. Put it in .env.probe at the repo root or export it in your shell.'
+    );
   }
-  const tempProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'sneetches-probe-'));
-  console.log(`[probe-run] copying profile ${profileSrc} → ${tempProfile}`);
-  await copyProfile(profileSrc, tempProfile);
 
-  // Ensure build/ exists and is fresh
   const buildPath = await ensureDevBuild();
 
-  // Launch Chrome
-  const chromeArgs = [
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    `--user-data-dir=${tempProfile}`,
-    `--disable-extensions-except=${buildPath}`,
-    `--load-extension=${buildPath}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    args.url,
-  ];
-  console.log(`[probe-run] launching: ${getChromeExecutable()} ${chromeArgs.join(' ')}`);
-  const chrome: ChildProcess = spawn(getChromeExecutable(), chromeArgs, { stdio: 'ignore' });
+  // Ensure persistent profile dir exists. Puppeteer will populate it
+  // on first run; subsequent runs reuse the same Chrome state.
+  await fs.mkdir(PROBE_PROFILE_DIR, { recursive: true });
+  console.log(`[probe-run] profile dir: ${PROBE_PROFILE_DIR}`);
 
-  let cleaned = false;
-  const cleanup = async (): Promise<void> => {
-    if (cleaned) return;
-    cleaned = true;
-    try {
-      if (chrome.pid) process.kill(chrome.pid, 'SIGTERM');
-    } catch {
-      // already gone
-    }
-    try {
-      await fs.rm(tempProfile, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
-    }
+  console.log('[probe-run] launching Chrome for Testing via Puppeteer...');
+  const browser: Browser = await puppeteer.launch({
+    headless: false,
+    pipe: true,
+    userDataDir: PROBE_PROFILE_DIR,
+    enableExtensions: [buildPath],
+    args: [
+      '--window-position=-10000,-10000',
+      '--window-size=1280,800',
+      '--no-first-run',
+      '--no-default-browser-check',
+    ],
+  });
+
+  // Every `console.log('SNEETCHES_PROBE', ...)` from the extension
+  // lands here. `captured` accumulates ALL payloads, including empty
+  // pre-hydration scans (where `updateLinks` early-returns at
+  // `pending.length === 0` before any mark other than SCAN_START
+  // fires). Those are still data — preserved in the output file for
+  // debugging — but they don't count as "real" captures for the
+  // purpose of the wait/drain logic.
+  const captured: ProbePayload[] = [];
+  let lastRealCaptureAt: number | null = null;
+
+  // A "real" capture is one where the scan ran past the fast-path
+  // split: content-script scans with PENDING_COLLECTED (meaning at
+  // least one repo anchor was found and classified), or service-
+  // worker envelopes which are always "real" since the SW only
+  // emits when a fetch request actually ran.
+  const isRealCapture = (p: ProbePayload): boolean => {
+    if (p.ctx === 'sw') return true;
+    return p.entries.some((e) => e.phase === 'pending-collected');
   };
 
-  process.on('SIGINT', () => {
-    void cleanup().then(() => process.exit(130));
-  });
-  process.on('SIGTERM', () => {
-    void cleanup().then(() => process.exit(143));
-  });
-  process.on('uncaughtException', (e) => {
-    console.error('[probe-run] uncaught:', e);
-    void cleanup().then(() => process.exit(1));
-  });
-
   try {
-    // Wait for Chrome's debugging port to come up
-    await waitForDebugPort();
+    await ensurePatConfigured(browser, pat);
 
-    // Attach CDP to the first tab whose URL matches the target
-    console.log('[probe-run] attaching CDP...');
-    const client = await CDP({
-      port: DEBUG_PORT,
-      target: (targets) => {
-        const match = targets.find((t) => t.type === 'page' && t.url.startsWith(args.url));
-        if (match) return match;
-        // Fallback: first page target (Chrome may still be navigating)
-        return targets.find((t) => t.type === 'page');
-      },
-    });
+    console.log('[probe-run] opening page + wiring console listener');
+    const page = await browser.newPage();
 
-    const { Runtime } = client;
-    await Runtime.enable();
-
-    const captured: unknown[] = [];
-    const captureDone = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('timeout waiting for SNEETCHES_PROBE envelope'));
-      }, CAPTURE_TIMEOUT_MS);
-
-      Runtime.consoleAPICalled((params) => {
-        if (params.args.length < 2) return;
-        const first = params.args[0].value;
-        if (first !== 'SNEETCHES_PROBE') return;
-        const second = params.args[1].value;
-        if (typeof second !== 'string') return;
+    const handleConsole = (msg: ConsoleMessage): void => {
+      const text = msg.text();
+      if (!text.startsWith('SNEETCHES_PROBE')) return;
+      void (async () => {
         try {
-          const payload = JSON.parse(second);
+          const handles = msg.args();
+          if (handles.length < 2) return;
+          const tag = (await handles[0].jsonValue()) as string;
+          if (tag !== 'SNEETCHES_PROBE') return;
+          const jsonStr = (await handles[1].jsonValue()) as string;
+          const payload = JSON.parse(jsonStr) as ProbePayload;
           captured.push(payload);
-          // After the first capture, drain for a short window then resolve
-          setTimeout(() => {
-            clearTimeout(timeout);
-            resolve();
-          }, POST_CAPTURE_DRAIN_MS);
-        } catch (e) {
-          console.warn('[probe-run] failed to parse SNEETCHES_PROBE payload:', e);
+          if (isRealCapture(payload)) {
+            lastRealCaptureAt = Date.now();
+          }
+        } catch (err) {
+          console.warn('[probe-run] failed to parse SNEETCHES_PROBE payload:', err);
         }
-      });
-    });
+      })();
+    };
+    page.on('console', handleConsole);
 
-    await captureDone;
-    await client.close();
+    // Also listen on any pages already open (e.g. the default new-tab
+    // page) just in case extension activity there emits a probe.
+    for (const p of await browser.pages()) {
+      if (p !== page) p.on('console', handleConsole);
+    }
 
-    // Write payloads to docs/plans/probe-runs/
-    const runsDir = path.resolve(process.cwd(), 'docs/plans/probe-runs');
-    await fs.mkdir(runsDir, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const parsedUrl = new URL(args.url);
-    const urlSlug = slugify(parsedUrl.hostname + parsedUrl.pathname);
-    const labelSlug = args.label ? `-${slugify(args.label)}` : '';
-    const outPath = path.join(runsDir, `${timestamp}-${urlSlug}${labelSlug}.json`);
-    await fs.writeFile(
-      outPath,
-      JSON.stringify(
-        {
-          meta: {
-            timestamp: new Date().toISOString(),
-            url: args.url,
-            label: args.label ?? null,
-          },
-          payloads: captured,
-        },
-        null,
-        2
-      )
+    console.log(`[probe-run] navigating to ${args.url}`);
+    // Don't await networkidle — awesome-list pages have long-tail
+    // network activity we don't want to gate on. We gate on "real"
+    // probe captures instead (see isRealCapture).
+    await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    // Give React a head start. GitHub's own chrome (header links,
+    // feature callouts, etc.) renders before the README hydrates, so
+    // the extension's MutationObserver fires a series of empty scans
+    // that all early-return at `pending.length === 0`. Without this
+    // pause the capture-wait loop can starve — the empty scans look
+    // the same as "nothing happening" to the gating logic. 3s is
+    // enough for awesome-homelab (measured 2026-04-15), and too
+    // short to matter for lighter pages.
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Wait for at least one REAL capture, then drain for
+    // POST_CAPTURE_DRAIN_MS past the LAST real capture. This handles
+    // the common case where React hydration fires multiple scan
+    // rounds — we want the latest one, not the first.
+    const captureStart = Date.now();
+    while (lastRealCaptureAt === null) {
+      if (Date.now() - captureStart > CAPTURE_TIMEOUT_MS) {
+        throw new Error(
+          `[probe-run] timeout (${CAPTURE_TIMEOUT_MS}ms) waiting for real SNEETCHES_PROBE envelope (captured ${captured.length} empty/pre-hydration payload(s))`
+        );
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    while (Date.now() - lastRealCaptureAt < POST_CAPTURE_DRAIN_MS) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const realCount = captured.filter(isRealCapture).length;
+    console.log(
+      `[probe-run] captured ${captured.length} payload(s) (${realCount} real, ${captured.length - realCount} empty/pre-hydration)`
     );
-    console.log(`[probe-run] wrote ${captured.length} payload(s) → ${outPath}`);
-    await printDiffAgainstLatest(runsDir, outPath);
   } finally {
-    await cleanup();
+    try {
+      await browser.close();
+    } catch {
+      // ignore close errors
+    }
   }
+
+  // Write payloads to docs/plans/probe-runs/
+  const runsDir = path.resolve(process.cwd(), 'docs/plans/probe-runs');
+  await fs.mkdir(runsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const parsedUrl = new URL(args.url);
+  const urlSlug = slugify(parsedUrl.hostname + parsedUrl.pathname);
+  const labelSlug = args.label ? `-${slugify(args.label)}` : '';
+  const outPath = path.join(runsDir, `${timestamp}-${urlSlug}${labelSlug}.json`);
+  await fs.writeFile(
+    outPath,
+    JSON.stringify(
+      {
+        meta: {
+          timestamp: new Date().toISOString(),
+          url: args.url,
+          label: args.label ?? null,
+        },
+        payloads: captured,
+      },
+      null,
+      2
+    )
+  );
+  console.log(`[probe-run] wrote ${captured.length} payload(s) → ${outPath}`);
+  await printDiffAgainstLatest(runsDir, outPath);
 }
 
 main().catch((e) => {

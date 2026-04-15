@@ -23,3 +23,6 @@ docs/plans/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
+
+# Local dev probe profile (Chrome for Testing user-data-dir)
+.sneetches-probe/
