@@ -939,6 +939,51 @@ export function __handleSyncStorageChangeForTests(changes: {
   handleSyncStorageChange(changes);
 }
 
+// Handle a local-storage-change batch. We only care about repo-cache
+// entry REMOVALS — if any nwo-shaped key (one that contains "/") was
+// removed (oldValue present, newValue undefined), invalidate the
+// in-memory mirror because it's now out of sync with disk.
+//
+// Only removals trigger invalidation. Fresh writes from the SW's
+// bulkWriteCache path fire onChanged with `newValue` set (either
+// oldValue+newValue for updates, or just newValue for new keys) —
+// those are the normal cache-population flow and must NOT wipe the
+// in-memory mirror, otherwise every scan would clobber the cache we
+// just populated.
+//
+// rate_limit (the only non-cache key in chrome.storage.local today)
+// is filtered out via the slash check. If it were removed alone, we
+// wouldn't want to invalidate the repo cache over a rate-limit
+// tombstone.
+//
+// Greptile P2 (2026-04-15): without this branch, the options-page
+// "Clear cache" button wipes disk state but the current page keeps
+// painting from stale in-memory data until the tab reloads.
+function handleLocalStorageChange(changes: { [key: string]: chrome.storage.StorageChange }): void {
+  for (const [key, change] of Object.entries(changes)) {
+    if (!key.includes('/')) continue;
+    if (change.oldValue !== undefined && change.newValue === undefined) {
+      inMemoryRepoCache = null;
+      // Cancel any in-flight preload so it can't stomp this null
+      // with data it read before the removal event fired. Same
+      // mechanism handleSyncStorageChange uses for the access-token
+      // invalidation path.
+      preloadGeneration++;
+      return;
+    }
+  }
+}
+
+// Test-only helper: drive the local-storage-changed code path with a
+// synthetic changes object. The custom Chrome storage mock doesn't
+// fire onChanged events from remove() calls, so tests exercising the
+// clear-cache invalidation need to invoke the handler directly.
+export function __handleLocalStorageChangeForTests(changes: {
+  [key: string]: chrome.storage.StorageChange;
+}): void {
+  handleLocalStorageChange(changes);
+}
+
 // DOM-dependent initialization: wait for <body> before installing the
 // MutationObserver that startLinkScanner and
 // detectStarredStateOnSneetchesRepo need. At run_at: "document_start"
@@ -975,4 +1020,5 @@ if (document.body) {
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'sync') handleSyncStorageChange(changes);
+  else if (namespace === 'local') handleLocalStorageChange(changes);
 });

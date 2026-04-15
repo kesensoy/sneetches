@@ -8,6 +8,7 @@ import {
   __resetLinkScannerForTests,
   __applySettingsChangeForTests,
   __handleSyncStorageChangeForTests,
+  __handleLocalStorageChangeForTests,
   __setPortFetcherForTests,
   __getCachedSettingsForTests,
   __setInMemoryRepoCacheForTests,
@@ -1480,5 +1481,79 @@ describe('in-memory cache invalidation on settings change', () => {
     await inflightPreload;
 
     expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+});
+
+describe('in-memory cache invalidation on local storage clear', () => {
+  const freshResponse = (): RepoResponse => ({
+    ok: true,
+    json: {
+      forks_count: 0,
+      stargazers_count: 1,
+      pushed_at: '2024-01-01',
+      archived: false,
+    },
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    __resetLinkScannerForTests();
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('removal of a repo-cache entry clears inMemoryRepoCache', () => {
+    __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
+    __handleLocalStorageChangeForTests({
+      'a/b': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('full cache clear (multiple removals) clears inMemoryRepoCache', () => {
+    __setInMemoryRepoCacheForTests(
+      new Map([
+        ['a/b', freshResponse()],
+        ['c/d', freshResponse()],
+      ])
+    );
+    __handleLocalStorageChangeForTests({
+      'a/b': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
+      'c/d': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
+      rate_limit: { oldValue: { limit: 5000, remaining: 4999 }, newValue: undefined },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('fresh cache write (SW bulkWriteCache) does NOT clear inMemoryRepoCache', () => {
+    // A fresh write has both oldValue and newValue set (or only
+    // newValue for a brand-new key). The SW's bulkWriteCache path
+    // fires this shape on every scan — it must NOT invalidate the
+    // in-memory mirror, otherwise every scan would wipe the cache
+    // we're trying to use.
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleLocalStorageChangeForTests({
+      'new/repo': { newValue: { exp: 123, pay: {}, ver: 2 } },
+      'existing/repo': {
+        oldValue: { exp: 100, pay: {}, ver: 2 },
+        newValue: { exp: 456, pay: {}, ver: 2 },
+      },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+  });
+
+  test('rate_limit removal alone does NOT clear inMemoryRepoCache', () => {
+    // rate_limit is not a cache key (no slash). If it's the only key
+    // in a change batch, do not invalidate — rate_limit removals
+    // don't represent a cache clear semantics.
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleLocalStorageChangeForTests({
+      rate_limit: { oldValue: { limit: 5000, remaining: 4999 }, newValue: undefined },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
 });
