@@ -1,5 +1,13 @@
 import { readAllCachedRepos } from './cache';
-import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
+import {
+  archiveIcon,
+  bugIcon,
+  clockIcon,
+  hourglassIcon,
+  repoForkedIcon,
+  starIcon,
+  unlinkIcon,
+} from './icons';
 import { isRepoUrl, RepoResponse, CACHE_VERSION } from './github';
 import {
   ACCESS_TOKEN_KEY,
@@ -106,7 +114,6 @@ export function __resetStarredDetectorForTests(): void {
 }
 
 const ANNOTATION_CLASS = 'data-sneetch-extension';
-const MISSING_SYMBOL = 'missingⓍ';
 
 // Debounce window for the DOM observer. Long enough to coalesce the wave of
 // mutations GitHub's React hydration fires during README insertion; short
@@ -577,30 +584,52 @@ export function createErrorAnnotation(
   accessToken: string,
   reportError: (_: string, ..._2: unknown[]) => void = console.error
 ) {
+  const elt = _createAnnotation('');
+
+  if (res.status === 404) {
+    const span = document.createElement('span');
+    span.className = 'sneetch-broken';
+    span.setAttribute('aria-label', 'repository not found');
+    span.insertAdjacentHTML('beforeend', unlinkIcon('sneetch-icon'));
+    span.append(' broken');
+    elt.appendChild(span);
+    elt.title = 'Repository not found';
+    return elt;
+  }
+
   if (res.status === 403) {
-    const elt = _createAnnotation('⏳');
-    // headers may be absent: the fetchers throw plain `{ok: false, status}`
-    // objects without a headers field, so we can't rely on it here.
+    const span = document.createElement('span');
+    span.className = 'sneetch-rate-limited';
+    span.setAttribute('aria-label', 'rate limited, wait');
+    span.insertAdjacentHTML('beforeend', hourglassIcon('sneetch-icon'));
+    span.append(' wait');
+    elt.appendChild(span);
+
     const resetHeader = res.headers?.get('X-RateLimit-Reset');
     const resetDate = resetHeader ? new Date(Number(resetHeader) * 1000) : null;
-    let title: string;
     if (!accessToken) {
-      title = 'Please set up your Github Personal Access Token';
+      elt.title = 'Please set up your GitHub Personal Access Token';
     } else if (resetDate) {
-      title =
-        'The GitHub API rate limit has been exceeded.' +
-        `No API calls are available until ${resetDate}.`;
+      elt.title = `GitHub API rate limit exceeded. Resets at ${resetDate.toLocaleTimeString()}.`;
     } else {
-      title = 'The GitHub API rate limit has been exceeded.';
+      elt.title = 'GitHub API rate limit exceeded.';
     }
-    elt.setAttribute('title', title);
     return elt;
-  } else if (res.status === 404) {
-    return _createAnnotation(MISSING_SYMBOL, 'missing');
-  } else {
-    reportError('sneetches: request status =', res.status);
-    return _createAnnotation('');
   }
+
+  // else — unknown error (weird 5xx, malformed responses). Nearly
+  // unreachable in practice, but render a chip anyway so the user
+  // knows the extension tried and failed rather than silently
+  // skipping the link.
+  reportError('sneetches: request status =', res.status);
+  const span = document.createElement('span');
+  span.className = 'sneetch-error';
+  span.setAttribute('aria-label', 'error');
+  span.insertAdjacentHTML('beforeend', bugIcon('sneetch-icon'));
+  span.append(' error');
+  elt.appendChild(span);
+  elt.title = `Couldn't fetch repository info (status ${res.status ?? 'unknown'})`;
+  return elt;
 }
 
 export function createAnnotation(
