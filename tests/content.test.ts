@@ -1295,6 +1295,8 @@ describe('in-memory cache fast path', () => {
 
   test('silent-skip entries in the in-memory cache populate silentSkipAnchors', async () => {
     __setInMemoryRepoCacheForTests(
+      // Minimal silent-skip RepoResponse — json/status/headers not needed
+      // for this path; paintResult routes on `silent: true`.
       new Map([['private/repo', { ok: false, silent: true } as RepoResponse]])
     );
 
@@ -1303,6 +1305,20 @@ describe('in-memory cache fast path', () => {
     document.body.appendChild(a);
 
     startLinkScanner();
+    await waitForScanner();
+
+    // First scan: no port call, no annotation — paintResult's silent
+    // branch adds the anchor to silentSkipAnchors and returns.
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+
+    // Trigger a second scan by adding an unrelated node. If the anchor
+    // wasn't in silentSkipAnchors, findUnannotatedRepoLinks would re-pick
+    // it up (childElementCount === 0 and no inFlightAnchors entry), and
+    // paintResult would fire again. We verify the WeakSet population
+    // indirectly: the second scan must still not touch this anchor.
+    const trigger = document.createElement('div');
+    document.body.appendChild(trigger);
     await waitForScanner();
 
     expect(portFetcherMock).not.toHaveBeenCalled();
@@ -1326,5 +1342,48 @@ describe('in-memory cache fast path', () => {
     expect(portFetcherMock).not.toHaveBeenCalled();
     expect(a1.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
     expect(a2.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+  });
+
+  test('port-path transport failure does not error-annotate cached-path anchors', async () => {
+    // Fast path serves one anchor from memory; the port then fails for
+    // the other anchor. The cached anchor must keep its successful
+    // annotation and NOT get an error chip stacked on top, because
+    // paintResult already drained it from inFlightAnchors and the
+    // error handler's epoch guard correctly skips it.
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    // Override the port mock to simulate a batch-level failure
+    // (network error, 5xx, 401) — the port fetcher resolves with
+    // { ok: false, status: 500 } and does NOT call the chunk callback.
+    portFetcherMock.mockImplementation(async () => {
+      return { ok: false, status: 500 };
+    });
+
+    const cached = document.createElement('a');
+    cached.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(cached);
+
+    const uncached = document.createElement('a');
+    uncached.href = 'https://github.com/vercel/next.js';
+    document.body.appendChild(uncached);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    // Cached anchor: one clean fast-path annotation with "42" stars.
+    // No error chip, no duplicate annotation.
+    const cachedAnnotations = cached.querySelectorAll('.data-sneetch-extension');
+    expect(cachedAnnotations).toHaveLength(1);
+    expect(cachedAnnotations[0].textContent).toContain('42');
+
+    // Uncached anchor: exactly one error annotation from the batch-level
+    // failure handler. Default error for status 500 is an empty-text
+    // annotation per createErrorAnnotation's else branch.
+    const uncachedAnnotations = uncached.querySelectorAll('.data-sneetch-extension');
+    expect(uncachedAnnotations).toHaveLength(1);
+
+    // Port was called with ONLY the uncached nwo (dedup + split working).
+    expect(portFetcherMock).toHaveBeenCalledTimes(1);
+    expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
   });
 });
