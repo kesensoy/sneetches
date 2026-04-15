@@ -9,6 +9,7 @@ import {
   __applySettingsChangeForTests,
   __handleSyncStorageChangeForTests,
   __setPortFetcherForTests,
+  __getCachedSettingsForTests,
 } from '../src/content';
 
 // Alias retained so the existing call sites don't all change names.
@@ -964,6 +965,76 @@ describe('scan scheduler behavior', () => {
       // If a scan did fire, it should have found all 10 nwos in one call.
       const [nwos] = portFetcherMock.mock.calls[0];
       expect(nwos).toHaveLength(10);
+    }
+  });
+
+  test('getCachedSettings retries after a transient storage rejection', async () => {
+    // Greptile P2 from the 1.1.3 review: before the try/finally fix,
+    // if `chrome.storage.sync.get` rejected once (e.g. transient
+    // failure during browser startup or extension update),
+    // `cachedSettingsPromise` would be stuck pointing at that rejected
+    // promise forever, silently disabling all annotation scans until a
+    // settings change fired `invalidateCachedSettings`. This test
+    // verifies the retry-on-rejection contract: a failing first call
+    // leaves no stale promise lock, so the next call attempts the
+    // storage read from scratch.
+
+    // Start clean — clear any cached settings from prior tests.
+    __resetLinkScannerForTests();
+
+    // Seed storage with some real settings so the second (successful)
+    // call has something to return.
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        { show: { stars: true, forks: true, update: false }, star_style: 'filled' },
+        resolve
+      )
+    );
+
+    // Patch chrome.storage.sync.get to reject exactly once via
+    // chrome.runtime.lastError (which is how getSettings detects
+    // failure), then restore to real behavior for subsequent calls.
+    const originalGet = chrome.storage.sync.get;
+    let callCount = 0;
+    chrome.storage.sync.get = ((keys: unknown, cb: (items: unknown) => void) => {
+      callCount++;
+      if (callCount === 1) {
+        // Simulate a transient storage failure.
+        (chrome.runtime as unknown as { lastError: unknown }).lastError = {
+          message: 'simulated transient storage failure',
+        };
+        cb({});
+        (chrome.runtime as unknown as { lastError: unknown }).lastError = undefined;
+        return;
+      }
+      return (originalGet as (keys: unknown, cb: (items: unknown) => void) => void).call(
+        chrome.storage.sync,
+        keys,
+        cb
+      );
+    }) as typeof chrome.storage.sync.get;
+
+    try {
+      // First call should reject — simulating the transient failure.
+      await expect(__getCachedSettingsForTests()).rejects.toBeDefined();
+
+      // Second call MUST re-attempt the storage read and succeed.
+      // Before the try/finally fix, this would return the same
+      // rejected promise from the first call's `cachedSettingsPromise`
+      // and the test would fail with the same rejection.
+      const settings = await __getCachedSettingsForTests();
+      expect(settings.starStyle).toBe('filled');
+      expect(settings.show.stars).toBe(true);
+      expect(settings.show.forks).toBe(true);
+
+      // And a third call should hit the in-memory cache (cachedSettings
+      // is now populated), so no additional storage read.
+      const before = callCount;
+      await __getCachedSettingsForTests();
+      expect(callCount).toBe(before);
+    } finally {
+      chrome.storage.sync.get = originalGet;
+      __resetLinkScannerForTests();
     }
   });
 

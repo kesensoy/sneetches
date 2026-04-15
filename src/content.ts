@@ -307,11 +307,23 @@ let cachedSettingsPromise: Promise<CachedSettings> | null = null;
 async function getCachedSettings(): Promise<CachedSettings> {
   if (cachedSettings) return cachedSettings;
   if (cachedSettingsPromise) return cachedSettingsPromise;
+  // Use try/finally so the promise lock is cleared on BOTH success and
+  // rejection. Without the finally, a transient `chrome.storage.sync.get`
+  // failure (rare in practice, but possible during browser startup or
+  // extension updates) would leave `cachedSettingsPromise` pointing at a
+  // permanently-rejected promise. Every subsequent scan would hit the
+  // `if (cachedSettingsPromise) return` early-return and get the same
+  // rejection back, silently disabling annotations until a settings
+  // change fires `invalidateCachedSettings`. The finally makes the next
+  // scan after a failure retry the storage read instead.
   cachedSettingsPromise = (async () => {
-    const settings = await getSettings();
-    cachedSettings = settings;
-    cachedSettingsPromise = null;
-    return settings;
+    try {
+      const settings = await getSettings();
+      cachedSettings = settings;
+      return settings;
+    } finally {
+      cachedSettingsPromise = null;
+    }
   })();
   return cachedSettingsPromise;
 }
@@ -716,6 +728,14 @@ export function __resetLinkScannerForTests(): void {
 // would otherwise have no way to trigger the production path.
 export function __applySettingsChangeForTests(): void {
   applySettingsChange();
+}
+
+// Test-only helper: call getCachedSettings directly. Lets tests verify
+// the retry-after-rejection contract (the promise lock must be cleared
+// on rejection so the next call re-attempts the storage read) without
+// routing through the whole updateLinks → port → annotation pipeline.
+export function __getCachedSettingsForTests(): Promise<Awaited<ReturnType<typeof getSettings>>> {
+  return getCachedSettings();
 }
 
 // Keys in chrome.storage.sync that actually affect what the content
