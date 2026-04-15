@@ -315,6 +315,27 @@ All numbers measured on `github.com/miantiao-me/awesome-homelab` (712 repo links
 ### Backward compatibility
 `CACHE_VERSION` stays at `2`. The on-disk cache entry shape is unchanged (still `{exp, pay, ver}`), so existing 1.1.3 cache entries are reused as-is by the new preload path — no invalidation required. `RepoInfo` / `RepoResponse` types are unchanged. The test hooks (`__setInMemoryRepoCacheForTests`, etc.) are new, but all existing `__set*ForTests` hooks are preserved. `handleSyncStorageChange`'s `chrome.storage.local.clear()` on access-token change is unchanged; the new additions are the sibling `inMemoryRepoCache = null` line and the `preloadGeneration++` bump.
 
+## Error Annotation Redesign (1.1.5, 2026)
+
+The 1.1.5 release rewrites the three error branches in `createErrorAnnotation` to match the existing chip design language. The motivating issue: on any webpage with broken GitHub links, 1.1.4 rendered bare red `missingⓍ` text mashed against the URL with no padding or chip wrapper. The same function also rendered 403 rate-limited links as a literal `⏳` emoji and the catch-all `else` branch as an empty annotation (no user feedback at all).
+
+### What changed
+- **`src/icons.ts`** — adds three new Octicon exports: `unlinkIcon` (broken chain, for 404), `hourglassIcon` (for 403 rate-limited), `bugIcon` (for the else branch). Path constants sit alphabetized in the existing block alongside `ARCHIVE_PATH` / `STAR_PATH` / etc.
+- **`src/style.css`** — adds three new chip rules paralleling `.sneetch-archived`: `.sneetch-broken` (red wash `#d1242f`), `.sneetch-rate-limited` (amber wash `#d97706`, same hue as archived), `.sneetch-error` (green wash `#1a7f37`). Deletes the old `.data-sneetch-extension.missing { color: red; }` rule. All three use absolute `12px` font-size per the 1.1.2 CSS isolation fix.
+- **`src/content.ts`** — rewrites `createErrorAnnotation` end to end. Deletes `MISSING_SYMBOL`. Each error branch now builds a child `<span>` with className + aria-label + svg + text + tooltip, mirroring the `.sneetch-archived` pattern in `createAnnotation`. Tooltips tightened: "Repository not found" for 404, dynamic "rate limit exceeded / resets at X / please set up PAT" for 403 (three sub-states preserved), "Couldn't fetch repository info (status N)" for else. Every chip gets an `aria-label` for screen reader support. Capital-H "GitHub" spelling restored across all 403 tooltip strings (the pre-1.1.5 implementation used lowercase "Github").
+- **Version bumped to 1.1.5.** (Note: skipped 1.1.4 because the 1.1.5 branch was forked from main before 1.1.4 merged; both versions will land in chronological order at merge time.)
+- **Test suite grew from 184 to 191 tests.** The `describe('createErrorAnnotation', ...)` block was rewritten end to end, splitting the single flat block into three nested describe blocks (404, 403, else) with tighter per-branch assertions including chip class, svg presence, aria-label, and tooltip.
+
+### Key design decisions (locked in during 2026-04-15 brainstorm)
+- **Three-wash system**: red wash / amber wash / green wash, keyed by hue not by visual weight. All three use the same `.sneetch-archived`-style padded-span pattern. Rejected: solid red treatment (too loud, breaks chip-family consistency), gray wash for else (collides with `.is-archived` cool gray).
+- **Glyph + word**: `unlink` + "broken" (404), `hourglass` + "wait" (403), `bug` + "error" (else). Word choices rejected in brainstorm: "missing" / "dead link" / "404" / "gone" for 404; "rate limit" / "throttled" for 403; "unknown" / "failed" for else.
+- **Green-as-success collision is accepted** — the else branch is nearly unreachable (weird 5xx, malformed responses), so the green/success semantic clash in practice never bites, and the bug icon + "error" wording disambiguates if a user ever sees it. Gray was the obvious alternative but collides with `.is-archived`'s cool-gray sibling dim, so green wins by elimination.
+- **Amber collision with `.sneetch-archived` is intentional** — both are "not fully available" states. They won't appear on the same anchor (a rate-limited request never returns archived metadata).
+- **`link-slash` Octicon doesn't exist** in current Octicons; `unlink` is the closest broken-chain glyph the upstream ships. Verified via curl against `raw.githubusercontent.com/primer/octicons/main/icons/` during the 2026-04-15 brainstorm.
+
+### Backward compatibility
+`CACHE_VERSION` stays at `2`. Cached 404 responses from prior versions are reused; only the rendering of those payloads changes. No new `chrome.storage` keys, no new settings, no migration required.
+
 ## Extension Features
 
 - Displays GitHub repository stats inline next to repo links using Octicons SVGs
