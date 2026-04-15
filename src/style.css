@@ -78,13 +78,14 @@
 }
 
 /* Unknown-error chip (else branch) — green text on green wash. This
-   branch is nearly unreachable (weird 5xx, malformed responses), so
-   we picked a "we'd never see this" color. Green was chosen *because*
-   it's counterintuitive: the chip reads as "the extension itself is
-   healthy enough to report that something upstream went wrong".
-   Gray was ruled out because .is-archived dims siblings to cool gray
-   and a gray error chip would look semantically continuous with
-   "archived row". */
+   branch is rare in practice (covers weird 5xx, malformed responses,
+   and any new GraphQL error code GitHub ships that doesn't map to
+   NOT_FOUND/FORBIDDEN), so we picked a "we'd never see this" color.
+   Green was chosen *because* it's counterintuitive: the chip reads as
+   "the extension itself is healthy enough to report that something
+   upstream went wrong". Gray was ruled out because .is-archived dims
+   siblings to cool gray and a gray error chip would look semantically
+   continuous with "archived row". */
 .data-sneetch-extension .sneetch-error {
   display: inline-block;
   padding: 1px 5px;

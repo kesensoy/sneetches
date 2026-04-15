@@ -617,10 +617,11 @@ export function createErrorAnnotation(
     return elt;
   }
 
-  // else — unknown error (weird 5xx, malformed responses). Nearly
-  // unreachable in practice, but render a chip anyway so the user
-  // knows the extension tried and failed rather than silently
-  // skipping the link.
+  // else — unknown error. Rare in practice (covers weird 5xx,
+  // malformed responses, and any new GraphQL error code GitHub ships
+  // that doesn't map to NOT_FOUND/FORBIDDEN), but render a chip
+  // anyway so the user knows the extension tried and failed rather
+  // than silently skipping the link.
   reportError('sneetches: request status =', res.status);
   const span = document.createElement('span');
   span.className = 'sneetch-error';
