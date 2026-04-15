@@ -214,49 +214,81 @@ describe('createAnnotation', () => {
 });
 
 describe('createErrorAnnotation', () => {
-  const headers = { get: (_s: string) => '' };
-  test('with a 403 and no an access token', () => {
-    const elt = createErrorAnnotation({ status: 403, headers }, '');
-    expect(elt.outerHTML).toMatch('class="data-sneetch-extension"');
-    expect(elt.outerHTML).toMatch('title="Please set up your Github Personal Access Token"');
-    expect(elt.innerText).toBe('⏳');
-  });
-  test('with an access token', () => {
-    const elt = createErrorAnnotation({ status: 403, headers }, 'access token');
-    expect(elt.outerHTML).not.toMatch('title="Please set up your Github Personal Access Token"');
-  });
-  test('for a missing repo', () => {
-    const elt = createErrorAnnotation({ status: 404, headers }, '');
-    expect(elt.outerHTML).toMatch(/class="[^"]* missing"/);
-    expect(elt.innerText).toBe('missingⓍ');
-  });
-  test('with a unknown error', () => {
-    const elt = createErrorAnnotation({ status: 410, headers }, '', (..._: unknown[]) => null);
-    expect(elt.outerHTML).toMatch(/></);
-    expect(elt.innerText).toBe('');
+  describe('404 (broken)', () => {
+    test('renders a .sneetch-broken chip with unlink icon and "broken" text', () => {
+      const elt = createErrorAnnotation({ status: 404 }, '');
+      expect(elt.outerHTML).toMatch('class="data-sneetch-extension"');
+      expect(elt.outerHTML).not.toContain('Ⓧ'); // old MISSING_SYMBOL sentinel gone
+      const chip = elt.querySelector('.sneetch-broken');
+      expect(chip).not.toBeNull();
+      expect(chip?.querySelector('svg')).not.toBeNull();
+      expect(chip?.innerHTML).toContain('M12.914 5.914');
+      expect(chip?.textContent).toContain('broken');
+      expect(chip?.getAttribute('aria-label')).toBe('repository not found');
+    });
+
+    test('has a "Repository not found" tooltip', () => {
+      const elt = createErrorAnnotation({ status: 404 }, '');
+      expect(elt.getAttribute('title')).toBe('Repository not found');
+    });
   });
 
-  test('with a 403 and NO headers field (as thrown by fetchers)', () => {
-    // fetchRepoDataRESTSingle and fetchRepoDataGraphQLSingle throw plain
-    // `{ ok: false, status }` objects with no `headers` field. Before this
-    // fix, createErrorAnnotation's `res.headers!.get(...)` crashed with a
-    // TypeError before the accessToken branch was reached. Flagged by
-    // greptile as a P2 on PR #3.
-    const elt = createErrorAnnotation({ status: 403 }, '');
-    expect(elt.innerText).toBe('⏳');
-    // Without a headers, the title falls back to the token-setup prompt.
-    expect(elt.getAttribute('title')).toBe('Please set up your Github Personal Access Token');
+  describe('403 (rate limited)', () => {
+    test('renders a .sneetch-rate-limited chip with hourglass icon and "wait" text', () => {
+      const elt = createErrorAnnotation({ status: 403 }, '');
+      const chip = elt.querySelector('.sneetch-rate-limited');
+      expect(chip).not.toBeNull();
+      expect(chip?.querySelector('svg')).not.toBeNull();
+      expect(chip?.innerHTML).toContain('M2.75 1h10.5');
+      expect(chip?.textContent).toContain('wait');
+      expect(chip?.getAttribute('aria-label')).toBe('rate limited');
+    });
+
+    test('with no access token → tooltip asks user to set up a PAT', () => {
+      const elt = createErrorAnnotation({ status: 403 }, '');
+      expect(elt.getAttribute('title')).toBe('Please set up your GitHub Personal Access Token');
+    });
+
+    test('with access token → tooltip is the bare rate-limit-exceeded message', () => {
+      const elt = createErrorAnnotation({ status: 403 }, 'ghp_fake_token');
+      expect(elt.getAttribute('title')).toBe('GitHub API rate limit exceeded.');
+    });
   });
 
-  test('with a 403, access token, and NO headers field', () => {
-    // Same defensive case but with a token configured — the title should
-    // mention the rate limit but not include a bogus reset time.
-    const elt = createErrorAnnotation({ status: 403 }, 'ghp_fake');
-    expect(elt.innerText).toBe('⏳');
-    const title = elt.getAttribute('title') ?? '';
-    expect(title).toContain('rate limit');
-    expect(title).not.toContain('undefined');
-    expect(title).not.toContain('NaN');
+  describe('else (unknown error)', () => {
+    test('renders a .sneetch-error chip with bug icon and "error" text', () => {
+      const reportError = jest.fn();
+      const elt = createErrorAnnotation({ status: 500 }, '', reportError);
+      const chip = elt.querySelector('.sneetch-error');
+      expect(chip).not.toBeNull();
+      expect(chip?.querySelector('svg')).not.toBeNull();
+      expect(chip?.innerHTML).toContain('M4.72.22a.75.75');
+      expect(chip?.textContent).toContain('error');
+      expect(chip?.getAttribute('aria-label')).toBe('error');
+    });
+
+    test('tooltip includes the HTTP status code', () => {
+      const elt = createErrorAnnotation({ status: 500 }, '', (..._: unknown[]) => null);
+      expect(elt.getAttribute('title')).toBe("Couldn't fetch repository info (status 500)");
+    });
+
+    test('tooltip falls back to "unknown" when status is missing', () => {
+      const elt = createErrorAnnotation({}, '', (..._: unknown[]) => null);
+      expect(elt.getAttribute('title')).toBe("Couldn't fetch repository info (status unknown)");
+    });
+
+    test('logs via reportError with the status code', () => {
+      const reportError = jest.fn();
+      createErrorAnnotation({ status: 410 }, '', reportError);
+      expect(reportError).toHaveBeenCalledWith('sneetches: request status =', 410);
+    });
+
+    test('does not log for 404 or 403 (those are not "unknown")', () => {
+      const reportError = jest.fn();
+      createErrorAnnotation({ status: 404 }, '', reportError);
+      createErrorAnnotation({ status: 403 }, '', reportError);
+      expect(reportError).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -1378,8 +1410,8 @@ describe('in-memory cache fast path', () => {
     expect(cachedAnnotations[0].textContent).toContain('42');
 
     // Uncached anchor: exactly one error annotation from the batch-level
-    // failure handler. Default error for status 500 is an empty-text
-    // annotation per createErrorAnnotation's else branch.
+    // failure handler. Status 500 routes through createErrorAnnotation's
+    // else branch, which since 1.1.5 renders a .sneetch-error chip.
     const uncachedAnnotations = uncached.querySelectorAll('.data-sneetch-extension');
     expect(uncachedAnnotations).toHaveLength(1);
 
