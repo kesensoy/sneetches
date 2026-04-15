@@ -234,9 +234,20 @@ async function printDiffAgainstLatest(runsDir: string, currentPath: string): Pro
   const current: ProbeRun = JSON.parse(await fs.readFile(currentPath, 'utf-8'));
   const previous: ProbeRun = JSON.parse(await fs.readFile(previousPath, 'utf-8'));
 
+  // Pick the last "real" payload per context (most recent scan that
+  // actually found work to do). Empty pre-hydration scans have only
+  // scan-start and would produce a useless single-row diff.
+  const lastReal = (run: ProbeRun, ctx: 'cs' | 'sw'): ProbePayload | undefined => {
+    const reals = run.payloads.filter(
+      (p) =>
+        p.ctx === ctx && (p.ctx === 'sw' || p.entries.some((e) => e.phase === 'pending-collected'))
+    );
+    return reals[reals.length - 1];
+  };
+
   for (const ctx of ['cs', 'sw'] as const) {
-    const cur = current.payloads.find((p) => p.ctx === ctx);
-    const prev = previous.payloads.find((p) => p.ctx === ctx);
+    const cur = lastReal(current, ctx);
+    const prev = lastReal(previous, ctx);
     if (!cur || !prev) continue;
 
     console.log(`\n--- ${ctx.toUpperCase()} phase diff ---`);
