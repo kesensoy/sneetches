@@ -1,5 +1,5 @@
-import { bulkReadCache, bulkWriteCache, locallyCached, locallyCachedBatch } from './cache';
-import { getAccessToken, TOKEN_VALIDATED_KEY } from './settings';
+import { bulkReadCache, bulkWriteCache } from './cache';
+import { TOKEN_VALIDATED_KEY } from './settings';
 
 const CACHE_VERSION = 2;
 const GITHUB_API_URL = 'https://api.github.com/repos/';
@@ -177,8 +177,8 @@ export function buildBatchQuery(nwos: string[]): {
 // a batch of up to ~50 repos and distributes the results into a Map keyed
 // by "owner/name". Applies per-path error distribution (NOT_FOUND → cached
 // 404, FORBIDDEN → silent skip, other → silent + console.error) via the
-// errors[] walker below. Caller (getRepoDataMany) is responsible for
-// chunking batches that exceed BATCH_SIZE.
+// errors[] walker below. Caller (fetchRepoDataStreaming) is responsible
+// for chunking batches that exceed BATCH_SIZE.
 export async function fetchGraphQLBatch(
   nwos: string[],
   accessToken: string
@@ -391,65 +391,6 @@ export async function fetchRepoDataStreaming(
       }
     })
   );
-}
-
-// Retrieve repo info for many repos at once. Routes PAT users to the
-// GraphQL batched path (one aliased query per BATCH_SIZE repos); routes
-// unauthenticated users to parallel per-repo REST calls through the
-// existing single-key cache. Returns a Map keyed by "owner/name".
-//
-// Per-entry errors (e.g. a rate-limited 403) surface as
-// `{ ok: false, status }` Map entries rather than a top-level throw,
-// so a single bad repo never aborts the whole scan. Transport-level
-// failures (network, HTTP 5xx, 401) throw out of the whole batch so
-// updateLinks' catch branch can distribute error annotations.
-export async function getRepoDataMany(nwos: string[]): Promise<Map<string, RepoResponse>> {
-  if (nwos.length === 0) return new Map();
-
-  const accessToken = await getAccessToken();
-  if (accessToken) {
-    return locallyCachedBatch<RepoResponse, number>(nwos, CACHE_VERSION, async (missing) => {
-      const merged = new Map<string, RepoResponse>();
-      for (let i = 0; i < missing.length; i += BATCH_SIZE) {
-        const chunk = missing.slice(i, i + BATCH_SIZE);
-        const batchResult = await fetchGraphQLBatch(chunk, accessToken);
-        // fetchGraphQLBatch guarantees an entry for every requested nwo
-        // (back-fills missing ones as silent). We cache everything it
-        // returns, including FORBIDDEN silent-skips — matches the 1.1.1
-        // behavior of avoiding repeated API hits on private repos within
-        // the 4-hour TTL. Transport failures throw out of the thunk
-        // before reaching this point.
-        for (const [nwo, resp] of batchResult) {
-          merged.set(nwo, resp);
-        }
-      }
-      return merged;
-    });
-  }
-
-  // Unauthenticated path: parallel per-repo REST via the existing
-  // single-key cache. No batching possible (REST has no batch endpoint).
-  const result = new Map<string, RepoResponse>();
-  const responses = await Promise.all(
-    nwos.map((nwo) =>
-      locallyCached(nwo, CACHE_VERSION, () => fetchRepoDataRESTSingle(nwo)).then(
-        (resp): [string, RepoResponse] => [nwo, resp],
-        (err: unknown): [string, RepoResponse] => {
-          // Rate-limit 403s, 5xx, network failures — surface as the
-          // RepoResponse shape so updateLinks can render the error chip.
-          const status =
-            typeof err === 'object' && err !== null && 'status' in err
-              ? (err as { status?: number }).status
-              : undefined;
-          return [nwo, { ok: false, status }];
-        }
-      )
-    )
-  );
-  for (const [nwo, resp] of responses) {
-    result.set(nwo, resp);
-  }
-  return result;
 }
 
 // Paths that start with one of these components aren't repo URLs.

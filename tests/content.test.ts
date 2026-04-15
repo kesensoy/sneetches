@@ -428,7 +428,7 @@ describe('startLinkScanner', () => {
   });
 
   // Helper: wait for MutationObserver debounce + an extra tick for the
-  // microtask from getRepoDataMany's then() to flush. Debounce is 300ms.
+  // microtask from the port fetcher's then() to flush. Debounce is 300ms.
   const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
 
   test('annotates repo links added AFTER the scanner is set up (SPA hydration case)', async () => {
@@ -797,8 +797,8 @@ describe('updateLinks silent-skip handling', () => {
 
     // Trigger a second scan via a new mutation. The silent-skipped anchor
     // must not be re-fetched — findUnannotatedRepoLinks filters it out,
-    // so updateLinks sees pending.length === 0 and returns without calling
-    // getRepoDataMany again.
+    // so updateLinks sees pending.length === 0 and returns without
+    // calling the port fetcher again.
     const marker = document.createElement('div');
     document.body.appendChild(marker);
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -842,7 +842,7 @@ describe('updateLinks batching', () => {
     __resetLinkScannerForTests();
   });
 
-  test('a scan with N anchors makes ONE getRepoDataMany call with N nwos', async () => {
+  test('a scan with N anchors makes ONE port fetch call with N nwos', async () => {
     document.body.innerHTML = `
       <a href="https://github.com/octocat/hello"></a>
       <a href="https://github.com/torvalds/linux"></a>

@@ -168,8 +168,8 @@ let linkScanMaxWaitTimeout: ReturnType<typeof setTimeout> | null = null;
 const LEADING_EDGE_MIN_INTERVAL_MS = 100;
 let lastLeadingEdgeAt = 0;
 
-// Anchors with a getRepoDataMany() fetch still in flight, mapped to the epoch
-// at which the fetch was started. Used for two things:
+// Anchors with a port-fetched repo-data request still in flight, mapped
+// to the epoch at which the fetch was started. Used for two things:
 //
 //   1. Prevent a second debounced scan from re-issuing fetches for links
 //      the first scan is already processing (the "duplicate annotation"
