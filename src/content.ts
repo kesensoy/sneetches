@@ -1,4 +1,5 @@
 import { readAllCachedRepos } from './cache';
+import * as probe from './debug/probe';
 import {
   archiveIcon,
   bugIcon,
@@ -396,10 +397,12 @@ async function runPreload(): Promise<void> {
   // and we'll skip the assignment — preventing a stale map from
   // clobbering a just-invalidated cache.
   const gen = ++preloadGeneration;
+  probe.mark(probe.Phase.PRELOAD_START);
   try {
     const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
     if (gen === preloadGeneration) {
       inMemoryRepoCache = map;
+      probe.mark(probe.Phase.PRELOAD_DONE, { entries: map.size });
     }
     // else: our generation was superseded (token change or test
     // rerun); drop the result on the floor.
@@ -476,6 +479,8 @@ function paintResult(
 }
 
 async function updateLinks() {
+  probe.reset();
+  probe.mark(probe.Phase.SCAN_START);
   // Capture the epoch BEFORE the await so that any settings change
   // that fires between here and getCachedSettings() resolving is
   // guaranteed to have bumped currentEpoch past our captured value.
@@ -536,7 +541,23 @@ async function updateLinks() {
     uncachedPending.push(...pending);
   }
 
-  if (uncachedPending.length === 0) return;
+  const cachedCount = pending.length - uncachedPending.length;
+  probe.mark(probe.Phase.PENDING_COLLECTED, {
+    pending: pending.length,
+    cached: cachedCount,
+    uncached: uncachedPending.length,
+  });
+
+  if (uncachedPending.length === 0) {
+    probe.mark(probe.Phase.FAST_PATH_PAINTED, { painted: pending.length });
+    probe.mark(probe.Phase.PAINT_DONE);
+    probe.dump('scan');
+    return;
+  }
+
+  probe.mark(probe.Phase.FAST_PATH_PAINTED, {
+    painted: pending.length - uncachedPending.length,
+  });
 
   // Deduplicate nwos across the uncached subset — a single page can
   // have many anchors pointing at the same repo, and we only need
@@ -552,7 +573,12 @@ async function updateLinks() {
     else byNwo.set(nwo, [elt]);
   }
 
+  let firstChunkSeen = false;
   const distributeChunk = (entries: ReadonlyArray<readonly [string, RepoResponse]>): void => {
+    if (!firstChunkSeen) {
+      firstChunkSeen = true;
+      probe.mark(probe.Phase.PORT_FIRST_CHUNK, { chunkSize: entries.length });
+    }
     for (const [nwo, res] of entries) {
       const anchors = byNwo.get(nwo);
       if (!anchors) continue;
@@ -562,7 +588,9 @@ async function updateLinks() {
     }
   };
 
+  probe.mark(probe.Phase.PORT_SEND, { unique: uniqueNwos.length });
   const result = await portFetcher(uniqueNwos, distributeChunk);
+  probe.mark(probe.Phase.PORT_DONE, { ok: result.ok ? 'yes' : 'no' });
 
   if (!result.ok) {
     // Batch-level failure (network error, 401, 5xx): every anchor
@@ -577,6 +605,9 @@ async function updateLinks() {
       elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
     }
   }
+
+  probe.mark(probe.Phase.PAINT_DONE);
+  probe.dump('scan');
 }
 
 export function createErrorAnnotation(
