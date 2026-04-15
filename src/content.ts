@@ -580,7 +580,7 @@ async function updateLinks() {
 }
 
 export function createErrorAnnotation(
-  res: { status?: number; headers?: { get: (_: string) => string | null } },
+  res: { status?: number },
   accessToken: string,
   reportError: (_: string, ..._2: unknown[]) => void = console.error
 ) {
@@ -605,12 +605,8 @@ export function createErrorAnnotation(
     span.append(' wait');
     elt.appendChild(span);
 
-    const resetHeader = res.headers?.get('X-RateLimit-Reset');
-    const resetDate = resetHeader ? new Date(Number(resetHeader) * 1000) : null;
     if (!accessToken) {
       elt.title = 'Please set up your GitHub Personal Access Token';
-    } else if (resetDate) {
-      elt.title = `GitHub API rate limit exceeded. Resets at ${resetDate.toLocaleTimeString()}.`;
     } else {
       elt.title = 'GitHub API rate limit exceeded.';
     }
