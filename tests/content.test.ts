@@ -12,6 +12,8 @@ import {
   __getCachedSettingsForTests,
   __setInMemoryRepoCacheForTests,
   __getInMemoryRepoCacheForTests,
+  __rerunPreloadForTests,
+  __getPreloadPromiseForTests,
 } from '../src/content';
 
 // Alias retained so the existing call sites don't all change names.
@@ -1101,5 +1103,87 @@ describe('scan scheduler behavior', () => {
     // Exactly one scan — leading-edge ran, cleared both timers, neither
     // subsequently fired a redundant scan.
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('in-memory repo cache preload', () => {
+  const freshEntry = (nwo: string, stars: number) => ({
+    [nwo]: {
+      exp: Date.now() + 60_000,
+      ver: 2,
+      pay: {
+        ok: true,
+        json: {
+          forks_count: 0,
+          stargazers_count: stars,
+          pushed_at: '2024-01-01',
+          archived: false,
+        },
+      },
+    },
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    __resetLinkScannerForTests();
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('preload populates inMemoryRepoCache from storage', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        { ...freshEntry('ollama/ollama', 42), ...freshEntry('vercel/next.js', 100) },
+        resolve
+      )
+    );
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map).not.toBeNull();
+    expect(map!.size).toBe(2);
+    expect(map!.get('ollama/ollama')?.json?.stargazers_count).toBe(42);
+    expect(map!.get('vercel/next.js')?.json?.stargazers_count).toBe(100);
+  });
+
+  test('preload skips expired entries', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/fresh': { exp: now + 60_000, ver: 2, pay: { ok: true } },
+          'owner/stale': { exp: now - 60_000, ver: 2, pay: { ok: true } },
+        },
+        resolve
+      )
+    );
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map!.has('owner/fresh')).toBe(true);
+    expect(map!.has('owner/stale')).toBe(false);
+  });
+
+  test('preload skips entries with wrong version', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/v1': { exp: Date.now() + 60_000, ver: 1, pay: { ok: true } },
+          'owner/v2': { exp: Date.now() + 60_000, ver: 2, pay: { ok: true } },
+        },
+        resolve
+      )
+    );
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map!.has('owner/v2')).toBe(true);
+    expect(map!.has('owner/v1')).toBe(false);
+  });
+
+  test('preload results in empty Map when storage is empty', async () => {
+    await __rerunPreloadForTests();
+    const map = __getInMemoryRepoCacheForTests();
+    expect(map).not.toBeNull();
+    expect(map!.size).toBe(0);
   });
 });
