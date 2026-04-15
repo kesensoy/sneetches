@@ -1187,3 +1187,144 @@ describe('in-memory repo cache preload', () => {
     expect(map!.size).toBe(0);
   });
 });
+
+describe('in-memory cache fast path', () => {
+  const freshResponse = (stars: number): RepoResponse => ({
+    ok: true,
+    json: {
+      forks_count: 0,
+      stargazers_count: stars,
+      pushed_at: '2024-01-01',
+      archived: false,
+    },
+  });
+
+  beforeAll(() => {
+    __setPortFetcherForTests(portFetcherMock);
+  });
+  afterAll(() => {
+    __setPortFetcherForTests(null);
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        { show: { stars: true, forks: false, update: false }, star_style: 'outline' },
+        resolve
+      )
+    );
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    document.body.innerHTML = '';
+    portFetcherMock.mockReset();
+    // Port-path sentinel: any uncached nwo falls through and gets 999
+    // stars from the mock. Cached nwos get whatever the seeded Map
+    // says, NOT 999. Mismatched values are how we tell which path
+    // served each anchor.
+    mockBatchRespondsWith(freshResponse(999));
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
+
+  test('cached anchors are painted from memory without calling the port', async () => {
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    const annotation = a.querySelector('.data-sneetch-extension');
+    expect(annotation).not.toBeNull();
+    expect(annotation?.textContent).toContain('42');
+  });
+
+  test('uncached anchors fall through to the port fetcher', async () => {
+    __setInMemoryRepoCacheForTests(new Map());
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/vercel/next.js';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
+    expect(a.querySelector('.data-sneetch-extension')?.textContent).toContain('999');
+  });
+
+  test('mixed cached + uncached: only misses go through the port', async () => {
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    const a1 = document.createElement('a');
+    a1.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a1);
+
+    const a2 = document.createElement('a');
+    a2.href = 'https://github.com/vercel/next.js';
+    document.body.appendChild(a2);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledTimes(1);
+    expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
+    expect(a1.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+    expect(a2.querySelector('.data-sneetch-extension')?.textContent).toContain('999');
+  });
+
+  test('null in-memory cache (preload not resolved) falls through entirely to port', async () => {
+    __setInMemoryRepoCacheForTests(null);
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledWith(['ollama/ollama'], expect.any(Function));
+  });
+
+  test('silent-skip entries in the in-memory cache populate silentSkipAnchors', async () => {
+    __setInMemoryRepoCacheForTests(
+      new Map([['private/repo', { ok: false, silent: true } as RepoResponse]])
+    );
+
+    const a = document.createElement('a');
+    a.href = 'https://github.com/private/repo';
+    document.body.appendChild(a);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+
+  test('deduplicated nwos: cached repo shared across multiple anchors paints once from memory', async () => {
+    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
+
+    const a1 = document.createElement('a');
+    a1.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a1);
+
+    const a2 = document.createElement('a');
+    a2.href = 'https://github.com/ollama/ollama';
+    document.body.appendChild(a2);
+
+    startLinkScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(a1.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+    expect(a2.querySelector('.data-sneetch-extension')?.textContent).toContain('42');
+  });
+});
