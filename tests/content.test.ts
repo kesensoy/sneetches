@@ -1445,8 +1445,8 @@ describe('in-memory cache fast path', () => {
     expect(cachedAnnotations[0].textContent).toContain('42');
 
     // Uncached anchor: exactly one error annotation from the batch-level
-    // failure handler. Default error for status 500 is an empty-text
-    // annotation per createErrorAnnotation's else branch.
+    // failure handler. Status 500 routes through createErrorAnnotation's
+    // else branch, which since 1.1.5 renders a .sneetch-error chip.
     const uncachedAnnotations = uncached.querySelectorAll('.data-sneetch-extension');
     expect(uncachedAnnotations).toHaveLength(1);
 
