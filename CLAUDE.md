@@ -273,6 +273,48 @@ The 1.1.3 release moves the repo-data hot path out of the content script and int
 ### Backward compatibility
 `CACHE_VERSION` stays at `2`. On-disk cache entries from 1.1.2 are reused as-is. `RepoInfo` / `RepoResponse` types are unchanged. The old `getRepoDataMany` entry point is removed from the public API; no extension consumers existed outside the test suite, which has been migrated. Firefox users on versions older than 121 (Dec 2023) will see the SW fail to load due to `"type": "module"` — acceptable per the 2026 release timeline.
 
+## document_start Cache Preload (1.1.4, 2026)
+
+The 1.1.4 release eliminates the ~4.5-second phase-C port round-trip measured on 1.1.3 for warm-cache scans on awesome-list pages. After 1.1.3 moved the repo-data hot path to a service worker and added settings caching + scheduler rework + leading-edge MO triggers, the remaining ceiling was content-script main-thread queueing of incoming `port.postMessage` delivery: the SW was already finished with its work in ~130ms, but the 'done' message's delivery task sat in the page's main-thread queue for ~4.4 seconds behind React hydration. 1.1.4 removes the port entirely for cache-hit anchors, serving them synchronously from an in-memory Map populated at `document_start`.
+
+### What changed
+- **`src/manifest.json`** — `content.js` moves from `run_at: "document_idle"` (the default) to `run_at: "document_start"`. The content script now runs before the HTML parser has fully walked the document, which gives the storage preload a free main-thread window before React / 1Password / GitHub chrome start contending.
+- **`src/cache.ts`** — new exported `readAllCachedRepos<T, V>(version)` helper reads every repo-cache entry from `chrome.storage.local` in a single `get(null)` IPC and returns a filtered `Map` (unexpired, matching version, skipping non-cache keys like `rate_limit`). Lives next to `bulkReadCache` / `bulkWriteCache` / `locallyCached`.
+- **`src/github.ts`** — `CACHE_VERSION` is now exported so `content.ts`'s preload can validate cache entries without hard-coding the version.
+- **`src/content.ts`**:
+  - Module-level `inMemoryRepoCache: Map<string, RepoResponse> | null` mirrors the disk cache. Populated at module load via `runPreload()` which fires `readAllCachedRepos(CACHE_VERSION)`. On preload error, falls back to an empty Map rather than leaving the mirror null forever, and now logs via `console.error` so a genuinely broken storage layer is diagnosable in DevTools.
+  - A `preloadGeneration` counter prevents an in-flight preload from stomping the null that `handleSyncStorageChange` sets when the access token changes. `runPreload` captures the generation at start and checks it before writing the result; if the generation was bumped mid-flight, the assignment is skipped.
+  - `updateLinks` splits `pending[]` into cached + uncached: cached anchors are painted synchronously via a new extracted `paintResult` helper (the same epoch / silent-skip / ok-vs-error decision tree `distributeChunk` uses for port-fetcher chunks), uncached anchors flow into the existing SW port path with a reduced `uniqueNwos` list.
+  - Deferred body-dependent initialization: `startLinkScanner` and `detectStarredStateOnSneetchesRepo` wait for `<body>` to parse via a `MutationObserver` on `document.documentElement`. Per `feedback_main_thread_contention_timing.md`, MO microtasks drain reliably under React contention while `DOMContentLoaded` / `setTimeout` scheduling can delay multi-second.
+  - `handleSyncStorageChange` now clears `inMemoryRepoCache` and bumps `preloadGeneration` alongside the existing `chrome.storage.local.clear()` on access-token change — without this, the next scan would paint from stale pre-token data that no longer exists on disk. Show/starStyle changes do NOT invalidate the mirror because the repo data is still valid; only rendering changes.
+  - New test hooks: `__setInMemoryRepoCacheForTests`, `__getInMemoryRepoCacheForTests`, `__rerunPreloadForTests`, `__getPreloadPromiseForTests`. `__resetLinkScannerForTests` now also clears the in-memory mirror and bumps the preload generation for cross-test isolation.
+- **`tests/cache.test.ts`** — 5 new tests for `readAllCachedRepos` (empty storage, version filtering, expiry filtering, non-cache-key skipping, malformed-entry skipping).
+- **`tests/content.test.ts`** — 18 new tests covering: test hook round-trips, preload populates from storage with expiry/version filters, fast-path single hit (no port call), fast-path multi hit, mixed hit/miss (port called only with misses), null cache falls through, silent-skip fast path with second-scan verification, dedup fast path, partial-cache port-failure handling, access-token invalidation clears the mirror, show/starStyle changes preserve the mirror, and the in-flight-preload-after-token-change race regression test.
+- **Version bumped to 1.1.4.**
+- **Test suite grew from 184 to 207** (23 new: 5 in `tests/cache.test.ts` for `readAllCachedRepos`, 18 in `tests/content.test.ts` for the preload + fast-path behavior).
+
+### Measured impact
+All numbers measured on `github.com/miantiao-me/awesome-homelab` (712 repo links, 705 unique nwos, PAT configured, 1Password + GitHub's own scripts active) on 2026-04-15.
+
+- **Warm cache wall clock**: 6.1s → **~2.3s** (floor = React's own hydration latency until repo anchors appear in the DOM). The 4.5s phase-C port round-trip is eliminated entirely for cache hits.
+- **Cold cache wall clock**: unchanged at ~11.5s. The SW path handles misses; everything 1.1.3 did still applies for first visits.
+- **Validation scan recorded 712/712 fast-path hits** with zero port calls — the in-memory Map held 705 entries at scan time (deduplicated from 712 anchors), matched every pending anchor, and painted all 712 annotations synchronously inside the MutationObserver microtask.
+- **Storage read cost at document_start**: 129-258ms for 705 entries / 150KB on awesome-homelab (measured across multiple probe runs) — comfortably below React's hydration floor, so `inMemoryRepoCache` is populated by the time the MO leading-edge fire triggers the first scan on real repo anchors.
+- **Mixed hit/miss pages**: strictly faster than 1.1.3 — the cached subset paints synchronously during the MO microtask, misses go through the port path with a reduced `uniqueNwos` list.
+- **Regular github.com/owner/repo pages** with a handful of repo links: modest improvement (fewer port round-trips for the handful of cached nwos in the README's "related repos" section).
+
+### Key design decisions
+- **`document_start` run timing, not document_idle.** The 234ms storage read is only cheap because it fires before React starts contending for the main thread. At `document_idle`, the content script runs AFTER the HTML parser is idle, by which point 1Password / GitHub chrome / React have already started task-queuing work — the same starvation that made 1.1.2's settings reads take 5 seconds.
+- **Read-only in-memory mirror.** The SW still owns all writes to `chrome.storage.local`. Fresh fetches from the port path populate the persistent cache for NEXT page-load's preload. The current scan's new cache hits do NOT live-update `inMemoryRepoCache` — we accept that as a simplicity / correctness trade-off, because the alternative (writing back from content.ts) would introduce a dual-writer race with the SW's `bulkWriteCache` calls.
+- **Generation-counter cancellation for the in-flight preload race.** If `handleSyncStorageChange` fires during the ~234ms preload window, the in-flight `runPreload`'s pending assignment would otherwise stomp the newly-null `inMemoryRepoCache` with stale pre-change data. The generation counter lets `runPreload` detect that its generation was superseded and drop the result on the floor.
+- **No invalidation on show/starStyle settings changes.** The repo data is still valid, only rendering changes. `applySettingsChange`'s rescan re-reads the same in-memory Map and re-paints with the new settings.
+- **`MutationObserver` on `documentElement` for body-wait, not `DOMContentLoaded` or `setTimeout`.** Microtask-scoped signaling that fires the moment the HTML parser inserts `<body>`, with no task-queue delay under main-thread contention. Per `feedback_main_thread_contention_timing.md`.
+- **`readAllCachedRepos` lives in `cache.ts`, not `content.ts`.** Keeps storage-schema knowledge centralized next to `bulkReadCache` / `bulkWriteCache`. The in-memory Map itself lives in `content.ts` because it's a content-script concern — the SW never reads it.
+- **`CACHE_VERSION` imported from `github.ts`, not re-declared in `content.ts`.** `cache.ts` still can't import from `github.ts` (would create a cycle with `github.ts → cache.ts`), but `content.ts` already imports from `github.ts` so one-way import is fine. Keeps the version constant single-sourced.
+
+### Backward compatibility
+`CACHE_VERSION` stays at `2`. The on-disk cache entry shape is unchanged (still `{exp, pay, ver}`), so existing 1.1.3 cache entries are reused as-is by the new preload path — no invalidation required. `RepoInfo` / `RepoResponse` types are unchanged. The test hooks (`__setInMemoryRepoCacheForTests`, etc.) are new, but all existing `__set*ForTests` hooks are preserved. `handleSyncStorageChange`'s `chrome.storage.local.clear()` on access-token change is unchanged; the new additions are the sibling `inMemoryRepoCache = null` line and the `preloadGeneration++` bump.
+
 ## Extension Features
 
 - Displays GitHub repository stats inline next to repo links using Octicons SVGs
