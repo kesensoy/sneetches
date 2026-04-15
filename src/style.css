@@ -2,10 +2,6 @@
   text-decoration: none;
 }
 
-.data-sneetch-extension.missing {
-  color: red;
-}
-
 .data-sneetch-extension .sneetch-stars,
 .data-sneetch-extension .sneetch-forks,
 .data-sneetch-extension .sneetch-date {
@@ -49,6 +45,52 @@
   border-radius: 3px;
   background: rgba(217, 119, 6, 0.15);
   color: #d97706;
+  margin: 0 1px;
+  font-size: 12px;
+}
+
+/* Broken chip (404) — solid red text on red wash. Visually loudest
+   error state because the failure is permanent: the repo doesn't
+   exist, and there's nothing the user can do about it except fix
+   the link on the host page. */
+.data-sneetch-extension .sneetch-broken {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(209, 36, 47, 0.12);
+  color: #d1242f;
+  margin: 0 1px;
+  font-size: 12px;
+}
+
+/* Rate-limited chip (403) — amber text on amber wash. Same hue as
+   .sneetch-archived because both are "status: not fully available".
+   They won't collide on a single anchor: a rate-limited request
+   never returns archived metadata. */
+.data-sneetch-extension .sneetch-rate-limited {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(217, 119, 6, 0.15);
+  color: #d97706;
+  margin: 0 1px;
+  font-size: 12px;
+}
+
+/* Unknown-error chip (else branch) — green text on green wash. This
+   branch is nearly unreachable (weird 5xx, malformed responses), so
+   we picked a "we'd never see this" color. Green was chosen *because*
+   it's counterintuitive: the chip reads as "the extension itself is
+   healthy enough to report that something upstream went wrong".
+   Gray was ruled out because .is-archived dims siblings to cool gray
+   and a gray error chip would look semantically continuous with
+   "archived row". */
+.data-sneetch-extension .sneetch-error {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(26, 127, 55, 0.12);
+  color: #1a7f37;
   margin: 0 1px;
   font-size: 12px;
 }
