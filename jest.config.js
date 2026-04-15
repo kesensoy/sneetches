@@ -12,6 +12,7 @@ module.exports = {
     'jest-webextension-mock',
     './tests/chrome-storage.mock.ts',
     './tests/port.mock.ts',
+    './tests/probe-silence.ts',
   ],
   globals: {
     __DEBUG__: true

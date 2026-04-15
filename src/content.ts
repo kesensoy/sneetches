@@ -397,19 +397,17 @@ async function runPreload(): Promise<void> {
   // and we'll skip the assignment — preventing a stale map from
   // clobbering a just-invalidated cache.
   const gen = ++preloadGeneration;
-  // Preload gets its own envelope, emitted via probe.dump('preload')
-  // in the finally below. Without this, the preload marks would
-  // accumulate in the entries array until the first updateLinks scan
-  // fires probe.reset() and wipes them — the harness would never
-  // see preload timing data. The reset() here clears any stale
-  // entries from a previous runPreload invocation (test reruns).
-  probe.reset();
-  probe.mark(probe.Phase.PRELOAD_START);
+  // Preload gets its own probe frame with its own envelope emitted
+  // via `frame.dump()` in the finally below. Held in a local
+  // variable so concurrent preload invocations (rare, mostly from
+  // tests) each have their own entries array.
+  const frame = probe.newFrame('preload');
+  frame.mark(probe.Phase.PRELOAD_START);
   try {
     const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
     if (gen === preloadGeneration) {
       inMemoryRepoCache = map;
-      probe.mark(probe.Phase.PRELOAD_DONE, { entries: map.size });
+      frame.mark(probe.Phase.PRELOAD_DONE, { entries: map.size });
     }
     // else: our generation was superseded (token change or test
     // rerun); drop the result on the floor.
@@ -419,7 +417,7 @@ async function runPreload(): Promise<void> {
       inMemoryRepoCache = new Map();
     }
   } finally {
-    probe.dump('preload');
+    frame.dump();
   }
 }
 
@@ -488,8 +486,12 @@ function paintResult(
 }
 
 async function updateLinks() {
-  probe.reset();
-  probe.mark(probe.Phase.SCAN_START);
+  // Every scan gets its own probe frame. Held in a local variable
+  // (not a module-level stack) so concurrent scans — which interleave
+  // at the two awaits below — each mark into their own frame without
+  // cross-scan interference.
+  const frame = probe.newFrame('scan');
+  frame.mark(probe.Phase.SCAN_START);
   try {
     // Capture the epoch BEFORE the await so that any settings change
     // that fires between here and getCachedSettings() resolving is
@@ -552,19 +554,19 @@ async function updateLinks() {
     }
 
     const cachedCount = pending.length - uncachedPending.length;
-    probe.mark(probe.Phase.PENDING_COLLECTED, {
+    frame.mark(probe.Phase.PENDING_COLLECTED, {
       pending: pending.length,
       cached: cachedCount,
       uncached: uncachedPending.length,
     });
 
     if (uncachedPending.length === 0) {
-      probe.mark(probe.Phase.FAST_PATH_PAINTED, { painted: pending.length });
-      probe.mark(probe.Phase.PAINT_DONE);
+      frame.mark(probe.Phase.FAST_PATH_PAINTED, { painted: pending.length });
+      frame.mark(probe.Phase.PAINT_DONE);
       return;
     }
 
-    probe.mark(probe.Phase.FAST_PATH_PAINTED, {
+    frame.mark(probe.Phase.FAST_PATH_PAINTED, {
       painted: pending.length - uncachedPending.length,
     });
 
@@ -586,7 +588,7 @@ async function updateLinks() {
     const distributeChunk = (entries: ReadonlyArray<readonly [string, RepoResponse]>): void => {
       if (!firstChunkSeen) {
         firstChunkSeen = true;
-        probe.mark(probe.Phase.PORT_FIRST_CHUNK, { chunkSize: entries.length });
+        frame.mark(probe.Phase.PORT_FIRST_CHUNK, { chunkSize: entries.length });
       }
       for (const [nwo, res] of entries) {
         const anchors = byNwo.get(nwo);
@@ -597,9 +599,9 @@ async function updateLinks() {
       }
     };
 
-    probe.mark(probe.Phase.PORT_SEND, { unique: uniqueNwos.length });
+    frame.mark(probe.Phase.PORT_SEND, { unique: uniqueNwos.length });
     const result = await portFetcher(uniqueNwos, distributeChunk);
-    probe.mark(probe.Phase.PORT_DONE, { ok: result.ok ? 'yes' : 'no' });
+    frame.mark(probe.Phase.PORT_DONE, { ok: result.ok ? 'yes' : 'no' });
 
     if (!result.ok) {
       // Batch-level failure (network error, 401, 5xx): every anchor
@@ -615,9 +617,9 @@ async function updateLinks() {
       }
     }
 
-    probe.mark(probe.Phase.PAINT_DONE);
+    frame.mark(probe.Phase.PAINT_DONE);
   } finally {
-    probe.dump('scan');
+    frame.dump();
   }
 }
 

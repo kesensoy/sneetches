@@ -59,27 +59,31 @@ module.exports = (_env, argv) => {
             new TerserPlugin({
               terserOptions: {
                 compress: {
-                  // Tell Terser that calls to these functions have no
-                  // observable side effects, so call sites can be
-                  // deleted entirely — including their string-literal
+                  // Tell Terser that calls to these functions / methods
+                  // have no observable side effects, so call sites can
+                  // be deleted entirely — including their string-literal
                   // phase-name arguments. Combined with the
                   // `if (!__DEBUG__) return;` guard at the top of each
-                  // function body, this produces zero bytes of probe
+                  // method body, this produces zero bytes of probe
                   // code in the prod bundle.
                   //
                   // IMPORTANT: these names are keyed on the
                   // `import * as probe from './debug/probe';` form at
-                  // the call site. If someone refactors to a named
-                  // import (`import { mark, dump, reset } from ...`),
-                  // these match nothing and the explicit pure_funcs
-                  // safety net disappears. The `if (!__DEBUG__)` guard
-                  // body-pruning still works even then, but the real
-                  // canary is `npm run test:dce` — always re-run it
-                  // after changing probe import shapes.
+                  // the call site AND on the `frame.mark` / `frame.dump`
+                  // method names used by the per-scan frame API. If
+                  // someone refactors to named imports
+                  // (`import { newFrame } from ...`) or renames the
+                  // local frame variable (e.g. `f.mark` instead of
+                  // `frame.mark`), these patterns match nothing and
+                  // the explicit pure_funcs safety net disappears. The
+                  // `if (!__DEBUG__)` guard body-pruning still works
+                  // even then, but the real canary is `npm run test:dce`
+                  // — always re-run it after changing probe import or
+                  // usage shapes.
                   pure_funcs: [
-                    'probe.mark',
-                    'probe.dump',
-                    'probe.reset'
+                    'probe.newFrame',
+                    'frame.mark',
+                    'frame.dump'
                   ],
                   passes: 2
                 }

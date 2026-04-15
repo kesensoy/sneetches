@@ -1,13 +1,6 @@
 import * as probe from '../src/debug/probe';
 
 describe('probe module', () => {
-  beforeEach(() => {
-    // Stack-collapsing reset (not the public reset, which would push
-    // a new frame). Keeps test state isolated even if a previous test
-    // left an unbalanced reset/dump pair.
-    probe.__resetStackForTests();
-  });
-
   describe('Phase constants', () => {
     it('exports all documented phase constants', () => {
       expect(probe.Phase.PRELOAD_START).toBe('preload-start');
@@ -25,68 +18,51 @@ describe('probe module', () => {
     });
   });
 
-  describe('mark()', () => {
-    it('appends an entry with phase, t (number), and ctx', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      const entries = probe.__getEntriesForTests();
-      expect(entries).toHaveLength(1);
-      expect(entries[0].phase).toBe('scan-start');
-      expect(typeof entries[0].t).toBe('number');
-      expect(['cs', 'sw']).toContain(entries[0].ctx);
+  describe('newFrame() + mark()', () => {
+    it('newFrame returns a ProbeFrame with the supplied label', () => {
+      const frame = probe.newFrame('scan');
+      expect(frame).toBeInstanceOf(probe.ProbeFrame);
+      expect(frame.label).toBe('scan');
+      expect(frame.entries).toEqual([]);
+    });
+
+    it('mark appends an entry with phase and t (number)', () => {
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      expect(frame.entries).toHaveLength(1);
+      expect(frame.entries[0].phase).toBe('scan-start');
+      expect(typeof frame.entries[0].t).toBe('number');
     });
 
     it('preserves extra metadata when provided', () => {
-      probe.mark(probe.Phase.PENDING_COLLECTED, {
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.PENDING_COLLECTED, {
         pending: 712,
-        unique: 705,
         cached: 705,
-        uncached: 0,
+        uncached: 7,
       });
-      const entries = probe.__getEntriesForTests();
-      expect(entries[0].extra).toEqual({
+      expect(frame.entries[0].extra).toEqual({
         pending: 712,
-        unique: 705,
         cached: 705,
-        uncached: 0,
+        uncached: 7,
       });
     });
 
     it('supports multiple marks of the same phase', () => {
-      probe.mark(probe.Phase.PORT_SEND);
-      probe.mark(probe.Phase.PORT_SEND);
-      expect(probe.__getEntriesForTests()).toHaveLength(2);
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.PORT_SEND);
+      frame.mark(probe.Phase.PORT_SEND);
+      expect(frame.entries).toHaveLength(2);
     });
 
     it('records monotonically non-decreasing timestamps for sequential marks', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PENDING_COLLECTED);
-      probe.mark(probe.Phase.PAINT_DONE);
-      const entries = probe.__getEntriesForTests();
-      expect(entries[1].t).toBeGreaterThanOrEqual(entries[0].t);
-      expect(entries[2].t).toBeGreaterThanOrEqual(entries[1].t);
-    });
-
-    it('ctx is "cs" under jsdom (window defined)', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      expect(probe.__getEntriesForTests()[0].ctx).toBe('cs');
-    });
-  });
-
-  describe('reset()', () => {
-    it('clears all entries', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.reset();
-      expect(probe.__getEntriesForTests()).toHaveLength(0);
-    });
-
-    it('leaves the module ready to record new marks', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.reset();
-      probe.mark(probe.Phase.PORT_SEND);
-      const entries = probe.__getEntriesForTests();
-      expect(entries).toHaveLength(1);
-      expect(entries[0].phase).toBe('port-send');
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      frame.mark(probe.Phase.PENDING_COLLECTED);
+      frame.mark(probe.Phase.PAINT_DONE);
+      const t = frame.entries.map((e) => e.t);
+      expect(t[1]).toBeGreaterThanOrEqual(t[0]);
+      expect(t[2]).toBeGreaterThanOrEqual(t[1]);
     });
   });
 
@@ -102,44 +78,42 @@ describe('probe module', () => {
     });
 
     it('emits exactly one console.log call', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.dump();
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      frame.dump();
       expect(consoleLogSpy).toHaveBeenCalledTimes(1);
     });
 
     it('uses the SNEETCHES_PROBE envelope as the first argument', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.dump();
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      frame.dump();
       expect(consoleLogSpy.mock.calls[0][0]).toBe('SNEETCHES_PROBE');
     });
 
     it('serializes the payload as a JSON string as the second argument', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.dump();
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      frame.dump();
       const jsonArg = consoleLogSpy.mock.calls[0][1];
       expect(typeof jsonArg).toBe('string');
       const parsed = JSON.parse(jsonArg);
       expect(parsed).toBeDefined();
     });
 
-    it('payload includes label when provided', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.dump('scan');
+    it('payload includes the label from the frame constructor', () => {
+      const frame = probe.newFrame('preload');
+      frame.mark(probe.Phase.PRELOAD_START);
+      frame.dump();
       const parsed = JSON.parse(consoleLogSpy.mock.calls[0][1]);
-      expect(parsed.label).toBe('scan');
-    });
-
-    it('payload defaults label to "dump" when not provided', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.dump();
-      const parsed = JSON.parse(consoleLogSpy.mock.calls[0][1]);
-      expect(parsed.label).toBe('dump');
+      expect(parsed.label).toBe('preload');
     });
 
     it('payload includes ctx, timeOrigin, and all entries', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.dump();
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      frame.mark(probe.Phase.PAINT_DONE);
+      frame.dump();
       const parsed = JSON.parse(consoleLogSpy.mock.calls[0][1]);
       expect(parsed.ctx).toBe('cs');
       expect(typeof parsed.timeOrigin).toBe('number');
@@ -148,15 +122,20 @@ describe('probe module', () => {
       expect(parsed.entries[1].phase).toBe('paint-done');
     });
 
-    it('does nothing when there are no entries', () => {
-      probe.dump();
+    it('does not emit when the frame has no entries', () => {
+      const frame = probe.newFrame('scan');
+      frame.dump();
       expect(consoleLogSpy).not.toHaveBeenCalled();
     });
 
+    it('clears entries after dump so the frame can be reused', () => {
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      frame.dump();
+      expect(frame.entries).toHaveLength(0);
+    });
+
     it('strips query string and fragment from pageUrl', () => {
-      // jsdom defaults to http://localhost/ which has no query string.
-      // Simulate a page with sensitive query params by replacing
-      // window.location via jsdom's reconfigure API.
       const originalHref = window.location.href;
       Object.defineProperty(window, 'location', {
         value: new URL('https://github.com/owner/repo?code=secret&state=xyz#frag'),
@@ -164,8 +143,9 @@ describe('probe module', () => {
         configurable: true,
       });
       try {
-        probe.mark(probe.Phase.SCAN_START);
-        probe.dump();
+        const frame = probe.newFrame('scan');
+        frame.mark(probe.Phase.SCAN_START);
+        frame.dump();
         const parsed = JSON.parse(consoleLogSpy.mock.calls[0][1]);
         expect(parsed.pageUrl).toBe('https://github.com/owner/repo');
         expect(parsed.pageUrl).not.toContain('secret');
@@ -181,14 +161,13 @@ describe('probe module', () => {
     });
   });
 
-  // Concurrent scans are the reason the probe uses a stack-of-frames
-  // rather than a single shared entries array. On cold-cache
-  // awesome-homelab runs, scan A starts the port fetch and awaits
-  // for ~4s; during that await the MutationObserver fires and
-  // schedules scan B, which runs to completion before A resumes.
-  // Without per-scan frame isolation, B's reset() would wipe A's
-  // marks and the two scans' envelopes would be garbled.
-  describe('concurrent scans (stack-of-frames isolation)', () => {
+  // These tests exercise the specific concurrency scenario the
+  // reviewer flagged as broken in the round-1 stack-of-frames
+  // design: scan A awaits, scan B runs partway, scan A resumes and
+  // marks, scan B resumes and marks, both dump. With per-scan frames
+  // held in local variables, each scan's marks land only on its own
+  // frame regardless of interleave order.
+  describe('concurrent scans with real async interleave', () => {
     let consoleLogSpy: jest.SpyInstance;
 
     beforeEach(() => {
@@ -199,156 +178,145 @@ describe('probe module', () => {
       consoleLogSpy.mockRestore();
     });
 
-    it('scan B finishing mid-scan-A emits clean envelopes for both', () => {
-      // Simulate scan A starting
-      probe.reset();
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PENDING_COLLECTED, { pending: 100 });
-      probe.mark(probe.Phase.PORT_SEND, { unique: 100 });
-      // ... scan A now awaits portFetcher ...
+    it('scans that interleave at await points produce clean envelopes', async () => {
+      // Simulate two concurrent updateLinks-style scans, each with
+      // their own frame. Between awaits, each scan marks into its
+      // own frame. If the probe were using a shared "current frame"
+      // (stack or otherwise), scan A's post-resume marks would land
+      // on whatever scan B pushed last.
+      const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-      // Scan B fires during A's await and completes
-      probe.reset();
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PENDING_COLLECTED, { pending: 5 });
-      probe.mark(probe.Phase.FAST_PATH_PAINTED, { painted: 5 });
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.dump('scan'); // scan B dumps
+      const scanA = async (): Promise<void> => {
+        const frame = probe.newFrame('scan');
+        frame.mark(probe.Phase.SCAN_START);
+        await tick(); // yield
+        frame.mark(probe.Phase.PENDING_COLLECTED, { pending: 100 });
+        frame.mark(probe.Phase.PORT_SEND, { unique: 100 });
+        await tick(); // yield (like portFetcher await)
+        frame.mark(probe.Phase.PORT_DONE, { ok: 'yes' });
+        frame.mark(probe.Phase.PAINT_DONE);
+        frame.dump();
+      };
 
-      // ... scan A resumes ...
-      probe.mark(probe.Phase.PORT_FIRST_CHUNK, { chunkSize: 50 });
-      probe.mark(probe.Phase.PORT_DONE, { ok: 'yes' });
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.dump('scan'); // scan A dumps
+      const scanB = async (): Promise<void> => {
+        const frame = probe.newFrame('scan');
+        frame.mark(probe.Phase.SCAN_START);
+        await tick();
+        frame.mark(probe.Phase.PENDING_COLLECTED, { pending: 5 });
+        frame.mark(probe.Phase.FAST_PATH_PAINTED, { painted: 5 });
+        frame.mark(probe.Phase.PAINT_DONE);
+        frame.dump();
+      };
+
+      await Promise.all([scanA(), scanB()]);
 
       expect(consoleLogSpy).toHaveBeenCalledTimes(2);
 
-      const bPayload = JSON.parse(consoleLogSpy.mock.calls[0][1]);
-      const aPayload = JSON.parse(consoleLogSpy.mock.calls[1][1]);
+      // Both envelopes should have exactly their own scan's marks in
+      // order. Unpack both and assert each has its expected shape
+      // regardless of dump ordering.
+      const payloads = consoleLogSpy.mock.calls.map(
+        (call) => JSON.parse(call[1] as string) as { entries: Array<{ phase: string }> }
+      );
 
-      // Scan B's envelope should have exactly its 4 marks, in order
-      expect(bPayload.entries.map((e: { phase: string }) => e.phase)).toEqual([
+      const aPayload = payloads.find((p) => p.entries.some((e) => e.phase === 'port-send'));
+      const bPayload = payloads.find((p) => p.entries.some((e) => e.phase === 'fast-path-painted'));
+      expect(aPayload).toBeDefined();
+      expect(bPayload).toBeDefined();
+
+      expect(aPayload!.entries.map((e) => e.phase)).toEqual([
+        'scan-start',
+        'pending-collected',
+        'port-send',
+        'port-done',
+        'paint-done',
+      ]);
+      expect(bPayload!.entries.map((e) => e.phase)).toEqual([
         'scan-start',
         'pending-collected',
         'fast-path-painted',
         'paint-done',
       ]);
-      expect(bPayload.entries[1].extra).toEqual({ pending: 5 });
-
-      // Scan A's envelope should have its 6 marks, NOT mixed with scan B
-      expect(aPayload.entries.map((e: { phase: string }) => e.phase)).toEqual([
-        'scan-start',
-        'pending-collected',
-        'port-send',
-        'port-first-chunk',
-        'port-done',
-        'paint-done',
-      ]);
-      expect(aPayload.entries[1].extra).toEqual({ pending: 100 });
     });
 
-    it('three nested scans all emit their own envelopes without interleave', () => {
-      probe.reset(); // scan A
-      probe.mark(probe.Phase.SCAN_START);
+    it('three overlapping scans each get independent envelopes', async () => {
+      const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-      probe.reset(); // scan B
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PENDING_COLLECTED, { pending: 1 });
+      const makeScan = (label: string, phase: probe.Phase) => async (): Promise<void> => {
+        const frame = probe.newFrame(label);
+        frame.mark(probe.Phase.SCAN_START);
+        await tick();
+        frame.mark(phase);
+        await tick();
+        frame.mark(probe.Phase.PAINT_DONE);
+        frame.dump();
+      };
 
-      probe.reset(); // scan C
-      probe.mark(probe.Phase.SCAN_START);
-      probe.mark(probe.Phase.PENDING_COLLECTED, { pending: 2 });
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.dump('scan'); // C pops
-
-      // Scan B resumes
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.dump('scan'); // B pops
-
-      // Scan A resumes
-      probe.mark(probe.Phase.PAINT_DONE);
-      probe.dump('scan'); // A pops
+      await Promise.all([
+        makeScan('a', probe.Phase.PORT_SEND)(),
+        makeScan('b', probe.Phase.PENDING_COLLECTED)(),
+        makeScan('c', probe.Phase.FAST_PATH_PAINTED)(),
+      ]);
 
       expect(consoleLogSpy).toHaveBeenCalledTimes(3);
-
-      const cPhases = JSON.parse(consoleLogSpy.mock.calls[0][1]).entries.map(
-        (e: { phase: string }) => e.phase
-      );
-      const bPhases = JSON.parse(consoleLogSpy.mock.calls[1][1]).entries.map(
-        (e: { phase: string }) => e.phase
-      );
-      const aPhases = JSON.parse(consoleLogSpy.mock.calls[2][1]).entries.map(
-        (e: { phase: string }) => e.phase
-      );
-
-      expect(cPhases).toEqual(['scan-start', 'pending-collected', 'paint-done']);
-      expect(bPhases).toEqual(['scan-start', 'pending-collected', 'paint-done']);
-      expect(aPhases).toEqual(['scan-start', 'paint-done']);
-    });
-
-    it('dump on an empty frame pops without emitting', () => {
-      probe.reset();
-      probe.dump('scan'); // frame is empty, should not emit
-
-      expect(consoleLogSpy).not.toHaveBeenCalled();
+      const phases = consoleLogSpy.mock.calls.map((call) => {
+        const p = JSON.parse(call[1] as string) as { entries: Array<{ phase: string }> };
+        return p.entries[1].phase; // the per-scan phase from makeScan
+      });
+      expect(phases.sort()).toEqual(['fast-path-painted', 'pending-collected', 'port-send']);
     });
   });
 
   // These tests pin the contract that in production builds
-  // (__DEBUG__ === false), every exported function is a no-op. Jest
-  // sets __DEBUG__: true via jest.config.js globals, so we have to
-  // monkey-patch globalThis to flip the flag for the duration of
-  // each test. The test:dce npm script verifies the same contract
-  // from the bundle side by grepping for SNEETCHES_PROBE in
-  // build/*.js after a production build.
+  // (__DEBUG__ === false), every method call is a no-op. Jest sets
+  // __DEBUG__: true via jest.config.js globals, so we monkey-patch
+  // globalThis to flip the flag for the duration of each test. The
+  // test:dce npm script verifies the same contract from the bundle
+  // side by grepping for SNEETCHES_PROBE in build/*.js after a
+  // production build.
   describe('production mode (__DEBUG__ === false)', () => {
     let originalDebug: unknown;
 
     beforeEach(() => {
       originalDebug = (globalThis as Record<string, unknown>).__DEBUG__;
       (globalThis as Record<string, unknown>).__DEBUG__ = false;
-      // reset() is a no-op under __DEBUG__ === false, so we have to
-      // clear residual entries via the test-only accessor check.
-      // Easiest path: flip to true, reset, then flip back.
-      (globalThis as Record<string, unknown>).__DEBUG__ = true;
-      probe.reset();
-      (globalThis as Record<string, unknown>).__DEBUG__ = false;
     });
 
     afterEach(() => {
       (globalThis as Record<string, unknown>).__DEBUG__ = originalDebug;
-      probe.reset();
     });
 
-    it('mark() is a no-op (does not push an entry)', () => {
-      probe.mark(probe.Phase.SCAN_START);
-      // Flip back to read entries
-      (globalThis as Record<string, unknown>).__DEBUG__ = true;
-      expect(probe.__getEntriesForTests()).toHaveLength(0);
-      (globalThis as Record<string, unknown>).__DEBUG__ = false;
+    it('frame.mark() is a no-op (does not push an entry)', () => {
+      // Create frame with __DEBUG__=false so nothing ever lands in it
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
+      expect(frame.entries).toHaveLength(0);
     });
 
-    it('dump() does not emit a console.log', () => {
-      // Seed an entry via the live path first
+    it('frame.dump() does not emit a console.log', () => {
+      // Create frame with __DEBUG__=true so entries exist, then flip
+      // to false and dump — the dump should still no-op.
       (globalThis as Record<string, unknown>).__DEBUG__ = true;
-      probe.mark(probe.Phase.SCAN_START);
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
       (globalThis as Record<string, unknown>).__DEBUG__ = false;
 
       const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
-      probe.dump();
+      frame.dump();
       expect(spy).not.toHaveBeenCalled();
       spy.mockRestore();
     });
 
-    it('reset() is a no-op (does not clear entries)', () => {
-      // Seed with __DEBUG__=true
+    it('frame.dump() does not clear entries when __DEBUG__ is false', () => {
       (globalThis as Record<string, unknown>).__DEBUG__ = true;
-      probe.mark(probe.Phase.SCAN_START);
+      const frame = probe.newFrame('scan');
+      frame.mark(probe.Phase.SCAN_START);
       (globalThis as Record<string, unknown>).__DEBUG__ = false;
-      probe.reset();
-      // Flip back to verify the entry is still there
-      (globalThis as Record<string, unknown>).__DEBUG__ = true;
-      expect(probe.__getEntriesForTests()).toHaveLength(1);
+
+      frame.dump();
+      // Early-return at the __DEBUG__ guard means the entries
+      // clearing logic never runs
+      expect(frame.entries).toHaveLength(1);
     });
   });
 });

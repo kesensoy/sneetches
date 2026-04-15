@@ -1,16 +1,37 @@
 // Permanent dev probe module. Lives in the committed codebase; fires
 // marks at strategic sites across content.ts, github.ts, and
-// service-worker.ts. In production, every exported function is a
-// no-op via the `if (!__DEBUG__) return;` guard, and Terser's
-// pure_funcs config strips the call sites entirely — zero bytes
-// shipped to store users.
+// service-worker.ts. In production, every method call is a no-op
+// via the `if (!__DEBUG__) return;` guard, and Terser's pure_funcs
+// config strips the call sites entirely — zero bytes shipped to
+// store users.
 //
 // In development (webpack --mode=development, `npm run dev`, Jest
-// with globals.__DEBUG__ === true), the module records coarse phase
-// timings into an in-memory array and emits them as a single
-// structured console.log per scan. The measurement script at
-// scripts/probe-run.ts listens for that envelope via CDP's
-// Runtime.consoleAPICalled event.
+// with globals.__DEBUG__ === true), each scan creates a private
+// `ProbeFrame` via `probe.newFrame(label)` and marks into it. When
+// the scan finishes it calls `frame.dump()`, which emits exactly
+// one `console.log('SNEETCHES_PROBE', JSON.stringify(payload))`.
+// The measurement script at scripts/probe-run.ts listens for that
+// envelope via CDP's Runtime.consoleAPICalled event (page-level for
+// content-script dumps and a dedicated SW CDP session for
+// service-worker dumps).
+//
+// Why per-scan frames, not a module-level array or a stack:
+//
+//   `updateLinks()` awaits `getCachedSettings()` and `portFetcher()`.
+//   Multiple MO-triggered `updateLinks()` calls run concurrently as
+//   fire-and-forget promises. With a shared mutable "current entries"
+//   (whether a flat array or a push/pop stack), scan A's marks can
+//   land on scan B's frame when A resumes from an await and B is now
+//   "current". A naive stack breaks under this pattern because stack
+//   position ≠ scan identity under async interleave.
+//
+//   Per-scan frames fix it at the source: each `ProbeFrame` is a
+//   local object, its `mark` is a method that pushes into that
+//   specific object's entries array, and its `dump` is a method that
+//   emits that specific object's entries. Scans hold their frame
+//   reference in a local variable (`const frame = probe.newFrame(...)`)
+//   so there's no shared state to race on. Concurrent scans are
+//   structurally unable to clobber each other.
 //
 // Payload is restricted to timing + count data. DO NOT include any
 // HTTP request/response content, Authorization headers, access
@@ -40,7 +61,6 @@ type Extra = Record<string, number | string>;
 interface Entry {
   phase: Phase;
   t: number;
-  ctx: 'cs' | 'sw';
   extra?: Extra;
 }
 
@@ -49,50 +69,6 @@ interface Entry {
 // payload correlation, because each realm has its own
 // performance.timeOrigin.
 const ctx: 'cs' | 'sw' = typeof window === 'undefined' ? 'sw' : 'cs';
-
-// Stack of entry arrays. Every `reset()` pushes a new frame onto the
-// stack; every `dump()` pops its frame off and emits it as an
-// envelope. Concurrent async scans (e.g. when an MO-triggered scan
-// fires while `updateLinks` is still awaiting `portFetcher`) each
-// own their own frame and don't interleave marks.
-//
-// Concrete scenario this fixes: cold-cache awesome-homelab scan A
-// calls `reset()` → frame A on top, marks SCAN_START /
-// PENDING_COLLECTED / FAST_PATH_PAINTED / PORT_SEND into frame A,
-// then awaits portFetcher for ~4s. During that await the MO fires
-// again and scan B calls `reset()` → frame B on top, marks its own
-// SCAN_START / ... / PAINT_DONE into frame B, finally `dump('scan')`
-// → pops frame B → emits scan B's envelope. Frame A is now on top
-// again; scan A's subsequent PORT_FIRST_CHUNK / PORT_DONE /
-// PAINT_DONE marks land on frame A; scan A's `dump('scan')` → pops
-// frame A → emits scan A's complete envelope.
-//
-// The stack always has at least one frame so that `mark()` calls
-// outside any scan (e.g. mark calls from DevTools-console manual
-// invocation before the first `reset()`) have somewhere to push.
-// The base frame is pinned and never popped — `dump()` refuses to
-// pop when `stack.length === 1`, instead emitting the base frame's
-// contents and draining it in place.
-const stack: Entry[][] = [[]];
-
-function topFrame(): Entry[] {
-  return stack[stack.length - 1];
-}
-
-export function mark(phase: Phase, extra?: Extra): void {
-  if (!__DEBUG__) return;
-  topFrame().push({
-    phase,
-    t: performance.now(),
-    ctx,
-    ...(extra !== undefined ? { extra } : {}),
-  });
-}
-
-export function reset(): void {
-  if (!__DEBUG__) return;
-  stack.push([]);
-}
 
 // Strip query string + fragment from a URL before capturing it into
 // a probe payload. Query strings on github.com can contain OAuth
@@ -108,67 +84,87 @@ function sanitizePageUrl(href: string): string {
   }
 }
 
-export function dump(label = 'dump'): void {
-  if (!__DEBUG__) return;
-  // Pop the top frame (if it's not the pinned base frame) and emit
-  // it. If we're at the base frame, drain it in place instead so
-  // that subsequent marks start fresh.
-  let frame: Entry[];
-  if (stack.length > 1) {
-    frame = stack.pop()!;
-  } else {
-    frame = stack[0];
-    stack[0] = [];
+export class ProbeFrame {
+  // Public-readonly for test access. The type-level readonly is a
+  // compile-time hint only; tests can still `frame.entries.length`
+  // and the like without needing a dedicated accessor.
+  readonly entries: Entry[] = [];
+
+  constructor(readonly label: string) {}
+
+  mark(phase: Phase, extra?: Extra): void {
+    if (!__DEBUG__) return;
+    this.entries.push({
+      phase,
+      t: performance.now(),
+      ...(extra !== undefined ? { extra } : {}),
+    });
   }
-  if (frame.length === 0) return;
-  const payload = {
-    label,
-    ctx,
-    timeOrigin: performance.timeOrigin,
-    version:
-      typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest
-        ? chrome.runtime.getManifest().version
-        : 'unknown',
-    pageUrl:
-      ctx === 'cs' && typeof location !== 'undefined' ? sanitizePageUrl(location.href) : undefined,
-    entries: frame.map((e) => ({
-      phase: e.phase,
-      t: e.t,
-      ...(e.extra !== undefined ? { extra: e.extra } : {}),
-    })),
-  };
-  console.log('SNEETCHES_PROBE', JSON.stringify(payload));
+
+  dump(): void {
+    if (!__DEBUG__) return;
+    if (this.entries.length === 0) return;
+    const payload = {
+      label: this.label,
+      ctx,
+      timeOrigin: performance.timeOrigin,
+      version:
+        typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest
+          ? chrome.runtime.getManifest().version
+          : 'unknown',
+      pageUrl:
+        ctx === 'cs' && typeof location !== 'undefined'
+          ? sanitizePageUrl(location.href)
+          : undefined,
+      entries: this.entries.map((e) => ({
+        phase: e.phase,
+        t: e.t,
+        ...(e.extra !== undefined ? { extra: e.extra } : {}),
+      })),
+    };
+    console.log('SNEETCHES_PROBE', JSON.stringify(payload));
+    // Clear after dump so a frame can be reused if a caller wants to
+    // (not the recommended pattern, but no reason to forbid it).
+    this.entries.length = 0;
+  }
 }
 
-// Test-only accessor. Exported as __-prefixed to signal "not for
-// production use"; the webpack build still includes it in dev mode,
-// which is fine — it's guarded by __DEBUG__ like the rest.
+// Create a new probe frame with a label. The label lands in the
+// envelope when `dump()` fires so the measurement script can tell
+// scan envelopes from preload envelopes from SW envelopes.
 //
-// Returns the top frame of the stack — i.e., the entries that a
-// current-scope `mark()` call would push into. Does NOT include
-// entries from outer frames that `reset()` pushed past.
-export function __getEntriesForTests(): ReadonlyArray<Entry> {
-  if (!__DEBUG__) return [];
-  return topFrame();
+// Typical call-site pattern:
+//
+//   async function myPhase() {
+//     const frame = probe.newFrame('scan');
+//     frame.mark(probe.Phase.SCAN_START);
+//     try {
+//       // ... work, including awaits ...
+//       frame.mark(probe.Phase.PAINT_DONE);
+//     } finally {
+//       frame.dump();
+//     }
+//   }
+//
+// Each scan holds its frame reference in a local variable, so
+// concurrent scans get structural isolation.
+export function newFrame(label: string): ProbeFrame {
+  return new ProbeFrame(label);
 }
 
-// Test-only: collapse the stack back to a single empty base frame.
-// Used by test setup/teardown to ensure per-test isolation regardless
-// of how many reset() / dump() the test left unbalanced.
-export function __resetStackForTests(): void {
-  if (!__DEBUG__) return;
-  stack.length = 0;
-  stack.push([]);
-}
-
-// Mount a global handle so `sneetchesProbe.dump()` is invokable from
+// Mount a global handle so probe frames are invokable from the
 // DevTools console on any page with the extension loaded. Only in
 // debug builds.
+//
+// Interactive usage:
+//
+//   > const f = sneetchesProbe.newFrame('interactive')
+//   > f.mark(sneetchesProbe.Phase.SCAN_START)
+//   > f.dump()
+//
 if (__DEBUG__ && typeof globalThis !== 'undefined') {
   (globalThis as Record<string, unknown>).sneetchesProbe = {
-    mark,
-    dump,
-    reset,
+    newFrame,
     Phase,
   };
 }

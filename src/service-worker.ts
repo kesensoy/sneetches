@@ -36,11 +36,20 @@ export async function handleFetchReposRequest(
   req: FetchReposRequest,
   send: (msg: SneetchesRpcMsg) => void
 ): Promise<void> {
-  probe.reset();
-  probe.mark(probe.Phase.SW_HANDLER_ENTRY, { nwos: req.nwos.length });
+  // Each request gets its own probe frame. Held in a local variable
+  // so concurrent handler invocations each have their own entries
+  // array — no shared-state race.
+  const frame = probe.newFrame('sw');
   try {
+    // SW_HANDLER_ENTRY is inside the try so that if `req.nwos` is
+    // somehow undefined (malformed port message) and `.length`
+    // throws, the finally still runs frame.dump(). The frame will
+    // have no entries and dump() will early-return, so there's no
+    // stray envelope — just a clean exit with no data, which is the
+    // right behavior for a broken request.
+    frame.mark(probe.Phase.SW_HANDLER_ENTRY, { nwos: req.nwos?.length ?? 0 });
     const accessToken = await getAccessToken();
-    probe.mark(probe.Phase.SW_FETCH_START);
+    frame.mark(probe.Phase.SW_FETCH_START);
     await fetchRepoDataStreaming(req.nwos, accessToken || undefined, (chunkResults) => {
       // Convert Map → [[k,v],...] for postMessage portability.
       // Map is structured-cloneable in modern Chrome, but the array
@@ -48,7 +57,7 @@ export async function handleFetchReposRequest(
       // human-readable in chrome://extensions' service worker view.
       send({ type: 'chunk', entries: Array.from(chunkResults) });
     });
-    probe.mark(probe.Phase.SW_FETCH_DONE);
+    frame.mark(probe.Phase.SW_FETCH_DONE);
     send({ type: 'done' });
   } catch (err) {
     // Transport-level failure (HTTP 401 / 5xx, network error).
@@ -62,7 +71,7 @@ export async function handleFetchReposRequest(
         : undefined;
     send({ type: 'error', status });
   } finally {
-    probe.dump('sw');
+    frame.dump();
   }
 }
 
