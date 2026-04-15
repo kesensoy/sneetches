@@ -28,8 +28,10 @@ export interface FetchReposRequest {
 
 /**
  * Server → client. Each chunk carries a subset of the results Map as a
- * tuple array (Map is not structured-cloneable in the way postMessage
- * expects across some Chrome versions; array form is portable). The
+ * tuple array. Map IS structured-cloneable (since Chrome 63 / 2017),
+ * but the array form is smaller in serialization and keeps the wire
+ * format human-readable in the chrome://extensions service worker
+ * inspector — which matters when debugging the protocol live. The
  * first chunk may be the cached subset; subsequent chunks are one per
  * resolved GraphQL batch in non-deterministic order.
  */
