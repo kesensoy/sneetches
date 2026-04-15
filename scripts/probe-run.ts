@@ -19,7 +19,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 // chrome-remote-interface ships CJS-first; import via require for cleanest typing.
- 
+
 const CDP: (options?: {
   port?: number;
   target?: (
@@ -108,6 +108,30 @@ async function isStale(file: string, thresholdMs: number): Promise<boolean> {
   }
 }
 
+async function waitForDebugPort(maxMs = 10_000): Promise<void> {
+  const http = require('http');
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const reached = await new Promise<boolean>((resolve) => {
+      const req = http.get(
+        `http://localhost:${DEBUG_PORT}/json/version`,
+        (res: { statusCode?: number; resume?: () => void }) => {
+          resolve(res.statusCode === 200);
+          res.resume?.();
+        }
+      );
+      req.on('error', () => resolve(false));
+      req.setTimeout(500, () => {
+        req.destroy();
+        resolve(false);
+      });
+    });
+    if (reached) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`Chrome did not expose --remote-debugging-port=${DEBUG_PORT} within ${maxMs}ms`);
+}
+
 async function ensureDevBuild(): Promise<string> {
   const buildPath = path.resolve(process.cwd(), 'build');
   const manifestPath = path.join(buildPath, 'manifest.json');
@@ -190,11 +214,77 @@ async function main(): Promise<void> {
   });
 
   try {
-    // This block is filled in by Task 9 (CDP attach + capture + diff).
-    console.log('[probe-run] (Task 8 skeleton: Chrome launched, capture logic comes in Task 9)');
-    // Wait briefly then exit — placeholder so the script terminates
-    // cleanly during skeleton-level smoke tests.
-    await new Promise((r) => setTimeout(r, 1000));
+    // Wait for Chrome's debugging port to come up
+    await waitForDebugPort();
+
+    // Attach CDP to the first tab whose URL matches the target
+    console.log('[probe-run] attaching CDP...');
+    const client = await CDP({
+      port: DEBUG_PORT,
+      target: (targets) => {
+        const match = targets.find((t) => t.type === 'page' && t.url.startsWith(args.url));
+        if (match) return match;
+        // Fallback: first page target (Chrome may still be navigating)
+        return targets.find((t) => t.type === 'page');
+      },
+    });
+
+    const { Runtime } = client;
+    await Runtime.enable();
+
+    const captured: unknown[] = [];
+    const captureDone = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('timeout waiting for SNEETCHES_PROBE envelope'));
+      }, CAPTURE_TIMEOUT_MS);
+
+      Runtime.consoleAPICalled((params) => {
+        if (params.args.length < 2) return;
+        const first = params.args[0].value;
+        if (first !== 'SNEETCHES_PROBE') return;
+        const second = params.args[1].value;
+        if (typeof second !== 'string') return;
+        try {
+          const payload = JSON.parse(second);
+          captured.push(payload);
+          // After the first capture, drain for a short window then resolve
+          setTimeout(() => {
+            clearTimeout(timeout);
+            resolve();
+          }, POST_CAPTURE_DRAIN_MS);
+        } catch (e) {
+          console.warn('[probe-run] failed to parse SNEETCHES_PROBE payload:', e);
+        }
+      });
+    });
+
+    await captureDone;
+    await client.close();
+
+    // Write payloads to docs/plans/probe-runs/
+    const runsDir = path.resolve(process.cwd(), 'docs/plans/probe-runs');
+    await fs.mkdir(runsDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const parsedUrl = new URL(args.url);
+    const urlSlug = slugify(parsedUrl.hostname + parsedUrl.pathname);
+    const labelSlug = args.label ? `-${slugify(args.label)}` : '';
+    const outPath = path.join(runsDir, `${timestamp}-${urlSlug}${labelSlug}.json`);
+    await fs.writeFile(
+      outPath,
+      JSON.stringify(
+        {
+          meta: {
+            timestamp: new Date().toISOString(),
+            url: args.url,
+            label: args.label ?? null,
+          },
+          payloads: captured,
+        },
+        null,
+        2
+      )
+    );
+    console.log(`[probe-run] wrote ${captured.length} payload(s) → ${outPath}`);
   } finally {
     await cleanup();
   }
