@@ -892,6 +892,7 @@ function handleSyncStorageChange(changes: { [key: string]: chrome.storage.Storag
   const accessTokenChange = changes[ACCESS_TOKEN_KEY];
   if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
     chrome.storage.local.clear();
+    inMemoryRepoCache = null;
   }
   applySettingsChange();
 }

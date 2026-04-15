@@ -1387,3 +1387,57 @@ describe('in-memory cache fast path', () => {
     expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
   });
 });
+
+describe('in-memory cache invalidation on settings change', () => {
+  const freshResponse = (): RepoResponse => ({
+    ok: true,
+    json: {
+      forks_count: 0,
+      stargazers_count: 1,
+      pushed_at: '2024-01-01',
+      archived: false,
+    },
+  });
+
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    __resetLinkScannerForTests();
+  });
+
+  afterEach(() => {
+    __resetLinkScannerForTests();
+  });
+
+  test('access-token change clears inMemoryRepoCache', () => {
+    __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
+    __handleSyncStorageChangeForTests({
+      access_token: { oldValue: 'old', newValue: 'new' },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
+
+  test('show-setting change does NOT clear inMemoryRepoCache', () => {
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleSyncStorageChangeForTests({
+      show: {
+        oldValue: { stars: true, forks: false, update: false },
+        newValue: { stars: true, forks: true, update: false },
+      },
+    });
+    // Repo data is still valid — only rendering changed. Map is
+    // unchanged; applySettingsChange's rescan reads the same Map and
+    // re-paints with the new toggles.
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+  });
+
+  test('star_style change does NOT clear inMemoryRepoCache', () => {
+    const seeded = new Map([['a/b', freshResponse()]]);
+    __setInMemoryRepoCacheForTests(seeded);
+    __handleSyncStorageChangeForTests({
+      star_style: { oldValue: 'outline', newValue: 'filled' },
+    });
+    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+  });
+});
