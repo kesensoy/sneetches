@@ -349,6 +349,16 @@ export function __getInMemoryRepoCacheForTests(): Map<string, RepoResponse> | nu
 // (preload hasn't resolved yet).
 let inMemoryRepoCachePromise: Promise<void> | null = null;
 
+// Generation counter for in-flight preload cancellation. runPreload()
+// captures this at the start of each run; if handleSyncStorageChange
+// (or a test reset) bumps it while the preload is awaiting its storage
+// read, the captured gen no longer matches the current value and the
+// preload's pending assignment into inMemoryRepoCache is skipped.
+// Without this guard, a token change firing during the ~234ms preload
+// window lets the in-flight preload stomp the newly-null cache with
+// stale pre-change data, defeating the invalidation.
+let preloadGeneration = 0;
+
 // Test-only helper: expose the preload promise so tests can await it
 // after seeding chrome.storage.local with cache entries. Also used by
 // tests that want to verify the initial preload populated correctly.
@@ -373,11 +383,24 @@ export function __rerunPreloadForTests(): Promise<void> {
 // port path on the current scan than hang forever in "preload in
 // flight" state.
 async function runPreload(): Promise<void> {
+  // Capture the generation at the start of this run. If a token
+  // change (or a test-only rerun) bumps preloadGeneration while we're
+  // awaiting the storage read, our captured gen will no longer match
+  // and we'll skip the assignment — preventing a stale map from
+  // clobbering a just-invalidated cache.
+  const gen = ++preloadGeneration;
   try {
-    inMemoryRepoCache = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
+    const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
+    if (gen === preloadGeneration) {
+      inMemoryRepoCache = map;
+    }
+    // else: our generation was superseded (token change or test
+    // rerun); drop the result on the floor.
   } catch (e) {
     console.error('[sneetches] preload failed, falling back to empty cache:', e);
-    inMemoryRepoCache = new Map();
+    if (gen === preloadGeneration) {
+      inMemoryRepoCache = new Map();
+    }
   }
 }
 
@@ -852,6 +875,11 @@ export function __resetLinkScannerForTests(): void {
   invalidateCachedSettings();
   inMemoryRepoCache = null;
   inMemoryRepoCachePromise = null;
+  // Bump the preload generation so any in-flight runPreload from a
+  // previous test's module-load (or __rerunPreloadForTests call) will
+  // see gen mismatch and drop its result instead of stomping state
+  // that the next test is about to seed.
+  preloadGeneration++;
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
@@ -893,6 +921,10 @@ function handleSyncStorageChange(changes: { [key: string]: chrome.storage.Storag
   if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
     chrome.storage.local.clear();
     inMemoryRepoCache = null;
+    // Cancel any in-flight preload from before the token change — its
+    // pending assignment into inMemoryRepoCache would otherwise stomp
+    // the null we just set with stale pre-change data.
+    preloadGeneration++;
   }
   applySettingsChange();
 }

@@ -1440,4 +1440,45 @@ describe('in-memory cache invalidation on settings change', () => {
     });
     expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
+
+  test('in-flight preload from before token change does not stomp invalidated cache', async () => {
+    // Seed chrome.storage.local with stale token-era data that the
+    // in-flight preload will read.
+    const staleData = {
+      exp: Date.now() + 60_000,
+      ver: 2,
+      pay: {
+        ok: true,
+        json: {
+          forks_count: 0,
+          stargazers_count: 999,
+          pushed_at: '2024-01-01',
+          archived: false,
+        },
+      },
+    };
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set({ 'stale/repo': staleData }, resolve)
+    );
+
+    // Kick off a preload — this is the "in-flight" preload that will
+    // read the stale data.
+    const inflightPreload = __rerunPreloadForTests();
+
+    // Simulate a token-change event firing BEFORE the in-flight preload
+    // resolves. handleSyncStorageChange clears storage, nulls the
+    // in-memory cache, and (with the fix) invalidates the in-flight
+    // preload's generation so its pending assignment becomes a no-op.
+    __handleSyncStorageChangeForTests({
+      access_token: { oldValue: 'old-token', newValue: 'new-token' },
+    });
+
+    // Now drain the in-flight preload. Without the generation guard,
+    // this would stomp inMemoryRepoCache back to { 'stale/repo': ... }.
+    // With the guard, the assignment is skipped and inMemoryRepoCache
+    // stays null.
+    await inflightPreload;
+
+    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  });
 });
