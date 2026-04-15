@@ -23,6 +23,7 @@
 // content script reads those on its own, because they're needed
 // synchronously at render time and don't dominate wall-clock.
 
+import * as probe from './debug/probe';
 import { fetchRepoDataStreaming } from './github';
 import { getAccessToken } from './settings';
 import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
@@ -35,8 +36,11 @@ export async function handleFetchReposRequest(
   req: FetchReposRequest,
   send: (msg: SneetchesRpcMsg) => void
 ): Promise<void> {
+  probe.reset();
+  probe.mark(probe.Phase.SW_HANDLER_ENTRY, { nwos: req.nwos.length });
   try {
     const accessToken = await getAccessToken();
+    probe.mark(probe.Phase.SW_FETCH_START);
     await fetchRepoDataStreaming(req.nwos, accessToken || undefined, (chunkResults) => {
       // Convert Map → [[k,v],...] for postMessage portability.
       // Map is structured-cloneable in modern Chrome, but the array
@@ -44,6 +48,7 @@ export async function handleFetchReposRequest(
       // human-readable in chrome://extensions' service worker view.
       send({ type: 'chunk', entries: Array.from(chunkResults) });
     });
+    probe.mark(probe.Phase.SW_FETCH_DONE);
     send({ type: 'done' });
   } catch (err) {
     // Transport-level failure (HTTP 401 / 5xx, network error).
@@ -56,6 +61,8 @@ export async function handleFetchReposRequest(
         ? (err as { status?: number }).status
         : undefined;
     send({ type: 'error', status });
+  } finally {
+    probe.dump('sw');
   }
 }
 
