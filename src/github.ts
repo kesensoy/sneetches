@@ -1,7 +1,7 @@
 import { bulkReadCache, bulkWriteCache } from './cache';
 import { TOKEN_VALIDATED_KEY } from './settings';
 
-const CACHE_VERSION = 2;
+export const CACHE_VERSION = 2;
 const GITHUB_API_URL = 'https://api.github.com/repos/';
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
 
