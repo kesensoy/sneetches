@@ -228,14 +228,57 @@ export function __setPortFetcherForTests(fn: PortFetcher | null): void {
   portFetcher = fn ?? defaultPortFetcher;
 }
 
+// In-memory settings cache for the scan hot path.
+//
+// The 2026-04-14 probe under the new 1.1.3 service-worker path showed
+// `await getSettings()` taking ~5 seconds on awesome-list-scale pages,
+// even though all storage work for REPO DATA was already moved to the
+// SW. The reason: `getSettings()` calls `chrome.storage.sync.get(...)`
+// on the content script's main thread, and the callback delivery gets
+// queued behind whatever React / 1Password / GitHub are doing to that
+// thread. Same starvation pattern the SW refactor fixed for local
+// storage — the sync read just wasn't covered.
+//
+// Fix: read settings once at module load, hold in memory, serve every
+// subsequent updateLinks() call from memory (zero storage reads).
+// Invalidated by applySettingsChange() so the chrome.storage.onChanged
+// listener — which already fires a rescan on access_token / show /
+// star_style changes — gets a fresh value on the next scan.
+//
+// getCachedSettings() returns the in-memory copy when one exists
+// (the common case after the first scan); otherwise it kicks off ONE
+// storage read and memoizes the resulting promise so concurrent scans
+// don't fan out into multiple storage reads while the first one is
+// still in flight.
+type CachedSettings = Awaited<ReturnType<typeof getSettings>>;
+let cachedSettings: CachedSettings | null = null;
+let cachedSettingsPromise: Promise<CachedSettings> | null = null;
+
+async function getCachedSettings(): Promise<CachedSettings> {
+  if (cachedSettings) return cachedSettings;
+  if (cachedSettingsPromise) return cachedSettingsPromise;
+  cachedSettingsPromise = (async () => {
+    const settings = await getSettings();
+    cachedSettings = settings;
+    cachedSettingsPromise = null;
+    return settings;
+  })();
+  return cachedSettingsPromise;
+}
+
+function invalidateCachedSettings(): void {
+  cachedSettings = null;
+  cachedSettingsPromise = null;
+}
+
 async function updateLinks() {
   // Capture the epoch BEFORE the await so that any settings change that
-  // fires between here and getSettings() resolving is guaranteed to have
-  // bumped currentEpoch past our captured value. Our per-entry epoch
-  // check below will then correctly drop stale results in favor of the
-  // post-change rescan that applySettingsChange dispatches.
+  // fires between here and getCachedSettings() resolving is guaranteed
+  // to have bumped currentEpoch past our captured value. Our per-entry
+  // epoch check below will then correctly drop stale results in favor
+  // of the post-change rescan that applySettingsChange dispatches.
   const epoch = currentEpoch;
-  const { accessToken, show, starStyle } = await getSettings();
+  const { accessToken, show, starStyle } = await getCachedSettings();
   const links = findUnannotatedRepoLinks();
 
   // Collect (anchor, nwo) pairs and claim each anchor under the current
@@ -415,7 +458,7 @@ function _createAnnotation(str: string, extraCssClasses: string | null = null) {
 }
 
 async function updateAnnotationsFromSettings() {
-  const { show } = await getSettings();
+  const { show } = await getCachedSettings();
   if (Object.values(show).some(Boolean)) {
     updateLinks();
   }
@@ -495,6 +538,10 @@ function applySettingsChange(): void {
   currentEpoch++;
   inFlightAnchors = new WeakMap();
   silentSkipAnchors = new WeakSet();
+  // Invalidate the in-memory settings cache before the rescan so the
+  // post-change updateLinks() re-reads from chrome.storage.sync and
+  // picks up whatever just changed.
+  invalidateCachedSettings();
   removeLinkAnnotations();
   updateAnnotationsFromSettings();
 }
@@ -513,6 +560,7 @@ export function __resetLinkScannerForTests(): void {
   }
   inFlightAnchors = new WeakMap();
   silentSkipAnchors = new WeakSet();
+  invalidateCachedSettings();
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
