@@ -220,10 +220,11 @@ describe('createErrorAnnotation', () => {
     test('renders a .sneetch-broken chip with unlink icon and "broken" text', () => {
       const elt = createErrorAnnotation({ status: 404, headers }, '');
       expect(elt.outerHTML).toMatch('class="data-sneetch-extension"');
-      expect(elt.outerHTML).not.toMatch('missing'); // old class gone
+      expect(elt.outerHTML).not.toContain('Ⓧ'); // old MISSING_SYMBOL sentinel gone
       const chip = elt.querySelector('.sneetch-broken');
       expect(chip).not.toBeNull();
       expect(chip?.querySelector('svg')).not.toBeNull();
+      expect(chip?.innerHTML).toContain('M12.914 5.914');
       expect(chip?.textContent).toContain('broken');
       expect(chip?.getAttribute('aria-label')).toBe('repository not found');
     });
@@ -240,8 +241,9 @@ describe('createErrorAnnotation', () => {
       const chip = elt.querySelector('.sneetch-rate-limited');
       expect(chip).not.toBeNull();
       expect(chip?.querySelector('svg')).not.toBeNull();
+      expect(chip?.innerHTML).toContain('M2.75 1h10.5');
       expect(chip?.textContent).toContain('wait');
-      expect(chip?.getAttribute('aria-label')).toBe('rate limited, wait');
+      expect(chip?.getAttribute('aria-label')).toBe('rate limited');
     });
 
     test('with no access token → tooltip asks user to set up a PAT', () => {
@@ -295,6 +297,7 @@ describe('createErrorAnnotation', () => {
       const chip = elt.querySelector('.sneetch-error');
       expect(chip).not.toBeNull();
       expect(chip?.querySelector('svg')).not.toBeNull();
+      expect(chip?.innerHTML).toContain('M4.72.22a.75.75');
       expect(chip?.textContent).toContain('error');
       expect(chip?.getAttribute('aria-label')).toBe('error');
     });

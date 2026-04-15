@@ -600,7 +600,7 @@ export function createErrorAnnotation(
   if (res.status === 403) {
     const span = document.createElement('span');
     span.className = 'sneetch-rate-limited';
-    span.setAttribute('aria-label', 'rate limited, wait');
+    span.setAttribute('aria-label', 'rate limited');
     span.insertAdjacentHTML('beforeend', hourglassIcon('sneetch-icon'));
     span.append(' wait');
     elt.appendChild(span);
@@ -674,6 +674,10 @@ export function createAnnotation(
     span.append(' ' + humanizeDate(displayDate));
     elt.appendChild(span);
   }
+  // Archive chip is icon-only (the word "archived" lives only in the
+  // tooltip + aria-label). Error chips in createErrorAnnotation deliberately
+  // add visible word text alongside the icon for legibility — the asymmetry
+  // is intentional, not a drift.
   if (data.archived) {
     const span = document.createElement('span');
     span.className = 'sneetch-archived';

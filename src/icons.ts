@@ -1,7 +1,7 @@
 // src/icons.ts
 //
 // Inline Octicons SVG strings. Octicons is MIT-licensed
-// (https://github.com/primer/octicons) — we embed the four icons we use
+// (https://github.com/primer/octicons) — we embed the icons we use
 // rather than taking a dependency, since that's all we need and it avoids
 // any build-system complexity.
 
