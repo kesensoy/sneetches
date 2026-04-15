@@ -1,24 +1,39 @@
 import {
   buildBatchQuery,
   fetchGraphQLBatch,
-  getRepoDataMany,
+  fetchRepoDataStreaming,
   isRepoUrl,
   RATE_LIMIT_KEY,
+  RepoResponse,
   validateAccessToken,
 } from '../src/github';
 import { mockFetch } from './fetch.mock';
-import { ACCESS_TOKEN_KEY, TOKEN_VALIDATED_KEY } from '../src/settings';
+import { ACCESS_TOKEN_KEY, getAccessToken, TOKEN_VALIDATED_KEY } from '../src/settings';
+
+// Helper: drive fetchRepoDataStreaming and collect every chunk into a
+// single Map, matching the pre-1.1.3 fetchReposMap shape. Used by the
+// REST-path tests and the fetchRepoDataStreaming end-to-end tests below.
+// Reads the access token from chrome.storage.sync so each test can seed
+// it (or not) to exercise the PAT vs unauth branches.
+const fetchReposMap = async (nwos: string[]): Promise<Map<string, RepoResponse>> => {
+  const accessToken = await getAccessToken();
+  const results = new Map<string, RepoResponse>();
+  await fetchRepoDataStreaming(nwos, accessToken || undefined, (chunk) => {
+    for (const [nwo, resp] of chunk) results.set(nwo, resp);
+  });
+  return results;
+};
 
 // Shorthand: call the unauthenticated REST path and pull out the single
-// entry. getRepoDataMany is the public entry point since 1.1.2; these
-// tests exercise its REST-path behavior (caching, 404s, 403s, archived
-// field population) by giving it a one-element nwos array.
+// entry. These tests exercise the REST-path behavior (caching, 404s,
+// 403s, archived field population) by giving fetchRepoDataStreaming a
+// one-element nwos array.
 const getOneRest = async (nwo: string) => {
-  const map = await getRepoDataMany([nwo]);
+  const map = await fetchReposMap([nwo]);
   return map.get(nwo)!;
 };
 
-describe('getRepoDataMany REST path', () => {
+describe('fetchRepoDataStreaming REST path', () => {
   const repoInfo = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
   const repoInfo2 = { forks_count: 11, pushed_at: 12, stargazers_count: 13, archived: false };
 
@@ -647,7 +662,7 @@ describe('fetchGraphQLBatch error distribution', () => {
   });
 });
 
-describe('getRepoDataMany', () => {
+describe('fetchRepoDataStreaming', () => {
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
@@ -657,7 +672,7 @@ describe('getRepoDataMany', () => {
     mockFetch({
       json: { forks_count: 1, pushed_at: '2025-01-01', stargazers_count: 100, archived: false },
     });
-    const result = await getRepoDataMany(['octocat/hello']);
+    const result = await fetchReposMap(['octocat/hello']);
     expect(result.size).toBe(1);
     expect(result.get('octocat/hello')).toEqual({
       ok: true,
@@ -667,7 +682,7 @@ describe('getRepoDataMany', () => {
 
   test('unauthenticated: REST 403 surfaces as per-entry status (not a throw)', async () => {
     mockFetch({ ok: false, status: 403 });
-    const result = await getRepoDataMany(['octocat/hello']);
+    const result = await fetchReposMap(['octocat/hello']);
     expect(result.get('octocat/hello')).toEqual({ ok: false, status: 403 });
   });
 
@@ -689,7 +704,7 @@ describe('getRepoDataMany', () => {
         },
       },
     });
-    const result = await getRepoDataMany(['octocat/hello']);
+    const result = await fetchReposMap(['octocat/hello']);
     expect(result.get('octocat/hello')).toEqual({
       ok: true,
       json: {
@@ -746,7 +761,7 @@ describe('getRepoDataMany', () => {
       });
     (global as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
 
-    const result = await getRepoDataMany(nwos);
+    const result = await fetchReposMap(nwos);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(result.size).toBe(120);
   });
@@ -769,18 +784,18 @@ describe('getRepoDataMany', () => {
         },
       },
     });
-    await getRepoDataMany(['octocat/hello']);
+    await fetchReposMap(['octocat/hello']);
 
     global.fetch = jest.fn(() => {
       throw new Error('should not be called');
     }) as unknown as typeof fetch;
 
-    const result = await getRepoDataMany(['octocat/hello']);
+    const result = await fetchReposMap(['octocat/hello']);
     expect(result.get('octocat/hello')?.ok).toBe(true);
   });
 
   test('returns empty map for empty input', async () => {
-    const result = await getRepoDataMany([]);
+    const result = await fetchReposMap([]);
     expect(result.size).toBe(0);
   });
 
@@ -800,14 +815,14 @@ describe('getRepoDataMany', () => {
         errors: [{ type: 'FORBIDDEN', path: ['r0'], message: 'Forbidden' }],
       },
     });
-    const first = await getRepoDataMany(['private/repo']);
+    const first = await fetchReposMap(['private/repo']);
     expect(first.get('private/repo')).toEqual({ ok: false, silent: true });
 
     // Second call: mock fetch to throw so we'd notice a re-fetch.
     global.fetch = jest.fn(() => {
       throw new Error('should not be called');
     }) as unknown as typeof fetch;
-    const second = await getRepoDataMany(['private/repo']);
+    const second = await fetchReposMap(['private/repo']);
     expect(second.get('private/repo')).toEqual({ ok: false, silent: true });
   });
 });

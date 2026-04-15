@@ -1,5 +1,5 @@
 import { archiveIcon, clockIcon, repoForkedIcon, starIcon } from './icons';
-import { getRepoDataMany, isRepoUrl, RepoResponse } from './github';
+import { isRepoUrl, RepoResponse } from './github';
 import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
@@ -9,6 +9,7 @@ import {
   ShowSettings,
   StarStyle,
 } from './settings';
+import { SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
 import { commafy, humanize, humanizeDate } from './utils';
 
 // Detect and persist whether the authenticated GitHub user has starred
@@ -111,14 +112,64 @@ const MISSING_SYMBOL = 'missingⓍ';
 // enough that the user doesn't notice the delay once links appear.
 const LINK_SCAN_DEBOUNCE_MS = 300;
 
+// Hard cap on how long the rolling debounce can starve. React hydration
+// on awesome-list pages fires mutation bursts continuously for several
+// seconds; each burst resets the rolling timer, so `setTimeout(..., 300)`
+// never actually elapses until hydration quiets down. The 2026-04-14
+// probe measured this starvation at 8–11 seconds on awesome-homelab.
+//
+// The max-wait timer is a SEPARATE setTimeout that is NOT reset by each
+// mutation — it fires 500ms after the FIRST mutation in a cycle, even if
+// rolling mutations keep coming in. Whichever timer fires first runs the
+// scan and clears both; the next mutation starts a fresh cycle.
+//
+// Why 500ms specifically: long enough that React has probably inserted
+// the first wave of README content (~20-50 anchors), short enough that
+// the user's perceived first-annotation latency stays sub-second. A scan
+// that fires early and finds 0 links is still cheap (the next mutation
+// burst starts a new cycle with a new max-wait); a scan that fires early
+// and finds 50 anchors annotates them immediately, then the mutation
+// observer catches subsequent waves as hydration continues.
+const LINK_SCAN_MAX_WAIT_MS = 500;
+
 export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
   isRepoUrl(elt.href) && elt.childElementCount === 0;
 
 let linkScanObserver: MutationObserver | null = null;
 let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
+let linkScanMaxWaitTimeout: ReturnType<typeof setTimeout> | null = null;
 
-// Anchors with a getRepoDataMany() fetch still in flight, mapped to the epoch
-// at which the fetch was started. Used for two things:
+// Leading-edge scan throttle — tracks the most recent time we fired an
+// immediate scan from inside the MutationObserver microtask in response
+// to a github.com anchor being added to the DOM. Subsequent MO
+// callbacks are allowed to re-fire once LEADING_EDGE_MIN_INTERVAL_MS
+// has elapsed.
+//
+// Why throttle instead of a one-shot flag: the CSS selector we use to
+// detect repo-link additions (`a[href^="https://github.com/"]`) matches
+// EVERY github.com anchor, including GitHub's own chrome (user profile
+// links, /login, /issues tabs, etc.). Those are filtered out by the
+// stricter isRepoLink predicate inside findUnannotatedRepoLinks. A
+// one-shot flag was consumed by the first false positive and then
+// locked out real repo-link adds that arrived later in the same
+// hydration wave. A throttle lets each subsequent MO callback retry —
+// false positives cost ~1ms (findUnannotatedRepoLinks returns 0, scan
+// early-exits), real positives fire a real scan. The throttle bounds
+// the worst case at 1000/LEADING_EDGE_MIN_INTERVAL_MS scans per second.
+//
+// Why this lever exists at all: per the 2026-04-14 research + probe
+// data, setTimeout callbacks are delayed multi-second under React
+// hydration main-thread contention, but MutationObserver callbacks run
+// as MICROTASKS drained between React's tasks. Firing updateLinks
+// directly from the MO microtask (instead of going through setTimeout)
+// bypasses the task queue entirely, cutting the "scan silence" window
+// from 4-8 seconds down to whatever time it actually takes React to
+// insert the first batch of real repo anchors.
+const LEADING_EDGE_MIN_INTERVAL_MS = 100;
+let lastLeadingEdgeAt = 0;
+
+// Anchors with a port-fetched repo-data request still in flight, mapped
+// to the epoch at which the fetch was started. Used for two things:
 //
 //   1. Prevent a second debounced scan from re-issuing fetches for links
 //      the first scan is already processing (the "duplicate annotation"
@@ -127,11 +178,11 @@ let linkScanTimeout: ReturnType<typeof setTimeout> | null = null;
 //      pending, and both waves try to annotate the same anchors).
 //
 //   2. Drop stale-settings results when `chrome.storage.onChanged` fires
-//      mid-fetch. Settings changes bump `currentEpoch`, and each fetch's
-//      .then/.catch compares its captured epoch against the current map
-//      entry — if they no longer match, the result is dropped rather
-//      than appended, and the fresh rescan (under the new settings) is
-//      allowed to produce the live annotation.
+//      mid-fetch. Settings changes bump `currentEpoch`, and each chunk's
+//      distributeChunk loop compares its captured epoch against the
+//      current map entry — if they no longer match, the chunk's entries
+//      are silently dropped instead of appended, and the fresh rescan
+//      (under the new settings) is allowed to produce the live annotation.
 //
 // WeakMap auto-releases entries if an anchor is removed from the DOM
 // before its fetch resolves, so nothing to clean up on long-lived pages.
@@ -168,14 +219,128 @@ function findUnannotatedRepoLinks(): HTMLAnchorElement[] {
   ).filter((a) => isRepoLink(a) && !inFlightAnchors.has(a) && !silentSkipAnchors.has(a));
 }
 
+// Open a port to the service worker and return a promise that resolves
+// when the port says 'done' or 'error'. Each 'chunk' message is routed
+// to `onChunk` as it arrives so progressive reveal works: cached repos
+// land in the first chunk, each fetched GraphQL batch lands as its own
+// chunk. The 1.1.3 perf win is that all the storage/fetch work runs in
+// the SW's event loop off the page's main thread.
+//
+// Exported for test injection — tests/content.test.ts overrides this
+// via __setPortFetcherForTests to avoid spinning up the real SW in
+// tests that want to drive fetch behavior through a jest mock. The
+// production path uses the default implementation below.
+type PortFetcher = (
+  nwos: string[],
+  onChunk: (entries: ReadonlyArray<readonly [string, RepoResponse]>) => void
+) => Promise<{ ok: true } | { ok: false; status?: number }>;
+
+const defaultPortFetcher: PortFetcher = (nwos, onChunk) =>
+  new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: SNEETCHES_PORT_NAME });
+    let settled = false;
+    const finish = (result: { ok: true } | { ok: false; status?: number }): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        port.disconnect();
+      } catch {
+        // already disconnected
+      }
+      resolve(result);
+    };
+
+    port.onMessage.addListener((rawMsg: unknown) => {
+      const msg = rawMsg as SneetchesRpcMsg;
+      if (msg.type === 'chunk') {
+        onChunk(msg.entries);
+      } else if (msg.type === 'error') {
+        finish({ ok: false, status: msg.status });
+      } else if (msg.type === 'done') {
+        finish({ ok: true });
+      }
+    });
+    // If the SW tears down the port without a terminal message (e.g.
+    // the worker was killed mid-flight), treat that as a network-level
+    // failure rather than leaving updateLinks hung forever.
+    port.onDisconnect.addListener(() => finish({ ok: false, status: undefined }));
+
+    port.postMessage({ nwos });
+  });
+
+let portFetcher: PortFetcher = defaultPortFetcher;
+
+// Test-only hook: replace the port fetcher with a controllable
+// implementation. Used by tests/content.test.ts to drive chunk/error
+// delivery without depending on the service worker's message loop.
+// Pass `null` to restore the default.
+export function __setPortFetcherForTests(fn: PortFetcher | null): void {
+  portFetcher = fn ?? defaultPortFetcher;
+}
+
+// In-memory settings cache for the scan hot path.
+//
+// The 2026-04-14 probe under the new 1.1.3 service-worker path showed
+// `await getSettings()` taking ~5 seconds on awesome-list-scale pages,
+// even though all storage work for REPO DATA was already moved to the
+// SW. The reason: `getSettings()` calls `chrome.storage.sync.get(...)`
+// on the content script's main thread, and the callback delivery gets
+// queued behind whatever React / 1Password / GitHub are doing to that
+// thread. Same starvation pattern the SW refactor fixed for local
+// storage — the sync read just wasn't covered.
+//
+// Fix: read settings once at module load, hold in memory, serve every
+// subsequent updateLinks() call from memory (zero storage reads).
+// Invalidated by applySettingsChange() so the chrome.storage.onChanged
+// listener — which already fires a rescan on access_token / show /
+// star_style changes — gets a fresh value on the next scan.
+//
+// getCachedSettings() returns the in-memory copy when one exists
+// (the common case after the first scan); otherwise it kicks off ONE
+// storage read and memoizes the resulting promise so concurrent scans
+// don't fan out into multiple storage reads while the first one is
+// still in flight.
+type CachedSettings = Awaited<ReturnType<typeof getSettings>>;
+let cachedSettings: CachedSettings | null = null;
+let cachedSettingsPromise: Promise<CachedSettings> | null = null;
+
+async function getCachedSettings(): Promise<CachedSettings> {
+  if (cachedSettings) return cachedSettings;
+  if (cachedSettingsPromise) return cachedSettingsPromise;
+  // Use try/finally so the promise lock is cleared on BOTH success and
+  // rejection. Without the finally, a transient `chrome.storage.sync.get`
+  // failure (rare in practice, but possible during browser startup or
+  // extension updates) would leave `cachedSettingsPromise` pointing at a
+  // permanently-rejected promise. Every subsequent scan would hit the
+  // `if (cachedSettingsPromise) return` early-return and get the same
+  // rejection back, silently disabling annotations until a settings
+  // change fires `invalidateCachedSettings`. The finally makes the next
+  // scan after a failure retry the storage read instead.
+  cachedSettingsPromise = (async () => {
+    try {
+      const settings = await getSettings();
+      cachedSettings = settings;
+      return settings;
+    } finally {
+      cachedSettingsPromise = null;
+    }
+  })();
+  return cachedSettingsPromise;
+}
+
+function invalidateCachedSettings(): void {
+  cachedSettings = null;
+  cachedSettingsPromise = null;
+}
+
 async function updateLinks() {
   // Capture the epoch BEFORE the await so that any settings change that
-  // fires between here and getSettings() resolving is guaranteed to have
-  // bumped currentEpoch past our captured value. Our per-entry epoch
-  // check below will then correctly drop stale results in favor of the
-  // post-change rescan that applySettingsChange dispatches.
+  // fires between here and getCachedSettings() resolving is guaranteed
+  // to have bumped currentEpoch past our captured value. Our per-entry
+  // epoch check below will then correctly drop stale results in favor
+  // of the post-change rescan that applySettingsChange dispatches.
   const epoch = currentEpoch;
-  const { accessToken, show, starStyle } = await getSettings();
+  const { accessToken, show, starStyle } = await getCachedSettings();
   const links = findUnannotatedRepoLinks();
 
   // Collect (anchor, nwo) pairs and claim each anchor under the current
@@ -197,42 +362,55 @@ async function updateLinks() {
   // the same repo, and we only need one Map entry per unique nwo.
   const uniqueNwos = Array.from(new Set(pending.map((p) => p.nwo)));
 
-  let results: Map<string, RepoResponse>;
-  try {
-    results = await getRepoDataMany(uniqueNwos);
-  } catch (err) {
-    // Batch-level failure (network error, 401, 5xx): every anchor in the
-    // pending set gets an error annotation so the user sees the failure
-    // state rather than a silent dead page.
+  // Group anchors by nwo so each chunk from the service worker can be
+  // distributed to every anchor pointing at the same repo. A single
+  // entry may annotate many anchors in one go.
+  const byNwo = new Map<string, HTMLAnchorElement[]>();
+  for (const { elt, nwo } of pending) {
+    const list = byNwo.get(nwo);
+    if (list) list.push(elt);
+    else byNwo.set(nwo, [elt]);
+  }
+
+  const distributeChunk = (entries: ReadonlyArray<readonly [string, RepoResponse]>): void => {
+    for (const [nwo, res] of entries) {
+      const anchors = byNwo.get(nwo);
+      if (!anchors) continue;
+      for (const elt of anchors) {
+        // Epoch guard: settings may have changed mid-chunk-stream, in
+        // which case a newer scan has taken over this anchor and we
+        // should silently drop the stale result rather than appending.
+        if (inFlightAnchors.get(elt) !== epoch) continue;
+        inFlightAnchors.delete(elt);
+        if (res.silent) {
+          // FORBIDDEN / scope-missing: mark the anchor so subsequent
+          // scans don't re-process it. See the silentSkipAnchors
+          // declaration for rationale — carried forward from the
+          // 1.1.1 greptile fix.
+          silentSkipAnchors.add(elt);
+          continue;
+        }
+        if (res.ok) {
+          elt.appendChild(createAnnotation(res.json!, show, starStyle));
+        } else {
+          elt.appendChild(createErrorAnnotation(res, accessToken));
+        }
+      }
+    }
+  };
+
+  const result = await portFetcher(uniqueNwos, distributeChunk);
+
+  if (!result.ok) {
+    // Batch-level failure (network error, 401, 5xx): every anchor still
+    // in flight under OUR epoch gets an error annotation so the user
+    // sees the failure state rather than a silent dead page. Anchors a
+    // mid-flight settings change has already claimed under a newer
+    // epoch are left alone.
     for (const { elt } of pending) {
       if (inFlightAnchors.get(elt) !== epoch) continue;
       inFlightAnchors.delete(elt);
-      elt.appendChild(createErrorAnnotation(err as { status?: number }, accessToken));
-    }
-    return;
-  }
-
-  for (const { elt, nwo } of pending) {
-    // If the epoch no longer matches, settings changed mid-flight and a
-    // newer scan has taken over. Silently drop: don't appendChild with
-    // stale closure, and don't delete the map entry (it may belong to
-    // the newer scan's in-flight batch).
-    if (inFlightAnchors.get(elt) !== epoch) continue;
-    inFlightAnchors.delete(elt);
-
-    const res = results.get(nwo);
-    if (!res) continue; // defensive — dispatcher should always back-fill
-    if (res.silent) {
-      // FORBIDDEN / scope-missing: mark the anchor so subsequent scans
-      // don't re-process it. See the silentSkipAnchors declaration for
-      // rationale — carried forward from the 1.1.1 greptile fix.
-      silentSkipAnchors.add(elt);
-      continue;
-    }
-    if (res.ok) {
-      elt.appendChild(createAnnotation(res.json!, show, starStyle));
-    } else {
-      elt.appendChild(createErrorAnnotation(res, accessToken));
+      elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
     }
   }
 }
@@ -342,7 +520,7 @@ function _createAnnotation(str: string, extraCssClasses: string | null = null) {
 }
 
 async function updateAnnotationsFromSettings() {
-  const { show } = await getSettings();
+  const { show } = await getCachedSettings();
   if (Object.values(show).some(Boolean)) {
     updateLinks();
   }
@@ -366,42 +544,125 @@ export function startLinkScanner(): void {
     clearTimeout(linkScanTimeout);
     linkScanTimeout = null;
   }
+  if (linkScanMaxWaitTimeout) {
+    clearTimeout(linkScanMaxWaitTimeout);
+    linkScanMaxWaitTimeout = null;
+  }
 
   // Initial scan for whatever links are present at injection time (may be
   // zero on awesome-list pages, but will find them on regular repo pages).
   updateAnnotationsFromSettings();
 
-  const scheduleScan = () => {
-    if (linkScanTimeout) clearTimeout(linkScanTimeout);
-    linkScanTimeout = setTimeout(() => {
+  // Fire a productive scan immediately and clear both timers so the other
+  // one (whichever is still armed) can't fire a duplicate scan right after.
+  // Nulls out linkScanMaxWaitTimeout so the NEXT mutation burst starts a
+  // fresh max-wait cycle.
+  const fireScan = () => {
+    if (linkScanTimeout) {
+      clearTimeout(linkScanTimeout);
       linkScanTimeout = null;
-      updateAnnotationsFromSettings();
-    }, LINK_SCAN_DEBOUNCE_MS);
+    }
+    if (linkScanMaxWaitTimeout) {
+      clearTimeout(linkScanMaxWaitTimeout);
+      linkScanMaxWaitTimeout = null;
+    }
+    updateAnnotationsFromSettings();
+  };
+
+  // Two-timer scheduling strategy. The rolling debounce handles the
+  // common case (mutations arrive in bursts, then quiet down, scan fires
+  // shortly after the burst). The max-wait is a hard cap that fires
+  // regardless of rolling resets, breaking out of starvation when React
+  // hydration produces continuous mutations for seconds on end.
+  const scheduleScan = () => {
+    // Rolling debounce: every call resets the 300ms timer.
+    if (linkScanTimeout) clearTimeout(linkScanTimeout);
+    linkScanTimeout = setTimeout(fireScan, LINK_SCAN_DEBOUNCE_MS);
+
+    // Max-wait: armed once per cycle on the FIRST mutation that arrives
+    // after the previous scan fired. Subsequent mutations in the same
+    // cycle don't reset it — that's the whole point, it's the rolling-
+    // debounce-starvation escape hatch.
+    if (!linkScanMaxWaitTimeout) {
+      linkScanMaxWaitTimeout = setTimeout(fireScan, LINK_SCAN_MAX_WAIT_MS);
+    }
   };
 
   linkScanObserver = new MutationObserver((mutations) => {
-    // Ignore mutations that only added our own annotation nodes — otherwise
-    // each appendChild(createAnnotation(...)) would re-trigger a scan and
-    // spin forever. Checking the top-level added node is sufficient: when
-    // the extension attaches a pre-built <small class="data-sneetch-extension">
-    // subtree to an anchor, the observer reports exactly one added node (the
-    // <small>); its inner <span>/<svg>/<path> descendants are NOT reported as
-    // separate additions, because they were already part of the subtree when
-    // the top-level element was appended (MutationObserver childList spec).
-    // The detached <span> construction inside createAnnotation — including
-    // the insertAdjacentHTML call for the SVG icon — fires no observer
-    // callbacks at all, because the span isn't in document.body yet.
-    const nonAnnotationActivity = mutations.some((m) => {
-      if (m.type !== 'childList') return true;
-      if (m.removedNodes.length > 0) return true;
+    // Walk the mutation list once, computing two things:
+    //
+    //  (1) `nonAnnotationActivity` — any real DOM mutation that isn't
+    //      just our own annotation nodes being added. This is the
+    //      existing filter — it's what keeps the observer from spinning
+    //      forever on its own output. Checking the top-level added node
+    //      is sufficient: when the extension attaches a pre-built
+    //      <small class="data-sneetch-extension"> subtree to an anchor,
+    //      the observer reports exactly one added node (the <small>);
+    //      its inner <span>/<svg>/<path> descendants are NOT reported
+    //      as separate additions, because they were already part of
+    //      the subtree when the top-level element was appended
+    //      (MutationObserver childList spec). The detached <span>
+    //      construction inside createAnnotation — including the
+    //      insertAdjacentHTML call for the SVG icon — fires no observer
+    //      callbacks at all, because the span isn't in document.body
+    //      yet.
+    //
+    //  (2) `repoLinkAdded` — any added subtree is-or-contains a
+    //      github.com anchor. When this is true and we haven't yet
+    //      fired the leading-edge scan, run updateAnnotationsFromSettings
+    //      synchronously (in the MO microtask) instead of scheduling a
+    //      debounced scan. See the leadingEdgeFired declaration for the
+    //      full rationale — the short version is that MO callbacks run
+    //      as microtasks between React tasks, so firing a scan from
+    //      inside one lets us bypass the multi-second setTimeout
+    //      starvation we'd otherwise see on React-hydrating pages.
+    let nonAnnotationActivity = false;
+    let repoLinkAdded = false;
+    for (const m of mutations) {
+      if (m.type !== 'childList') {
+        nonAnnotationActivity = true;
+        continue;
+      }
+      if (m.removedNodes.length > 0) {
+        nonAnnotationActivity = true;
+      }
       for (const node of Array.from(m.addedNodes)) {
         if (node.nodeType !== Node.ELEMENT_NODE) continue;
         const el = node as Element;
         if (el.classList && el.classList.contains(ANNOTATION_CLASS)) continue;
-        return true;
+        nonAnnotationActivity = true;
+        // Cheap check first: is this node itself a github.com anchor?
+        // Then subtree query for the much more common case (React
+        // inserting a container that contains anchors below). Note
+        // this selector is intentionally LOOSE — it matches every
+        // github.com anchor, not just `/owner/name` repo URLs.
+        // findUnannotatedRepoLinks applies the strict filter; a false
+        // positive here just costs a sub-millisecond early-exit scan.
+        if (
+          !repoLinkAdded &&
+          (el.matches?.('a[href^="https://github.com/"]') ||
+            el.querySelector?.('a[href^="https://github.com/"]'))
+        ) {
+          repoLinkAdded = true;
+        }
       }
-      return false;
-    });
+    }
+
+    // Leading-edge fire: attempt an immediate scan whenever an added
+    // subtree contains any github.com anchor, throttled to at most once
+    // per LEADING_EDGE_MIN_INTERVAL_MS. Each attempt that finds no real
+    // repo links exits in ~1ms via updateLinks' pending.length === 0
+    // guard; attempts that find work annotate immediately. The
+    // throttle keeps the worst case bounded while still letting every
+    // hydration wave get a fresh shot at an early scan.
+    if (repoLinkAdded) {
+      const now = performance.now();
+      if (now - lastLeadingEdgeAt >= LEADING_EDGE_MIN_INTERVAL_MS) {
+        lastLeadingEdgeAt = now;
+        updateAnnotationsFromSettings();
+      }
+    }
+
     if (nonAnnotationActivity) scheduleScan();
   });
 
@@ -422,6 +683,15 @@ function applySettingsChange(): void {
   currentEpoch++;
   inFlightAnchors = new WeakMap();
   silentSkipAnchors = new WeakSet();
+  // Reset the leading-edge throttle so the next mutation wave (e.g.
+  // the rescan this function is about to dispatch, or any subsequent
+  // React hydration under the new settings) gets a fresh immediate-fire
+  // without waiting out the throttle interval.
+  lastLeadingEdgeAt = 0;
+  // Invalidate the in-memory settings cache before the rescan so the
+  // post-change updateLinks() re-reads from chrome.storage.sync and
+  // picks up whatever just changed.
+  invalidateCachedSettings();
   removeLinkAnnotations();
   updateAnnotationsFromSettings();
 }
@@ -438,8 +708,14 @@ export function __resetLinkScannerForTests(): void {
     clearTimeout(linkScanTimeout);
     linkScanTimeout = null;
   }
+  if (linkScanMaxWaitTimeout) {
+    clearTimeout(linkScanMaxWaitTimeout);
+    linkScanMaxWaitTimeout = null;
+  }
+  lastLeadingEdgeAt = 0;
   inFlightAnchors = new WeakMap();
   silentSkipAnchors = new WeakSet();
+  invalidateCachedSettings();
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
@@ -452,6 +728,14 @@ export function __resetLinkScannerForTests(): void {
 // would otherwise have no way to trigger the production path.
 export function __applySettingsChangeForTests(): void {
   applySettingsChange();
+}
+
+// Test-only helper: call getCachedSettings directly. Lets tests verify
+// the retry-after-rejection contract (the promise lock must be cleared
+// on rejection so the next call re-attempts the storage read) without
+// routing through the whole updateLinks → port → annotation pipeline.
+export function __getCachedSettingsForTests(): Promise<Awaited<ReturnType<typeof getSettings>>> {
+  return getCachedSettings();
 }
 
 // Keys in chrome.storage.sync that actually affect what the content
