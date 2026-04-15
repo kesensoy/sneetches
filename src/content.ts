@@ -481,133 +481,135 @@ function paintResult(
 async function updateLinks() {
   probe.reset();
   probe.mark(probe.Phase.SCAN_START);
-  // Capture the epoch BEFORE the await so that any settings change
-  // that fires between here and getCachedSettings() resolving is
-  // guaranteed to have bumped currentEpoch past our captured value.
-  // Our per-entry epoch check below will then correctly drop stale
-  // results in favor of the post-change rescan that
-  // applySettingsChange dispatches.
-  const epoch = currentEpoch;
-  const { accessToken, show, starStyle } = await getCachedSettings();
-  const links = findUnannotatedRepoLinks();
+  try {
+    // Capture the epoch BEFORE the await so that any settings change
+    // that fires between here and getCachedSettings() resolving is
+    // guaranteed to have bumped currentEpoch past our captured value.
+    // Our per-entry epoch check below will then correctly drop stale
+    // results in favor of the post-change rescan that
+    // applySettingsChange dispatches.
+    const epoch = currentEpoch;
+    const { accessToken, show, starStyle } = await getCachedSettings();
+    const links = findUnannotatedRepoLinks();
 
-  // Collect (anchor, nwo) pairs and claim each anchor under the
-  // current epoch upfront. Same semantics as pre-1.1.4: claim happens
-  // before the await so a concurrent settings change invalidates
-  // everything atomically.
-  const pending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
-  for (const elt of links) {
-    const m = elt.href.match('^https?://github.com/(.+?)(?:.git)?/?$');
-    if (!m) continue;
-    inFlightAnchors.set(elt, epoch);
-    pending.push({ elt, nwo: m[1] });
-  }
+    // Collect (anchor, nwo) pairs and claim each anchor under the
+    // current epoch upfront. Same semantics as pre-1.1.4: claim happens
+    // before the await so a concurrent settings change invalidates
+    // everything atomically.
+    const pending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
+    for (const elt of links) {
+      const m = elt.href.match('^https?://github.com/(.+?)(?:.git)?/?$');
+      if (!m) continue;
+      inFlightAnchors.set(elt, epoch);
+      pending.push({ elt, nwo: m[1] });
+    }
 
-  if (pending.length === 0) return;
+    if (pending.length === 0) return;
 
-  // 1.1.4 fast path: check the in-memory cache preloaded at
-  // document_start. Anchors whose nwo is in the Map are painted
-  // synchronously from memory — zero port round-trip, runs inside
-  // the MutationObserver microtask. Misses fall through to the SW
-  // port path unchanged.
-  //
-  // The in-memory cache is read-only from the content script's
-  // perspective; the SW still owns all writes to chrome.storage.local.
-  // Fresh fetches from the port path populate the persistent cache
-  // for NEXT page load's preload — we accept that the current scan's
-  // new cache hits don't live-update inMemoryRepoCache.
-  //
-  // NOTE: paintResult deletes each painted anchor from inFlightAnchors
-  // as a side effect. The batch-level error handler below (for the
-  // port path's transport failure case) correctly re-checks
-  // inFlightAnchors.get(elt) === epoch before appending an error
-  // annotation, so cached-path anchors that have already been drained
-  // from the map won't get a second error annotation stacked on top.
-  // Preserve that guard if you refactor the error path.
-  const uncachedPending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
-  if (inMemoryRepoCache) {
-    for (const p of pending) {
-      const cached = inMemoryRepoCache.get(p.nwo);
-      if (cached) {
-        paintResult(p.elt, cached, show, starStyle, accessToken, epoch);
-      } else {
-        uncachedPending.push(p);
+    // 1.1.4 fast path: check the in-memory cache preloaded at
+    // document_start. Anchors whose nwo is in the Map are painted
+    // synchronously from memory — zero port round-trip, runs inside
+    // the MutationObserver microtask. Misses fall through to the SW
+    // port path unchanged.
+    //
+    // The in-memory cache is read-only from the content script's
+    // perspective; the SW still owns all writes to chrome.storage.local.
+    // Fresh fetches from the port path populate the persistent cache
+    // for NEXT page load's preload — we accept that the current scan's
+    // new cache hits don't live-update inMemoryRepoCache.
+    //
+    // NOTE: paintResult deletes each painted anchor from inFlightAnchors
+    // as a side effect. The batch-level error handler below (for the
+    // port path's transport failure case) correctly re-checks
+    // inFlightAnchors.get(elt) === epoch before appending an error
+    // annotation, so cached-path anchors that have already been drained
+    // from the map won't get a second error annotation stacked on top.
+    // Preserve that guard if you refactor the error path.
+    const uncachedPending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
+    if (inMemoryRepoCache) {
+      for (const p of pending) {
+        const cached = inMemoryRepoCache.get(p.nwo);
+        if (cached) {
+          paintResult(p.elt, cached, show, starStyle, accessToken, epoch);
+        } else {
+          uncachedPending.push(p);
+        }
+      }
+    } else {
+      // Preload hasn't resolved yet (or a token-change invalidation
+      // cleared the Map). Fall through to the port path for every
+      // pending anchor — same behavior as 1.1.3.
+      uncachedPending.push(...pending);
+    }
+
+    const cachedCount = pending.length - uncachedPending.length;
+    probe.mark(probe.Phase.PENDING_COLLECTED, {
+      pending: pending.length,
+      cached: cachedCount,
+      uncached: uncachedPending.length,
+    });
+
+    if (uncachedPending.length === 0) {
+      probe.mark(probe.Phase.FAST_PATH_PAINTED, { painted: pending.length });
+      probe.mark(probe.Phase.PAINT_DONE);
+      return;
+    }
+
+    probe.mark(probe.Phase.FAST_PATH_PAINTED, {
+      painted: pending.length - uncachedPending.length,
+    });
+
+    // Deduplicate nwos across the uncached subset — a single page can
+    // have many anchors pointing at the same repo, and we only need
+    // one Map entry per unique nwo.
+    const uniqueNwos = Array.from(new Set(uncachedPending.map((p) => p.nwo)));
+
+    // Group anchors by nwo so each chunk from the service worker can
+    // distribute to every anchor pointing at the same repo.
+    const byNwo = new Map<string, HTMLAnchorElement[]>();
+    for (const { elt, nwo } of uncachedPending) {
+      const list = byNwo.get(nwo);
+      if (list) list.push(elt);
+      else byNwo.set(nwo, [elt]);
+    }
+
+    let firstChunkSeen = false;
+    const distributeChunk = (entries: ReadonlyArray<readonly [string, RepoResponse]>): void => {
+      if (!firstChunkSeen) {
+        firstChunkSeen = true;
+        probe.mark(probe.Phase.PORT_FIRST_CHUNK, { chunkSize: entries.length });
+      }
+      for (const [nwo, res] of entries) {
+        const anchors = byNwo.get(nwo);
+        if (!anchors) continue;
+        for (const elt of anchors) {
+          paintResult(elt, res, show, starStyle, accessToken, epoch);
+        }
+      }
+    };
+
+    probe.mark(probe.Phase.PORT_SEND, { unique: uniqueNwos.length });
+    const result = await portFetcher(uniqueNwos, distributeChunk);
+    probe.mark(probe.Phase.PORT_DONE, { ok: result.ok ? 'yes' : 'no' });
+
+    if (!result.ok) {
+      // Batch-level failure (network error, 401, 5xx): every anchor
+      // still in flight under OUR epoch in the uncached subset gets an
+      // error annotation. Cached-path anchors are already painted and
+      // cleared from inFlightAnchors, so they're untouched here — the
+      // `inFlightAnchors.get(elt) !== epoch` guard skips any anchor
+      // already drained by the fast path.
+      for (const { elt } of uncachedPending) {
+        if (inFlightAnchors.get(elt) !== epoch) continue;
+        inFlightAnchors.delete(elt);
+        elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
       }
     }
-  } else {
-    // Preload hasn't resolved yet (or a token-change invalidation
-    // cleared the Map). Fall through to the port path for every
-    // pending anchor — same behavior as 1.1.3.
-    uncachedPending.push(...pending);
-  }
 
-  const cachedCount = pending.length - uncachedPending.length;
-  probe.mark(probe.Phase.PENDING_COLLECTED, {
-    pending: pending.length,
-    cached: cachedCount,
-    uncached: uncachedPending.length,
-  });
-
-  if (uncachedPending.length === 0) {
-    probe.mark(probe.Phase.FAST_PATH_PAINTED, { painted: pending.length });
     probe.mark(probe.Phase.PAINT_DONE);
+  } finally {
     probe.dump('scan');
-    return;
   }
-
-  probe.mark(probe.Phase.FAST_PATH_PAINTED, {
-    painted: pending.length - uncachedPending.length,
-  });
-
-  // Deduplicate nwos across the uncached subset — a single page can
-  // have many anchors pointing at the same repo, and we only need
-  // one Map entry per unique nwo.
-  const uniqueNwos = Array.from(new Set(uncachedPending.map((p) => p.nwo)));
-
-  // Group anchors by nwo so each chunk from the service worker can
-  // distribute to every anchor pointing at the same repo.
-  const byNwo = new Map<string, HTMLAnchorElement[]>();
-  for (const { elt, nwo } of uncachedPending) {
-    const list = byNwo.get(nwo);
-    if (list) list.push(elt);
-    else byNwo.set(nwo, [elt]);
-  }
-
-  let firstChunkSeen = false;
-  const distributeChunk = (entries: ReadonlyArray<readonly [string, RepoResponse]>): void => {
-    if (!firstChunkSeen) {
-      firstChunkSeen = true;
-      probe.mark(probe.Phase.PORT_FIRST_CHUNK, { chunkSize: entries.length });
-    }
-    for (const [nwo, res] of entries) {
-      const anchors = byNwo.get(nwo);
-      if (!anchors) continue;
-      for (const elt of anchors) {
-        paintResult(elt, res, show, starStyle, accessToken, epoch);
-      }
-    }
-  };
-
-  probe.mark(probe.Phase.PORT_SEND, { unique: uniqueNwos.length });
-  const result = await portFetcher(uniqueNwos, distributeChunk);
-  probe.mark(probe.Phase.PORT_DONE, { ok: result.ok ? 'yes' : 'no' });
-
-  if (!result.ok) {
-    // Batch-level failure (network error, 401, 5xx): every anchor
-    // still in flight under OUR epoch in the uncached subset gets an
-    // error annotation. Cached-path anchors are already painted and
-    // cleared from inFlightAnchors, so they're untouched here — the
-    // `inFlightAnchors.get(elt) !== epoch` guard skips any anchor
-    // already drained by the fast path.
-    for (const { elt } of uncachedPending) {
-      if (inFlightAnchors.get(elt) !== epoch) continue;
-      inFlightAnchors.delete(elt);
-      elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
-    }
-  }
-
-  probe.mark(probe.Phase.PAINT_DONE);
-  probe.dump('scan');
 }
 
 export function createErrorAnnotation(
