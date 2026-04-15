@@ -157,6 +157,84 @@ async function ensureDevBuild(): Promise<string> {
   return buildPath;
 }
 
+interface ProbeEntry {
+  phase: string;
+  t: number;
+  extra?: Record<string, number | string>;
+}
+
+interface ProbePayload {
+  label: string;
+  ctx: 'cs' | 'sw';
+  timeOrigin: number;
+  version: string;
+  pageUrl?: string;
+  entries: ProbeEntry[];
+}
+
+interface ProbeRun {
+  meta: { timestamp: string; url: string; label: string | null };
+  payloads: ProbePayload[];
+}
+
+async function printDiffAgainstLatest(runsDir: string, currentPath: string): Promise<void> {
+  let files: string[];
+  try {
+    files = (await fs.readdir(runsDir))
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => path.join(runsDir, f))
+      .sort();
+  } catch {
+    files = [];
+  }
+  const previousFiles = files.filter((f) => f !== currentPath);
+  if (previousFiles.length === 0) {
+    console.log('[probe-run] first run — no baseline to diff against');
+    return;
+  }
+  const previousPath = previousFiles[previousFiles.length - 1];
+  console.log(`[probe-run] diffing against previous run: ${path.basename(previousPath)}`);
+
+  const current: ProbeRun = JSON.parse(await fs.readFile(currentPath, 'utf-8'));
+  const previous: ProbeRun = JSON.parse(await fs.readFile(previousPath, 'utf-8'));
+
+  // Diff per ctx (cs vs sw)
+  for (const ctx of ['cs', 'sw'] as const) {
+    const cur = current.payloads.find((p) => p.ctx === ctx);
+    const prev = previous.payloads.find((p) => p.ctx === ctx);
+    if (!cur || !prev) continue;
+
+    console.log(`\n--- ${ctx.toUpperCase()} phase diff ---`);
+    const rows: Array<[string, string, string, string]> = [
+      ['phase', 'prev (ms)', 'curr (ms)', 'delta'],
+    ];
+    const curByPhase = new Map(cur.entries.map((e) => [e.phase, e.t]));
+    const prevByPhase = new Map(prev.entries.map((e) => [e.phase, e.t]));
+    const allPhases = Array.from(new Set([...curByPhase.keys(), ...prevByPhase.keys()]));
+    for (const phase of allPhases) {
+      const c = curByPhase.get(phase);
+      const p = prevByPhase.get(phase);
+      const pStr = p === undefined ? '—' : p.toFixed(0);
+      const cStr = c === undefined ? '—' : c.toFixed(0);
+      const delta =
+        c !== undefined && p !== undefined ? `${c - p >= 0 ? '+' : ''}${(c - p).toFixed(0)}` : '—';
+      rows.push([phase, pStr, cStr, delta]);
+    }
+    // Simple ASCII table
+    const widths = [0, 0, 0, 0];
+    for (const row of rows) {
+      for (let i = 0; i < 4; i++) {
+        widths[i] = Math.max(widths[i], row[i].length);
+      }
+    }
+    for (const row of rows) {
+      console.log(
+        `  ${row[0].padEnd(widths[0])}  ${row[1].padStart(widths[1])}  ${row[2].padStart(widths[2])}  ${row[3].padStart(widths[3])}`
+      );
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   console.log(`[probe-run] target URL: ${args.url}`);
@@ -285,6 +363,7 @@ async function main(): Promise<void> {
       )
     );
     console.log(`[probe-run] wrote ${captured.length} payload(s) → ${outPath}`);
+    await printDiffAgainstLatest(runsDir, outPath);
   } finally {
     await cleanup();
   }
