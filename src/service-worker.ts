@@ -41,12 +41,12 @@ export async function handleFetchReposRequest(
   // array — no shared-state race.
   const frame = probe.newFrame('sw');
   try {
-    // SW_HANDLER_ENTRY is inside the try so that if `req.nwos` is
-    // somehow undefined (malformed port message) and `.length`
-    // throws, the finally still runs frame.dump(). The frame will
-    // have no entries and dump() will early-return, so there's no
-    // stray envelope — just a clean exit with no data, which is the
-    // right behavior for a broken request.
+    // SW_HANDLER_ENTRY is inside the try so any unexpected error
+    // before getAccessToken() still triggers the finally's
+    // frame.dump(). The nwos access uses optional chaining + nullish
+    // coalesce, so undefined req.nwos itself won't throw — but the
+    // try/finally guard covers other failure modes (e.g. a future
+    // code change that accesses req properties without guarding).
     frame.mark(probe.Phase.SW_HANDLER_ENTRY, { nwos: req.nwos?.length ?? 0 });
     const accessToken = await getAccessToken();
     frame.mark(probe.Phase.SW_FETCH_START);
