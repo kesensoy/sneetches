@@ -1,4 +1,5 @@
 import {
+  BATCH_SIZE,
   buildBatchQuery,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
@@ -356,7 +357,7 @@ describe('buildBatchQuery', () => {
     expect(variables).toEqual({ owner0: 'octocat', name0: 'hello' });
   });
 
-  test('handles a full 50-repo batch', () => {
+  test('handles a large multi-repo batch', () => {
     const nwos = Array.from({ length: 50 }, (_, i) => `owner${i}/repo${i}`);
     const { query, variables } = buildBatchQuery(nwos);
     expect(query).toMatch(/r0: repository/);
@@ -717,11 +718,14 @@ describe('fetchRepoDataStreaming', () => {
     });
   });
 
-  test('authenticated: chunks into batches of 50', async () => {
+  test(`authenticated: chunks into batches of ${BATCH_SIZE}`, async () => {
     await new Promise<void>((resolve) =>
       chrome.storage.sync.set({ [ACCESS_TOKEN_KEY]: 'ghp_fake' }, () => resolve())
     );
-    const nwos = Array.from({ length: 120 }, (_, i) => `owner${i}/repo${i}`);
+    // Use a count that doesn't divide evenly so the last batch is smaller.
+    const totalNwos = BATCH_SIZE * 2 + Math.floor(BATCH_SIZE / 2);
+    const nwos = Array.from({ length: totalNwos }, (_, i) => `owner${i}/repo${i}`);
+    const expectedChunks = Math.ceil(totalNwos / BATCH_SIZE);
 
     const makeBatchResponse = (count: number) => {
       const data: Record<string, unknown> = {
@@ -739,31 +743,29 @@ describe('fetchRepoDataStreaming', () => {
       return { data };
     };
 
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValueOnce({
+    // Round-robin distributes nwos across expectedChunks equal-ish chunks.
+    // Each chunk's size is ceil(totalNwos / expectedChunks) or one less.
+    const chunkSizes: number[] = [];
+    for (let c = 0; c < expectedChunks; c++) {
+      let size = 0;
+      for (let i = c; i < totalNwos; i += expectedChunks) size++;
+      chunkSizes.push(size);
+    }
+
+    const fetchMock = jest.fn();
+    for (const size of chunkSizes) {
+      fetchMock.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => makeBatchResponse(50),
-        headers: { get: () => null },
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => makeBatchResponse(50),
-        headers: { get: () => null },
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => makeBatchResponse(20),
+        json: async () => makeBatchResponse(size),
         headers: { get: () => null },
       });
+    }
     (global as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
 
     const result = await fetchReposMap(nwos);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(result.size).toBe(120);
+    expect(fetchMock).toHaveBeenCalledTimes(expectedChunks);
+    expect(result.size).toBe(totalNwos);
   });
 
   test('authenticated: caches results, second call hits cache', async () => {

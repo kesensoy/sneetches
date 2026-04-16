@@ -174,7 +174,7 @@ export function buildBatchQuery(nwos: string[]): {
 }
 
 // @internal — exported for unit tests. Fires one aliased GraphQL POST for
-// a batch of up to ~50 repos and distributes the results into a Map keyed
+// a batch of up to BATCH_SIZE repos and distributes the results into a Map keyed
 // by "owner/name". Applies per-path error distribution (NOT_FOUND → cached
 // 404, FORBIDDEN → silent skip, other → silent + console.error) via the
 // errors[] walker below. Caller (fetchRepoDataStreaming) is responsible
@@ -213,7 +213,7 @@ export async function fetchGraphQLBatch(
   const cost = (body as { data?: { rateLimit?: { cost?: number } } })?.data?.rateLimit?.cost;
   if (typeof cost === 'number' && cost > 1) {
     console.warn(
-      `sneetches: GraphQL batch cost ${cost} (expected 1). GitHub may have changed its pricing formula; consider halving the batch size.`
+      `sneetches: GraphQL batch cost ${cost} (expected 1). GitHub may have changed its pricing formula; consider reducing BATCH_SIZE.`
     );
   }
 
@@ -287,11 +287,21 @@ export async function fetchGraphQLBatch(
   return result;
 }
 
-// If we ever see 422 from GitHub on an aliased query, halve this.
+// If we ever see 422 from GitHub on an aliased query, reduce this.
 // GitHub's node-count limit is 500,000; scalar-only batches cost 1 point
-// regardless of alias count and use ~50 nodes per batch (4 orders of
-// magnitude of headroom).
-const BATCH_SIZE = 50;
+// regardless of alias count and use ~BATCH_SIZE nodes per batch.
+// Smaller batches resolve faster at GitHub's GraphQL endpoint because
+// per-query processing time scales superlinearly with alias count.
+// Measured on awesome-homelab (705 repos, 2026-04-16):
+//   BATCH_SIZE=5:   SW fetch 1.7s, wall clock 2.4s
+//   BATCH_SIZE=10:  SW fetch 2.2s, wall clock 2.9s
+//   BATCH_SIZE=25:  SW fetch 2.6s, wall clock 3.3s
+//   BATCH_SIZE=50:  SW fetch 4.6s, wall clock 6.1s
+//   BATCH_SIZE=200: SW fetch 7.4s, wall clock 8.7s
+// 10 is the sweet spot: 52% faster than 50, uses 71 rate-limit points
+// on the worst-case page (vs 15 at 50), and HTTP/2 multiplexes the
+// requests on a single TCP connection.
+export const BATCH_SIZE = 10;
 
 // Streaming repo-data fetcher. Called by the service worker's port
 // handler; does ONE chrome.storage.local.get for all nwos up front,

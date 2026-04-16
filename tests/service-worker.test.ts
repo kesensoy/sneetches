@@ -18,6 +18,7 @@ import { FakePort } from './port.mock';
 import { mockFetch } from './fetch.mock';
 import { ChunkMsg, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from '../src/shared/rpc';
 import { ACCESS_TOKEN_KEY, TOKEN_VALIDATED_KEY } from '../src/settings';
+import { BATCH_SIZE } from '../src/github';
 
 // Yield enough microtasks + macrotasks for the SW's async handler to
 // run bulkReadCache → fetchGraphQLBatch (mocked) → postMessage chain.
@@ -235,17 +236,13 @@ describe('service worker: PAT / GraphQL path', () => {
   });
 
   test('partial results land before a mid-flight HTTP error terminal message', async () => {
-    // Over 50 nwos triggers fetchRepoDataStreaming's chunking path — on a
-    // 60-nwo input it dispatches two parallel chunks of 30 each via
-    // Promise.all. The contract we want to verify: if one chunk resolves
-    // successfully and fires onResults, but another chunk's POST returns
-    // 500, the successful chunk's entries should still reach the content
-    // script (as a 'chunk' message) before the terminal 'error' message
-    // tears down the port. This is the "partial-results-then-error" case
-    // — critical production failure mode where the user sees some
-    // annotations land and then an error state for the rest, rather
-    // than nothing.
-    const nwos = Array.from({ length: 60 }, (_, i) => `owner${i}/repo${i}`);
+    // Send enough nwos to trigger multiple batches. The contract: if one
+    // batch's POST returns 500, successful batches' entries should still
+    // reach the content script (as 'chunk' messages) before the terminal
+    // 'error' message tears down the port.
+    const totalNwos = BATCH_SIZE * 2;
+    const nwos = Array.from({ length: totalNwos }, (_, i) => `owner${i}/repo${i}`);
+    const expectedChunks = Math.ceil(totalNwos / BATCH_SIZE);
 
     const makeGoodBatchResponse = (count: number) => {
       const data: Record<string, unknown> = {
@@ -263,16 +260,21 @@ describe('service worker: PAT / GraphQL path', () => {
       return { data };
     };
 
-    // Round-robin chunking distributes 60 nwos across 2 chunks of 30.
-    // First chunk: success (30 entries). Second chunk: HTTP 500.
+    // Round-robin chunking distributes nwos evenly. First batch succeeds;
+    // the last batch returns HTTP 500. All batches in between succeed too.
     let callCount = 0;
     global.fetch = jest.fn(async () => {
       callCount++;
-      if (callCount === 1) {
+      if (callCount < expectedChunks) {
+        // Compute this chunk's size via round-robin: chunk index (callCount-1)
+        // gets every (callCount-1 + i*expectedChunks)th nwo.
+        const chunkIdx = callCount - 1;
+        let size = 0;
+        for (let i = chunkIdx; i < totalNwos; i += expectedChunks) size++;
         return {
           ok: true,
           status: 200,
-          json: async () => makeGoodBatchResponse(30),
+          json: async () => makeGoodBatchResponse(size),
           headers: { get: () => null },
         } as unknown as Response;
       }
@@ -289,11 +291,6 @@ describe('service worker: PAT / GraphQL path', () => {
     await flush();
 
     const msgs = collectMessages(port);
-    // We expect at least one chunk message (from the successful batch)
-    // followed by an error terminal message. The order matters: the
-    // chunk must arrive BEFORE the error, because fetchRepoDataStreaming's
-    // onResults fires synchronously from inside the awaited chunk's then()
-    // before the Promise.all rejects.
     const chunkMsgs = msgs.filter((m) => m.type === 'chunk');
     const errorMsgs = msgs.filter((m) => m.type === 'error');
     const doneMsgs = msgs.filter((m) => m.type === 'done');
@@ -303,11 +300,11 @@ describe('service worker: PAT / GraphQL path', () => {
     expect(doneMsgs).toHaveLength(0);
     expect(errorMsgs[0]).toEqual({ type: 'error', status: 500 });
 
-    // The successful chunk should contain 30 entries (the good batch).
-    const firstChunk = asChunk(chunkMsgs[0]);
-    expect(firstChunk.entries).toHaveLength(30);
-    // And the chunk must have been delivered strictly before the error —
-    // the order in the received[] array preserves postMessage delivery order.
+    // The successful chunk(s) should contain entries from the good batches.
+    const totalGoodEntries = chunkMsgs.reduce((sum, m) => sum + asChunk(m).entries.length, 0);
+    // At least one batch's worth of entries should have landed.
+    expect(totalGoodEntries).toBeGreaterThanOrEqual(BATCH_SIZE);
+    // The chunk must have been delivered strictly before the error.
     const firstChunkIdx = msgs.findIndex((m) => m.type === 'chunk');
     const errorIdx = msgs.findIndex((m) => m.type === 'error');
     expect(firstChunkIdx).toBeLessThan(errorIdx);
