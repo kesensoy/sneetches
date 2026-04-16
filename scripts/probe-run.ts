@@ -8,7 +8,7 @@
 //   2. Build the extension in development mode (unless fresh)
 //   3. Launch Chrome for Testing via Puppeteer with the unpacked
 //      extension loaded via `enableExtensions`, using a persistent
-//      profile dir at ~/.sneetches-probe/profile/
+//      profile dir at <repo>/.sneetches-probe/profile/
 //   4. Attach to the extension's service-worker target and inject the
 //      PAT into chrome.storage.sync if it's not already there
 //   5. Open a new page, wire a console listener, navigate to the
