@@ -291,7 +291,18 @@ export async function fetchGraphQLBatch(
 // GitHub's node-count limit is 500,000; scalar-only batches cost 1 point
 // regardless of alias count and use ~50 nodes per batch (4 orders of
 // magnitude of headroom).
-const BATCH_SIZE = 50;
+// Smaller batches resolve faster at GitHub's GraphQL endpoint because
+// per-query processing time scales superlinearly with alias count.
+// Measured on awesome-homelab (705 repos, 2026-04-16):
+//   BATCH_SIZE=5:   SW fetch 1.7s, wall clock 2.4s
+//   BATCH_SIZE=10:  SW fetch 2.2s, wall clock 2.9s
+//   BATCH_SIZE=25:  SW fetch 2.6s, wall clock 3.3s
+//   BATCH_SIZE=50:  SW fetch 4.6s, wall clock 6.1s
+//   BATCH_SIZE=200: SW fetch 7.4s, wall clock 8.7s
+// 10 is the sweet spot: 52% faster than 50, uses 71 rate-limit points
+// on the worst-case page (vs 15 at 50), and HTTP/2 multiplexes the
+// requests on a single TCP connection.
+export const BATCH_SIZE = 10;
 
 // Streaming repo-data fetcher. Called by the service worker's port
 // handler; does ONE chrome.storage.local.get for all nwos up front,
