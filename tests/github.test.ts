@@ -357,7 +357,7 @@ describe('buildBatchQuery', () => {
     expect(variables).toEqual({ owner0: 'octocat', name0: 'hello' });
   });
 
-  test('handles a full 50-repo batch', () => {
+  test('handles a large multi-repo batch', () => {
     const nwos = Array.from({ length: 50 }, (_, i) => `owner${i}/repo${i}`);
     const { query, variables } = buildBatchQuery(nwos);
     expect(query).toMatch(/r0: repository/);
