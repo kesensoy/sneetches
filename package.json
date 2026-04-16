@@ -1,6 +1,6 @@
 {
   "name": "sneetches",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Adds stars next to GitHub repo links",
   "author": "Kevin Esensoy",
   "contributors": [
@@ -24,8 +24,10 @@
     "lint": "eslint src/**/*.ts tests/**/*.ts",
     "lint:fix": "eslint src/**/*.ts tests/**/*.ts --fix",
     "prepare": "husky",
+    "probe": "ts-node --project scripts/tsconfig.json scripts/probe-run.ts",
     "sampler": "python3 -m http.server 8000 & open-cli http://localhost:8000/examples/sampler",
     "test": "jest",
+    "test:dce": "npm run build && if grep -q 'SNEETCHES_PROBE' build/content.js build/service-worker.js build/options.js; then echo 'FAIL: SNEETCHES_PROBE leaked into prod bundle' && exit 1; else echo 'OK: no probe envelope in prod bundle'; fi",
     "watch": "webpack --mode development --watch"
   },
   "repository": {
@@ -33,10 +35,14 @@
     "url": "git+https://github.com/kesensoy/sneetches.git"
   },
   "lint-staged": {
-    "*.ts": ["prettier --write", "eslint --fix"]
+    "*.ts": [
+      "prettier --write",
+      "eslint --fix"
+    ]
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@puppeteer/browsers": "^2.13.0",
     "@types/chrome": "^0.0.287",
     "@types/jest": "^29.5.14",
     "@typescript-eslint/eslint-plugin": "^8.18.2",
@@ -52,8 +58,11 @@
     "lint-staged": "^15.2.11",
     "open-cli": "^8.0.0",
     "prettier": "^3.4.2",
+    "puppeteer": "^24.41.0",
+    "terser-webpack-plugin": "^5.4.0",
     "ts-jest": "^29.2.5",
     "ts-loader": "^9.5.1",
+    "ts-node": "^10.9.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.2",
     "web-ext": "^8.3.0",

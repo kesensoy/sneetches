@@ -23,6 +23,7 @@
 // content script reads those on its own, because they're needed
 // synchronously at render time and don't dominate wall-clock.
 
+import * as probe from './debug/probe';
 import { fetchRepoDataStreaming } from './github';
 import { getAccessToken } from './settings';
 import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
@@ -35,8 +36,20 @@ export async function handleFetchReposRequest(
   req: FetchReposRequest,
   send: (msg: SneetchesRpcMsg) => void
 ): Promise<void> {
+  // Each request gets its own probe frame. Held in a local variable
+  // so concurrent handler invocations each have their own entries
+  // array — no shared-state race.
+  const frame = probe.newFrame('sw');
   try {
+    // SW_HANDLER_ENTRY is inside the try so any unexpected error
+    // before getAccessToken() still triggers the finally's
+    // frame.dump(). The nwos access uses optional chaining + nullish
+    // coalesce, so undefined req.nwos itself won't throw — but the
+    // try/finally guard covers other failure modes (e.g. a future
+    // code change that accesses req properties without guarding).
+    frame.mark(probe.Phase.SW_HANDLER_ENTRY, { nwos: req.nwos?.length ?? 0 });
     const accessToken = await getAccessToken();
+    frame.mark(probe.Phase.SW_FETCH_START);
     await fetchRepoDataStreaming(req.nwos, accessToken || undefined, (chunkResults) => {
       // Convert Map → [[k,v],...] for postMessage portability.
       // Map is structured-cloneable in modern Chrome, but the array
@@ -44,6 +57,7 @@ export async function handleFetchReposRequest(
       // human-readable in chrome://extensions' service worker view.
       send({ type: 'chunk', entries: Array.from(chunkResults) });
     });
+    frame.mark(probe.Phase.SW_FETCH_DONE);
     send({ type: 'done' });
   } catch (err) {
     // Transport-level failure (HTTP 401 / 5xx, network error).
@@ -56,6 +70,8 @@ export async function handleFetchReposRequest(
         ? (err as { status?: number }).status
         : undefined;
     send({ type: 'error', status });
+  } finally {
+    frame.dump();
   }
 }
 
