@@ -32,7 +32,7 @@ import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './share
 // can exercise it directly from tests without going through
 // chrome.runtime.connect. Exported for testing only; production code
 // reaches it via the onConnect listener below.
-export async function handleFetchReposRequest(
+async function handleFetchReposRequest(
   req: FetchReposRequest,
   send: (msg: SneetchesRpcMsg) => void
 ): Promise<void> {

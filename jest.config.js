@@ -5,9 +5,9 @@ module.exports = {
   testEnvironmentOptions: {
     url: 'http://localhost/'
   },
-  testRegex: '(/__tests__/.*|(\\.|/).+[_.]test)\\.(jsx?|tsx?)$',
+  testRegex: '(/__tests__/.*|(\\.|/).+[_.]test)\\.ts$',
   testPathIgnorePatterns: ['/node_modules/'],
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+  moduleFileExtensions: ['ts', 'js'],
   setupFiles: [
     'jest-webextension-mock',
     './tests/chrome-storage.mock.ts',
@@ -18,7 +18,7 @@ module.exports = {
     __DEBUG__: true
   },
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', {
+    '^.+\\.ts$': ['ts-jest', {
       useESM: false
     }]
   }

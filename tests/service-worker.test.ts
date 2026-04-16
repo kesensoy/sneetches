@@ -18,7 +18,7 @@ import { FakePort } from './port.mock';
 import { mockFetch } from './fetch.mock';
 import { ChunkMsg, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from '../src/shared/rpc';
 import { ACCESS_TOKEN_KEY, TOKEN_VALIDATED_KEY } from '../src/settings';
-import { BATCH_SIZE } from '../src/github';
+const BATCH_SIZE = 10;
 
 // Yield enough microtasks + macrotasks for the SW's async handler to
 // run bulkReadCache → fetchGraphQLBatch (mocked) → postMessage chain.

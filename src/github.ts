@@ -21,9 +21,7 @@ export function getStoredRateLimit(): Promise<RateLimitInfo | null> {
   });
 }
 
-export type TokenValidation =
-  | { valid: true }
-  | { valid: false; status?: number; error?: 'network' };
+type TokenValidation = { valid: true } | { valid: false; status?: number; error?: 'network' };
 
 interface HasHeaders {
   headers: { get(name: string): string | null };
@@ -301,7 +299,7 @@ export async function fetchGraphQLBatch(
 // 10 is the sweet spot: 52% faster than 50, uses 71 rate-limit points
 // on the worst-case page (vs 15 at 50), and HTTP/2 multiplexes the
 // requests on a single TCP connection.
-export const BATCH_SIZE = 10;
+const BATCH_SIZE = 10;
 
 // Streaming repo-data fetcher. Called by the service worker's port
 // handler; does ONE chrome.storage.local.get for all nwos up front,

@@ -567,7 +567,7 @@ async function updateLinks() {
     }
 
     frame.mark(probe.Phase.FAST_PATH_PAINTED, {
-      painted: pending.length - uncachedPending.length,
+      painted: cachedCount,
     });
 
     // Deduplicate nwos across the uncached subset — a single page can
@@ -623,31 +623,58 @@ async function updateLinks() {
   }
 }
 
+// Build a single chip span with optional text before and/or after the
+// SVG icon, and append it to the parent element. Text is inserted via
+// text nodes (escaped); the icon string is the only thing ever handed
+// to innerHTML-style insertion. Returns the span for any caller that
+// needs further customization.
+function buildChip(
+  parent: HTMLElement,
+  className: string,
+  ariaLabel: string,
+  iconHtml: string,
+  textBefore?: string,
+  textAfter?: string
+): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = className;
+  span.setAttribute('aria-label', ariaLabel);
+  if (textBefore) span.append(textBefore);
+  span.insertAdjacentHTML('beforeend', iconHtml);
+  if (textAfter) span.append(textAfter);
+  parent.appendChild(span);
+  return span;
+}
+
 export function createErrorAnnotation(
   res: { status?: number },
   accessToken: string,
   reportError: (_: string, ..._2: unknown[]) => void = console.error
 ) {
-  const elt = _createAnnotation('');
+  const elt = _createAnnotation();
 
   if (res.status === 404) {
-    const span = document.createElement('span');
-    span.className = 'sneetch-broken';
-    span.setAttribute('aria-label', 'repository not found');
-    span.insertAdjacentHTML('beforeend', unlinkIcon('sneetch-icon'));
-    span.append(' broken');
-    elt.appendChild(span);
+    buildChip(
+      elt,
+      'sneetch-broken',
+      'repository not found',
+      unlinkIcon('sneetch-icon'),
+      undefined,
+      ' broken'
+    );
     elt.title = 'Repository not found';
     return elt;
   }
 
   if (res.status === 403) {
-    const span = document.createElement('span');
-    span.className = 'sneetch-rate-limited';
-    span.setAttribute('aria-label', 'rate limited');
-    span.insertAdjacentHTML('beforeend', hourglassIcon('sneetch-icon'));
-    span.append(' wait');
-    elt.appendChild(span);
+    buildChip(
+      elt,
+      'sneetch-rate-limited',
+      'rate limited',
+      hourglassIcon('sneetch-icon'),
+      undefined,
+      ' wait'
+    );
 
     if (!accessToken) {
       elt.title = 'Please set up your GitHub Personal Access Token';
@@ -663,12 +690,7 @@ export function createErrorAnnotation(
   // anyway so the user knows the extension tried and failed rather
   // than silently skipping the link.
   reportError('sneetches: request status =', res.status);
-  const span = document.createElement('span');
-  span.className = 'sneetch-error';
-  span.setAttribute('aria-label', 'error');
-  span.insertAdjacentHTML('beforeend', bugIcon('sneetch-icon'));
-  span.append(' error');
-  elt.appendChild(span);
+  buildChip(elt, 'sneetch-error', 'error', bugIcon('sneetch-icon'), undefined, ' error');
   elt.title = `Couldn't fetch repository info (status ${res.status ?? 'unknown'})`;
   return elt;
 }
@@ -685,46 +707,47 @@ export function createAnnotation(
   starStyle: StarStyle
 ) {
   const displayDate = new Date(data.committed_date ?? data.pushed_at);
-  const elt = _createAnnotation('', data.archived ? 'is-archived' : null);
-  // Build each stat span by splitting text content from SVG markup: text
-  // goes through a text node (escaped) while the SVG icon string is the
-  // only thing ever handed to innerHTML-style insertion. Keeps the SVG
-  // markup working without trusting humanize() / humanizeDate() output as
-  // HTML, even though today those functions only ever emit digits.
+  const elt = _createAnnotation(data.archived ? 'is-archived' : null);
+  // Build each stat span via buildChip, which splits text content from
+  // SVG markup: text goes through a text node (escaped) while the SVG
+  // icon string is the only thing ever handed to innerHTML-style
+  // insertion. Keeps the SVG markup working without trusting humanize()
+  // / humanizeDate() output as HTML, even though today those functions
+  // only ever emit digits.
   if (show.stars) {
-    const span = document.createElement('span');
-    span.className = 'sneetch-stars';
-    span.setAttribute('aria-label', `${commafy(data.stargazers_count)} stars`);
-    span.append(humanize(data.stargazers_count) + ' ');
-    span.insertAdjacentHTML('beforeend', starIcon('sneetch-icon', starStyle === 'filled'));
-    elt.appendChild(span);
+    buildChip(
+      elt,
+      'sneetch-stars',
+      `${commafy(data.stargazers_count)} stars`,
+      starIcon('sneetch-icon', starStyle === 'filled'),
+      humanize(data.stargazers_count) + ' '
+    );
   }
   if (show.forks) {
-    const span = document.createElement('span');
-    span.className = 'sneetch-forks';
-    span.setAttribute('aria-label', `${commafy(data.forks_count)} forks`);
-    span.append(humanize(data.forks_count) + ' ');
-    span.insertAdjacentHTML('beforeend', repoForkedIcon('sneetch-icon'));
-    elt.appendChild(span);
+    buildChip(
+      elt,
+      'sneetch-forks',
+      `${commafy(data.forks_count)} forks`,
+      repoForkedIcon('sneetch-icon'),
+      humanize(data.forks_count) + ' '
+    );
   }
   if (show.update) {
-    const span = document.createElement('span');
-    span.className = 'sneetch-date';
-    span.setAttribute('aria-label', `last updated ${displayDate.toLocaleDateString()}`);
-    span.insertAdjacentHTML('beforeend', clockIcon('sneetch-icon'));
-    span.append(' ' + humanizeDate(displayDate));
-    elt.appendChild(span);
+    buildChip(
+      elt,
+      'sneetch-date',
+      `last updated ${displayDate.toLocaleDateString()}`,
+      clockIcon('sneetch-icon'),
+      undefined,
+      ' ' + humanizeDate(displayDate)
+    );
   }
   // Archive chip is icon-only (the word "archived" lives only in the
   // tooltip + aria-label). Error chips in createErrorAnnotation deliberately
   // add visible word text alongside the icon for legibility — the asymmetry
   // is intentional, not a drift.
   if (data.archived) {
-    const span = document.createElement('span');
-    span.className = 'sneetch-archived';
-    span.setAttribute('aria-label', 'archived');
-    span.insertAdjacentHTML('beforeend', archiveIcon('sneetch-icon'));
-    elt.appendChild(span);
+    buildChip(elt, 'sneetch-archived', 'archived', archiveIcon('sneetch-icon'));
   }
   const segments = [
     `${commafy(data.stargazers_count)} stars`,
@@ -739,14 +762,13 @@ export function createAnnotation(
 }
 
 // Common code to create presentation error and success annotations.
-function _createAnnotation(str: string, extraCssClasses: string | null = null) {
+function _createAnnotation(extraCssClasses: string | null = null) {
   let cssClass = ANNOTATION_CLASS;
   if (extraCssClasses) {
     cssClass += ' ' + extraCssClasses;
   }
   const elt = document.createElement('small');
   elt.setAttribute('class', cssClass);
-  elt.innerText = str;
   return elt;
 }
 

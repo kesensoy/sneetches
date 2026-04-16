@@ -183,7 +183,7 @@ function restoreOptions() {
   );
 }
 
-export function addInputEventListeners() {
+function addInputEventListeners() {
   document.querySelectorAll('input').forEach((elt) => elt.addEventListener('change', saveOptions));
 }
 

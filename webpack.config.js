@@ -22,7 +22,7 @@ module.exports = (_env, argv) => {
     module: {
       rules: [
         {
-          test: /\.tsx?$/,
+          test: /\.ts$/,
           use: {
             loader: 'ts-loader',
             options: {
@@ -34,7 +34,7 @@ module.exports = (_env, argv) => {
       ]
     },
     resolve: {
-      extensions: ['.ts', '.tsx', '.js']
+      extensions: ['.ts', '.js']
     },
     plugins: [
       new CleanWebpackPlugin(),

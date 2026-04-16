@@ -1,5 +1,4 @@
 import {
-  BATCH_SIZE,
   buildBatchQuery,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
@@ -8,6 +7,8 @@ import {
   RepoResponse,
   validateAccessToken,
 } from '../src/github';
+
+const BATCH_SIZE = 10;
 import { mockFetch } from './fetch.mock';
 import { ACCESS_TOKEN_KEY, getAccessToken, TOKEN_VALIDATED_KEY } from '../src/settings';
 

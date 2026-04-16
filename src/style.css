@@ -2,18 +2,29 @@
   text-decoration: none;
 }
 
+/* Shared chip layout — all 7 chip classes use the same structural
+   properties. Individual rules below add only color/background overrides.
+   Absolute 12px so a host page with a 28px base font doesn't scale our
+   chips to 25px. Keep .sneetch-icon at 0.9em below — it's sized
+   relative to the chip, not the host page. */
 .data-sneetch-extension .sneetch-stars,
 .data-sneetch-extension .sneetch-forks,
-.data-sneetch-extension .sneetch-date {
+.data-sneetch-extension .sneetch-date,
+.data-sneetch-extension .sneetch-archived,
+.data-sneetch-extension .sneetch-broken,
+.data-sneetch-extension .sneetch-rate-limited,
+.data-sneetch-extension .sneetch-error {
   display: inline-block;
   padding: 1px 5px;
   border-radius: 3px;
-  background: rgba(128, 128, 128, 0.1);
   margin: 0 1px;
-  /* Absolute 12px so a host page with a 28px base font doesn't scale our
-     chips to 25px. Keep .sneetch-icon at 0.9em below — it's sized
-     relative to the chip, not the host page. */
   font-size: 12px;
+}
+
+.data-sneetch-extension .sneetch-stars,
+.data-sneetch-extension .sneetch-forks,
+.data-sneetch-extension .sneetch-date {
+  background: rgba(128, 128, 128, 0.1);
 }
 
 .data-sneetch-extension .sneetch-stars {
@@ -36,17 +47,17 @@
   opacity: 0.7;
 }
 
-/* Archive chip — branded amber, always at full brightness. NOT included
-   in the general chip dim rule below because it carries the "archived"
-   status signal and must stay legible when siblings are muted. */
-.data-sneetch-extension .sneetch-archived {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
+/* Archive chip + rate-limited chip — branded amber, always at full
+   brightness. Archive is NOT included in the general chip dim rule
+   below because it carries the "archived" status signal and must stay
+   legible when siblings are muted. Rate-limited uses the same hue
+   because both are "not fully available" states; they won't collide on
+   a single anchor (a rate-limited request never returns archived
+   metadata). */
+.data-sneetch-extension .sneetch-archived,
+.data-sneetch-extension .sneetch-rate-limited {
   background: rgba(217, 119, 6, 0.15);
   color: #d97706;
-  margin: 0 1px;
-  font-size: 12px;
 }
 
 /* Broken chip (404) — solid red text on red wash. Visually loudest
@@ -54,27 +65,8 @@
    exist, and there's nothing the user can do about it except fix
    the link on the host page. */
 .data-sneetch-extension .sneetch-broken {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
   background: rgba(209, 36, 47, 0.12);
   color: #d1242f;
-  margin: 0 1px;
-  font-size: 12px;
-}
-
-/* Rate-limited chip (403) — amber text on amber wash. Same hue as
-   .sneetch-archived because both are "status: not fully available".
-   They won't collide on a single anchor: a rate-limited request
-   never returns archived metadata. */
-.data-sneetch-extension .sneetch-rate-limited {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: rgba(217, 119, 6, 0.15);
-  color: #d97706;
-  margin: 0 1px;
-  font-size: 12px;
 }
 
 /* Unknown-error chip (else branch) — green text on green wash. This
@@ -87,13 +79,8 @@
    siblings to cool gray and a gray error chip would look semantically
    continuous with "archived row". */
 .data-sneetch-extension .sneetch-error {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
   background: rgba(26, 127, 55, 0.12);
   color: #1a7f37;
-  margin: 0 1px;
-  font-size: 12px;
 }
 
 /* Archived-state modifier on the wrapper. Dims stars/forks/date into

@@ -17,9 +17,6 @@ import {
   __getPreloadPromiseForTests,
 } from '../src/content';
 
-// Alias retained so the existing call sites don't all change names.
-type MockBatchResponse = RepoResponse;
-
 // Test harness for the content script's port-based transport. The real
 // port/service-worker integration is covered in tests/service-worker.test.ts;
 // these tests substitute a controllable fetcher via __setPortFetcherForTests
@@ -39,6 +36,23 @@ const portFetcherMock = jest.fn<Promise<PortFetcherResult>, [string[], ChunkCb]>
 // with the given fixed response, delivering a single chunk + ok:true.
 // Equivalent to the old mockBatchRespondsWith that stubbed
 // getRepoDataMany's Map return.
+// Helper: wait for MutationObserver debounce + an extra tick for the
+// microtask from the port fetcher's then() to flush. Debounce is 300ms.
+const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
+
+// Helper: build a RepoResponse with a given star count (defaults to 1).
+// Used across multiple describe blocks for seeding in-memory cache, port
+// mock responses, etc.
+const freshResponse = (stars = 1): RepoResponse => ({
+  ok: true,
+  json: {
+    forks_count: 0,
+    stargazers_count: stars,
+    pushed_at: '2024-01-01',
+    archived: false,
+  },
+});
+
 function mockBatchRespondsWith(response: RepoResponse): void {
   portFetcherMock.mockImplementation(async (nwos, onChunk) => {
     const entries: Array<readonly [string, RepoResponse]> = nwos.map((nwo) => [nwo, response]);
@@ -465,10 +479,6 @@ describe('startLinkScanner', () => {
     __resetLinkScannerForTests();
   });
 
-  // Helper: wait for MutationObserver debounce + an extra tick for the
-  // microtask from the port fetcher's then() to flush. Debounce is 300ms.
-  const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
-
   test('annotates repo links added AFTER the scanner is set up (SPA hydration case)', async () => {
     // Scanner starts on an empty document — this is the scenario where
     // content_scripts injection (document_idle) races ahead of GitHub's
@@ -557,7 +567,7 @@ describe('startLinkScanner', () => {
     // script's distributeChunk path runs, then resolve the outer
     // promise with { ok: true } — matching the 'done' message the
     // production port would post in the same scenario.
-    let resolveFetch: (map: Map<string, MockBatchResponse>) => void = () => {};
+    let resolveFetch: (map: Map<string, RepoResponse>) => void = () => {};
     portFetcherMock.mockImplementation(
       (_nwos, onChunk) =>
         new Promise<PortFetcherResult>((resolvePromise) => {
@@ -614,7 +624,7 @@ describe('startLinkScanner', () => {
     // the chunk to the captured onChunk and resolve with ok:true — this
     // reaches the distribution loop under a stale epoch, which should
     // be silently dropped.
-    let firstResolve: (map: Map<string, MockBatchResponse>) => void = () => {};
+    let firstResolve: (map: Map<string, RepoResponse>) => void = () => {};
     portFetcherMock.mockImplementationOnce(
       (_nwos, onChunk) =>
         new Promise<PortFetcherResult>((resolvePromise) => {
@@ -1222,16 +1232,6 @@ describe('in-memory repo cache preload', () => {
 });
 
 describe('in-memory cache fast path', () => {
-  const freshResponse = (stars: number): RepoResponse => ({
-    ok: true,
-    json: {
-      forks_count: 0,
-      stargazers_count: stars,
-      pushed_at: '2024-01-01',
-      archived: false,
-    },
-  });
-
   beforeAll(() => {
     __setPortFetcherForTests(portFetcherMock);
   });
@@ -1260,8 +1260,6 @@ describe('in-memory cache fast path', () => {
   afterEach(() => {
     __resetLinkScannerForTests();
   });
-
-  const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
 
   test('cached anchors are painted from memory without calling the port', async () => {
     __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
@@ -1422,16 +1420,6 @@ describe('in-memory cache fast path', () => {
 });
 
 describe('in-memory cache invalidation on settings change', () => {
-  const freshResponse = (): RepoResponse => ({
-    ok: true,
-    json: {
-      forks_count: 0,
-      stargazers_count: 1,
-      pushed_at: '2024-01-01',
-      archived: false,
-    },
-  });
-
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
@@ -1517,16 +1505,6 @@ describe('in-memory cache invalidation on settings change', () => {
 });
 
 describe('in-memory cache invalidation on local storage clear', () => {
-  const freshResponse = (): RepoResponse => ({
-    ok: true,
-    json: {
-      forks_count: 0,
-      stargazers_count: 1,
-      pushed_at: '2024-01-01',
-      archived: false,
-    },
-  });
-
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
     __resetLinkScannerForTests();
