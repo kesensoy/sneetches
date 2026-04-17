@@ -2,7 +2,6 @@ const path = require('path');
 const webpack = require('webpack');
 const { CleanWebpackPlugin } = require('clean-webpack-plugin');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
-const TerserPlugin = require('terser-webpack-plugin');
 
 module.exports = (_env, argv) => {
   const mode = argv.mode === 'production' ? 'production' : 'development';
@@ -52,46 +51,6 @@ module.exports = (_env, argv) => {
         __DEBUG__: JSON.stringify(!isProd)
       })
     ],
-    optimization: isProd
-      ? {
-          minimize: true,
-          minimizer: [
-            new TerserPlugin({
-              terserOptions: {
-                compress: {
-                  // Tell Terser that calls to these functions / methods
-                  // have no observable side effects, so call sites can
-                  // be deleted entirely — including their string-literal
-                  // phase-name arguments. Combined with the
-                  // `if (!__DEBUG__) return;` guard at the top of each
-                  // method body, this produces zero bytes of probe
-                  // code in the prod bundle.
-                  //
-                  // IMPORTANT: these names are keyed on the
-                  // `import * as probe from './debug/probe';` form at
-                  // the call site AND on the `frame.mark` / `frame.dump`
-                  // method names used by the per-scan frame API. If
-                  // someone refactors to named imports
-                  // (`import { newFrame } from ...`) or renames the
-                  // local frame variable (e.g. `f.mark` instead of
-                  // `frame.mark`), these patterns match nothing and
-                  // the explicit pure_funcs safety net disappears. The
-                  // `if (!__DEBUG__)` guard body-pruning still works
-                  // even then, but the real canary is `npm run test:dce`
-                  // — always re-run it after changing probe import or
-                  // usage shapes.
-                  pure_funcs: [
-                    'probe.newFrame',
-                    'frame.mark',
-                    'frame.dump'
-                  ],
-                  passes: 2
-                }
-              }
-            })
-          ]
-        }
-      : undefined,
     devtool: isProd ? false : 'inline-source-map'
   };
 };

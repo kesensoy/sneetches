@@ -91,12 +91,18 @@ interface RepoInfo {
   readonly committed_date?: string;
 }
 
-export interface RepoResponse {
-  readonly ok: boolean;
-  readonly status?: number;
-  readonly json?: RepoInfo;
-  readonly silent?: boolean;
-}
+// Discriminated union over the three states a repo lookup can terminate
+// in: a populated payload, a known HTTP/status error (404 / 403 / else),
+// or a silent skip (FORBIDDEN on a PAT without scope — we don't want to
+// render anything at all, just remember not to retry this scan).
+//
+// Callers should `switch (res.kind)` rather than flag-checking, so
+// TypeScript's exhaustiveness checker catches any branch that forgets a
+// case if we ever add a fourth.
+export type RepoResponse =
+  | { readonly kind: 'ok'; readonly json: RepoInfo }
+  | { readonly kind: 'error'; readonly status?: number }
+  | { readonly kind: 'silent' };
 
 // Transform a fetch Response into something minimal that can be stored
 // in a LocalStorageArea. Only extracts the fields RepoInfo declares —
@@ -114,10 +120,10 @@ async function marshallableResponse(res: Response): Promise<RepoResponse> {
       stargazers_count: raw.stargazers_count,
       archived: raw.archived === true,
     };
-    return { ok: true, json };
+    return { kind: 'ok', json };
   }
   if (status === 404) {
-    return { ok: false, status };
+    return { kind: 'error', status };
   }
   throw { ok: false, status };
 }
@@ -236,7 +242,7 @@ export async function fetchGraphQLBatch(
         archived: repo.isArchived === true,
         committed_date: repo.defaultBranchRef?.target?.committedDate,
       };
-      result.set(nwo, { ok: true, json });
+      result.set(nwo, { kind: 'ok', json });
     }
   });
 
@@ -263,12 +269,12 @@ export async function fetchGraphQLBatch(
       const nwo = nwos[idx];
       if (!nwo) continue;
       if (err.type === 'NOT_FOUND') {
-        result.set(nwo, { ok: false, status: 404 });
+        result.set(nwo, { kind: 'error', status: 404 });
       } else if (err.type === 'FORBIDDEN') {
-        result.set(nwo, { ok: false, silent: true });
+        result.set(nwo, { kind: 'silent' });
       } else {
         console.error('sneetches: GraphQL error', err);
-        result.set(nwo, { ok: false, silent: true });
+        result.set(nwo, { kind: 'silent' });
       }
     }
   }
@@ -278,7 +284,7 @@ export async function fetchGraphQLBatch(
   // entries (e.g., path-less errors or partial responses).
   for (const nwo of nwos) {
     if (!result.has(nwo)) {
-      result.set(nwo, { ok: false, silent: true });
+      result.set(nwo, { kind: 'silent' });
     }
   }
 
@@ -386,7 +392,7 @@ export async function fetchRepoDataStreaming(
         // Only cache 200 OK and 404 responses. Don't cache 403s — they
         // represent transient rate-limit state and should retry next
         // scan.
-        if (resp.ok || resp.status === 404) {
+        if (resp.kind === 'ok' || (resp.kind === 'error' && resp.status === 404)) {
           bulkWriteCache(map, CACHE_VERSION);
         }
         onResults(map);
@@ -395,7 +401,7 @@ export async function fetchRepoDataStreaming(
           typeof err === 'object' && err !== null && 'status' in err
             ? (err as { status?: number }).status
             : undefined;
-        onResults(new Map([[nwo, { ok: false, status }]]));
+        onResults(new Map([[nwo, { kind: 'error', status }]]));
       }
     })
   );

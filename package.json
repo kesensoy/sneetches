@@ -14,8 +14,8 @@
   },
   "scripts": {
     "build": "webpack --mode production",
-    "build:chrome": "make chrome",
-    "build:firefox": "npm run build && web-ext build -s build -a dist -o && make source-zip",
+    "build:chrome": "npm run build",
+    "build:firefox": "npm run build && web-ext build -s build -a dist -o && git ls-files | zip -@ dist/sources.zip",
     "check": "tsc --noEmit",
     "dev": "webpack --mode development",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
@@ -53,7 +53,6 @@
     "lint-staged": "^15.2.11",
     "prettier": "^3.4.2",
     "puppeteer": "^24.41.0",
-    "terser-webpack-plugin": "^5.4.0",
     "ts-jest": "^29.2.5",
     "ts-loader": "^9.5.1",
     "ts-node": "^10.9.2",

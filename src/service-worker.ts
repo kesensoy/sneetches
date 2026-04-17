@@ -23,10 +23,10 @@
 // content script reads those on its own, because they're needed
 // synchronously at render time and don't dominate wall-clock.
 
-import * as probe from './debug/probe';
+import * as probe from './probe';
 import { fetchRepoDataStreaming } from './github';
 import { getAccessToken } from './settings';
-import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
+import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './rpc';
 
 // Narrow the per-connection state into a single async handler so we
 // can exercise it directly from tests without going through

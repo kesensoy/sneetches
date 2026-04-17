@@ -13,20 +13,7 @@ export default tseslint.config(
       },
     },
     rules: {
-      // Migrated from tslint.yaml
-      '@typescript-eslint/naming-convention': [
-        'error',
-        {
-          selector: 'interface',
-          format: ['PascalCase'],
-          custom: {
-            regex: '^I[A-Z]',
-            match: false,
-          },
-        },
-      ],
       'no-console': 'off',
-      quotes: ['error', 'single', { avoidEscape: true }],
       // Allow unused vars that start with _
       '@typescript-eslint/no-unused-vars': [
         'error',

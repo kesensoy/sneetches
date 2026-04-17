@@ -1,4 +1,12 @@
-import * as probe from '../src/debug/probe';
+// The jest.config.js default is `__DEBUG__: false` so the probe module
+// early-returns during all non-probe tests (nothing to silence). This
+// file opts back in to live-mode behavior for the tests that exercise
+// the real mark/dump code path. Must be set before importing the probe
+// module since the module's top-level block reads __DEBUG__ to decide
+// whether to mount the `sneetchesProbe` global.
+(globalThis as Record<string, unknown>).__DEBUG__ = true;
+
+import * as probe from '../src/probe';
 
 describe('probe module', () => {
   describe('Phase constants', () => {

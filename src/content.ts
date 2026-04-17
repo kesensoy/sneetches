@@ -1,5 +1,5 @@
 import { readAllCachedRepos } from './cache';
-import * as probe from './debug/probe';
+import * as probe from './probe';
 import {
   archiveIcon,
   bugIcon,
@@ -19,7 +19,7 @@ import {
   ShowSettings,
   StarStyle,
 } from './settings';
-import { SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
+import { SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './rpc';
 import { commafy, humanize, humanizeDate } from './utils';
 
 // Detect and persist whether the authenticated GitHub user has starred
@@ -35,7 +35,6 @@ const SNEETCHES_REPO = 'kesensoy/sneetches';
 const SNEETCHES_REPO_URL = new RegExp(`^https?://github\\.com/${SNEETCHES_REPO}/?(?:[?#].*)?$`);
 
 let starredObserver: MutationObserver | null = null;
-let starredObserverTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function writeStarredStateFromDOM(): void {
   // Match the exact form action, not a prefix — GitHub also has `/stargazers`
@@ -63,10 +62,6 @@ export function detectStarredStateOnSneetchesRepo(): void {
     starredObserver.disconnect();
     starredObserver = null;
   }
-  if (starredObserverTimeout) {
-    clearTimeout(starredObserverTimeout);
-    starredObserverTimeout = null;
-  }
 
   const url = window.location.href;
   // Match https://github.com/kesensoy/sneetches and
@@ -79,6 +74,9 @@ export function detectStarredStateOnSneetchesRepo(): void {
 
   // Set up a MutationObserver to catch in-place star/unstar actions
   // (e.g., user clicks Star on the page and GitHub mutates the form DOM).
+  // Runs for the tab's lifetime — MutationObservers are cheap and GitHub
+  // tears down its own DOM on navigation, so there's no need for a
+  // safety auto-disconnect.
   starredObserver = new MutationObserver(() => {
     writeStarredStateFromDOM();
   });
@@ -88,29 +86,14 @@ export function detectStarredStateOnSneetchesRepo(): void {
     attributes: true,
     attributeFilter: ['action'],
   });
-
-  // Safety: auto-disconnect after 5 minutes to avoid a long-running observer
-  // if the user leaves the tab open and idle.
-  starredObserverTimeout = setTimeout(
-    () => {
-      starredObserver?.disconnect();
-      starredObserver = null;
-      starredObserverTimeout = null;
-    },
-    5 * 60 * 1000
-  );
 }
 
-// Test-only helper: disconnects the observer and clears any pending timeout.
-// Used in afterEach to prevent cross-test pollution. Not called in production.
+// Test-only helper: disconnects the observer. Used in afterEach to
+// prevent cross-test pollution. Not called in production.
 export function __resetStarredDetectorForTests(): void {
   if (starredObserver) {
     starredObserver.disconnect();
     starredObserver = null;
-  }
-  if (starredObserverTimeout) {
-    clearTimeout(starredObserverTimeout);
-    starredObserverTimeout = null;
   }
 }
 
@@ -304,14 +287,14 @@ export function __setPortFetcherForTests(fn: PortFetcher | null): void {
 // listener — which already fires a rescan on access_token / show /
 // star_style changes — gets a fresh value on the next scan.
 //
-// getCachedSettings() returns the in-memory copy when one exists
-// (the common case after the first scan); otherwise it kicks off ONE
-// storage read and memoizes the resulting promise so concurrent scans
-// don't fan out into multiple storage reads while the first one is
-// still in flight.
+// getCachedSettings() returns the cached promise when one exists
+// (the common case after the first scan — promises are replayable, so
+// awaiting a resolved promise resolves synchronously to the cached
+// value); otherwise it kicks off ONE storage read and memoizes the
+// resulting promise so concurrent scans don't fan out into multiple
+// storage reads while the first one is still in flight.
 type CachedSettings = Awaited<ReturnType<typeof getSettings>>;
-let cachedSettings: CachedSettings | null = null;
-let cachedSettingsPromise: Promise<CachedSettings> | null = null;
+let cachedSettings: Promise<CachedSettings> | null = null;
 
 // In-memory mirror of chrome.storage.local's repo-cache entries.
 //
@@ -357,16 +340,6 @@ export function __getInMemoryRepoCacheForTests(): Map<string, RepoResponse> | nu
 // (preload hasn't resolved yet).
 let inMemoryRepoCachePromise: Promise<void> | null = null;
 
-// Generation counter for in-flight preload cancellation. runPreload()
-// captures this at the start of each run; if handleSyncStorageChange
-// (or a test reset) bumps it while the preload is awaiting its storage
-// read, the captured gen no longer matches the current value and the
-// preload's pending assignment into inMemoryRepoCache is skipped.
-// Without this guard, a token change firing during the ~234ms preload
-// window lets the in-flight preload stomp the newly-null cache with
-// stale pre-change data, defeating the invalidation.
-let preloadGeneration = 0;
-
 // Test-only helper: expose the preload promise so tests can await it
 // after seeding chrome.storage.local with cache entries. Also used by
 // tests that want to verify the initial preload populated correctly.
@@ -390,13 +363,14 @@ export function __rerunPreloadForTests(): Promise<void> {
 // leaving inMemoryRepoCache null — we'd rather fall through to the
 // port path on the current scan than hang forever in "preload in
 // flight" state.
+//
+// Note: no in-flight cancellation needed. If a token change fires
+// handleSyncStorageChange mid-preload, the clear() it issues will fire
+// an onChanged event that handleLocalStorageChange responds to by
+// setting inMemoryRepoCache = null. If the in-flight preload's storage
+// read saw pre-clear data and assigns it here, the next onChanged
+// event (from the clear) nulls it out again — self-healing.
 async function runPreload(): Promise<void> {
-  // Capture the generation at the start of this run. If a token
-  // change (or a test-only rerun) bumps preloadGeneration while we're
-  // awaiting the storage read, our captured gen will no longer match
-  // and we'll skip the assignment — preventing a stale map from
-  // clobbering a just-invalidated cache.
-  const gen = ++preloadGeneration;
   // Preload gets its own probe frame with its own envelope emitted
   // via `frame.dump()` in the finally below. Held in a local
   // variable so concurrent preload invocations (rare, mostly from
@@ -405,17 +379,11 @@ async function runPreload(): Promise<void> {
   frame.mark(probe.Phase.PRELOAD_START);
   try {
     const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
-    if (gen === preloadGeneration) {
-      inMemoryRepoCache = map;
-      frame.mark(probe.Phase.PRELOAD_DONE, { entries: map.size });
-    }
-    // else: our generation was superseded (token change or test
-    // rerun); drop the result on the floor.
+    inMemoryRepoCache = map;
+    frame.mark(probe.Phase.PRELOAD_DONE, { entries: map.size });
   } catch (e) {
     console.error('[sneetches] preload failed, falling back to empty cache:', e);
-    if (gen === preloadGeneration) {
-      inMemoryRepoCache = new Map();
-    }
+    inMemoryRepoCache = new Map();
   } finally {
     frame.dump();
   }
@@ -428,33 +396,25 @@ async function runPreload(): Promise<void> {
 // before the first repo anchor appears and the MO fires a scan.
 inMemoryRepoCachePromise = runPreload();
 
-async function getCachedSettings(): Promise<CachedSettings> {
+function getCachedSettings(): Promise<CachedSettings> {
   if (cachedSettings) return cachedSettings;
-  if (cachedSettingsPromise) return cachedSettingsPromise;
-  // Use try/finally so the promise lock is cleared on BOTH success and
-  // rejection. Without the finally, a transient `chrome.storage.sync.get`
-  // failure (rare in practice, but possible during browser startup or
-  // extension updates) would leave `cachedSettingsPromise` pointing at a
-  // permanently-rejected promise. Every subsequent scan would hit the
-  // `if (cachedSettingsPromise) return` early-return and get the same
-  // rejection back, silently disabling annotations until a settings
-  // change fires `invalidateCachedSettings`. The finally makes the next
-  // scan after a failure retry the storage read instead.
-  cachedSettingsPromise = (async () => {
-    try {
-      const settings = await getSettings();
-      cachedSettings = settings;
-      return settings;
-    } finally {
-      cachedSettingsPromise = null;
-    }
-  })();
-  return cachedSettingsPromise;
+  // Reset the cache on rejection so the NEXT caller retries the storage
+  // read instead of getting the same rejection back. Without this,
+  // a transient `chrome.storage.sync.get` failure (rare but possible
+  // during browser startup or extension updates) would pin every
+  // subsequent scan to the same permanently-rejected promise, silently
+  // disabling annotations until a settings change fired
+  // `invalidateCachedSettings`.
+  const promise = getSettings().catch((e) => {
+    if (cachedSettings === promise) cachedSettings = null;
+    throw e;
+  });
+  cachedSettings = promise;
+  return promise;
 }
 
 function invalidateCachedSettings(): void {
   cachedSettings = null;
-  cachedSettingsPromise = null;
 }
 
 // Apply one repo response to one anchor. Shared between the in-memory
@@ -474,14 +434,16 @@ function paintResult(
 ): void {
   if (inFlightAnchors.get(elt) !== epoch) return;
   inFlightAnchors.delete(elt);
-  if (res.silent) {
-    silentSkipAnchors.add(elt);
-    return;
-  }
-  if (res.ok) {
-    elt.appendChild(createAnnotation(res.json!, show, starStyle));
-  } else {
-    elt.appendChild(createErrorAnnotation(res, accessToken));
+  switch (res.kind) {
+    case 'silent':
+      silentSkipAnchors.add(elt);
+      return;
+    case 'ok':
+      elt.appendChild(createAnnotation(res.json, show, starStyle));
+      return;
+    case 'error':
+      elt.appendChild(createErrorAnnotation({ status: res.status }, accessToken));
+      return;
   }
 }
 
@@ -654,27 +616,13 @@ export function createErrorAnnotation(
   const elt = _createAnnotation();
 
   if (res.status === 404) {
-    buildChip(
-      elt,
-      'sneetch-broken',
-      'repository not found',
-      unlinkIcon('sneetch-icon'),
-      undefined,
-      ' broken'
-    );
+    buildChip(elt, 'sneetch-broken', 'repository not found', unlinkIcon(), undefined, ' broken');
     elt.title = 'Repository not found';
     return elt;
   }
 
   if (res.status === 403) {
-    buildChip(
-      elt,
-      'sneetch-rate-limited',
-      'rate limited',
-      hourglassIcon('sneetch-icon'),
-      undefined,
-      ' wait'
-    );
+    buildChip(elt, 'sneetch-rate-limited', 'rate limited', hourglassIcon(), undefined, ' wait');
 
     if (!accessToken) {
       elt.title = 'Please set up your GitHub Personal Access Token';
@@ -690,7 +638,7 @@ export function createErrorAnnotation(
   // anyway so the user knows the extension tried and failed rather
   // than silently skipping the link.
   reportError('sneetches: request status =', res.status);
-  buildChip(elt, 'sneetch-error', 'error', bugIcon('sneetch-icon'), undefined, ' error');
+  buildChip(elt, 'sneetch-error', 'error', bugIcon(), undefined, ' error');
   elt.title = `Couldn't fetch repository info (status ${res.status ?? 'unknown'})`;
   return elt;
 }
@@ -719,7 +667,7 @@ export function createAnnotation(
       elt,
       'sneetch-stars',
       `${commafy(data.stargazers_count)} stars`,
-      starIcon('sneetch-icon', starStyle === 'filled'),
+      starIcon(starStyle === 'filled'),
       humanize(data.stargazers_count) + ' '
     );
   }
@@ -728,7 +676,7 @@ export function createAnnotation(
       elt,
       'sneetch-forks',
       `${commafy(data.forks_count)} forks`,
-      repoForkedIcon('sneetch-icon'),
+      repoForkedIcon(),
       humanize(data.forks_count) + ' '
     );
   }
@@ -737,7 +685,7 @@ export function createAnnotation(
       elt,
       'sneetch-date',
       `last updated ${displayDate.toLocaleDateString()}`,
-      clockIcon('sneetch-icon'),
+      clockIcon(),
       undefined,
       ' ' + humanizeDate(displayDate)
     );
@@ -747,7 +695,7 @@ export function createAnnotation(
   // add visible word text alongside the icon for legibility — the asymmetry
   // is intentional, not a drift.
   if (data.archived) {
-    buildChip(elt, 'sneetch-archived', 'archived', archiveIcon('sneetch-icon'));
+    buildChip(elt, 'sneetch-archived', 'archived', archiveIcon());
   }
   const segments = [
     `${commafy(data.stargazers_count)} stars`,
@@ -971,29 +919,20 @@ export function __resetLinkScannerForTests(): void {
   invalidateCachedSettings();
   inMemoryRepoCache = null;
   inMemoryRepoCachePromise = null;
-  // Bump the preload generation so any in-flight runPreload from a
-  // previous test's module-load (or __rerunPreloadForTests call) will
-  // see gen mismatch and drop its result instead of stomping state
-  // that the next test is about to seed.
-  preloadGeneration++;
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;
 }
 
-// Test-only helper: invoke the settings-changed code path without firing
-// a chrome.storage.onChanged event. Needed because the custom Chrome
-// storage mock in tests does not propagate `set()` to `onChanged`
-// listeners, so tests verifying the mid-flight invalidation behavior
-// would otherwise have no way to trigger the production path.
-export function __applySettingsChangeForTests(): void {
-  applySettingsChange();
-}
-
-// Test-only helper: call getCachedSettings directly. Lets tests verify
-// the retry-after-rejection contract (the promise lock must be cleared
-// on rejection so the next call re-attempts the storage read) without
-// routing through the whole updateLinks → port → annotation pipeline.
+// Test-only helper: call getCachedSettings directly. Kept because the
+// retry-after-rejection contract it guards (cachedSettings must clear
+// on rejection so the next call re-attempts the storage read) is a
+// caching-layer invariant that has no clean external observation.
+// Every other hook was removable because the enhanced chrome-storage
+// mock now dispatches onChanged from set/remove/clear, but two
+// successive set() calls fire two onChanged events that each invoke
+// applySettingsChange → invalidateCachedSettings, so the stale-promise
+// bug would never manifest through that path.
 export function __getCachedSettingsForTests(): Promise<Awaited<ReturnType<typeof getSettings>>> {
   return getCachedSettings();
 }
@@ -1017,22 +956,8 @@ function handleSyncStorageChange(changes: { [key: string]: chrome.storage.Storag
   if (accessTokenChange && accessTokenChange.oldValue !== accessTokenChange.newValue) {
     chrome.storage.local.clear();
     inMemoryRepoCache = null;
-    // Cancel any in-flight preload from before the token change — its
-    // pending assignment into inMemoryRepoCache would otherwise stomp
-    // the null we just set with stale pre-change data.
-    preloadGeneration++;
   }
   applySettingsChange();
-}
-
-// Test-only helper: drive the sync-storage-changed code path with a
-// synthetic changes object. The custom Chrome storage mock doesn't
-// fire onChanged events from set() calls, so tests exercising the
-// key filter need to invoke the handler directly.
-export function __handleSyncStorageChangeForTests(changes: {
-  [key: string]: chrome.storage.StorageChange;
-}): void {
-  handleSyncStorageChange(changes);
 }
 
 // Handle a local-storage-change batch. We only care about repo-cache
@@ -1060,24 +985,9 @@ function handleLocalStorageChange(changes: { [key: string]: chrome.storage.Stora
     if (!key.includes('/')) continue;
     if (change.oldValue !== undefined && change.newValue === undefined) {
       inMemoryRepoCache = null;
-      // Cancel any in-flight preload so it can't stomp this null
-      // with data it read before the removal event fired. Same
-      // mechanism handleSyncStorageChange uses for the access-token
-      // invalidation path.
-      preloadGeneration++;
       return;
     }
   }
-}
-
-// Test-only helper: drive the local-storage-changed code path with a
-// synthetic changes object. The custom Chrome storage mock doesn't
-// fire onChanged events from remove() calls, so tests exercising the
-// clear-cache invalidation need to invoke the handler directly.
-export function __handleLocalStorageChangeForTests(changes: {
-  [key: string]: chrome.storage.StorageChange;
-}): void {
-  handleLocalStorageChange(changes);
 }
 
 // DOM-dependent initialization: wait for <body> before installing the

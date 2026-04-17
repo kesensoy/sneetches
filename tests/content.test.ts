@@ -6,16 +6,36 @@ import {
   startLinkScanner,
   __resetStarredDetectorForTests,
   __resetLinkScannerForTests,
-  __applySettingsChangeForTests,
-  __handleSyncStorageChangeForTests,
-  __handleLocalStorageChangeForTests,
   __setPortFetcherForTests,
-  __getCachedSettingsForTests,
   __setInMemoryRepoCacheForTests,
   __getInMemoryRepoCacheForTests,
   __rerunPreloadForTests,
-  __getPreloadPromiseForTests,
+  __getCachedSettingsForTests,
 } from '../src/content';
+
+// Helper: drive the chrome.storage.onChanged path through the front door.
+// The enhanced chrome-storage mock (tests/chrome-storage.mock.ts) fires
+// listeners via a microtask after set/remove/clear returns, matching real
+// Chrome semantics. Tests that previously called the handler helpers
+// directly now set real values and await the dispatch to settle.
+const setSync = (items: Record<string, unknown>): Promise<void> =>
+  new Promise<void>((resolve) => chrome.storage.sync.set(items, resolve));
+
+const setLocal = (items: Record<string, unknown>): Promise<void> =>
+  new Promise<void>((resolve) => chrome.storage.local.set(items, resolve));
+
+const removeLocal = (keys: string | string[]): Promise<void> =>
+  new Promise<void>((resolve) => chrome.storage.local.remove(keys, resolve));
+
+// Helper: wait for the chrome.storage.onChanged microtask dispatch plus
+// any follow-up async work (the content-script listener kicks off
+// updateAnnotationsFromSettings which awaits getCachedSettings). Two
+// tick awaits is enough in practice to let the listener run to the
+// point where it either fires the port fetcher or early-exits.
+const flushStorageEvents = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
 
 // Test harness for the content script's port-based transport. The real
 // port/service-worker integration is covered in tests/service-worker.test.ts;
@@ -44,7 +64,7 @@ const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
 // Used across multiple describe blocks for seeding in-memory cache, port
 // mock responses, etc.
 const freshResponse = (stars = 1): RepoResponse => ({
-  ok: true,
+  kind: 'ok',
   json: {
     forks_count: 0,
     stargazers_count: stars,
@@ -472,7 +492,7 @@ describe('startLinkScanner', () => {
     );
     document.body.innerHTML = '';
     portFetcherMock.mockReset();
-    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ kind: 'ok', json: makeRepoPayload() });
   });
 
   afterEach(() => {
@@ -598,7 +618,7 @@ describe('startLinkScanner', () => {
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
     // Now let the fetch resolve and assert exactly one annotation landed.
-    resolveFetch(new Map([['ollama/ollama', { ok: true, json: makeRepoPayload() }]]));
+    resolveFetch(new Map([['ollama/ollama', { kind: 'ok', json: makeRepoPayload() }]]));
     await waitForScanner();
 
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
@@ -650,8 +670,13 @@ describe('startLinkScanner', () => {
 
     // Simulate a settings change mid-flight (bumps epoch, clears in-flight
     // set, removes annotations, re-runs scan). The second scan fires a new
-    // getRepoData for the same anchor under the new epoch.
-    __applySettingsChangeForTests();
+    // getRepoData for the same anchor under the new epoch. Drive the
+    // chrome.storage.onChanged path through the front door: flipping
+    // star_style is a rescan-trigger key and the value is genuinely
+    // different from the beforeEach seed, so the mock dispatches.
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ star_style: 'filled' }, resolve)
+    );
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(2);
 
@@ -659,7 +684,9 @@ describe('startLinkScanner', () => {
     // loop should see the epoch mismatch and drop the result instead of
     // appending.
     firstResolve(
-      new Map([['ollama/ollama', { ok: true, json: makeRepoPayload({ stargazers_count: 9999 }) }]])
+      new Map([
+        ['ollama/ollama', { kind: 'ok', json: makeRepoPayload({ stargazers_count: 9999 }) }],
+      ])
     );
     await new Promise((r) => setTimeout(r, 10));
 
@@ -676,7 +703,7 @@ describe('startLinkScanner', () => {
     // annotations and re-render — a visible flicker on every popup
     // interaction. The fix filters the listener so only the keys
     // ACCESS_TOKEN_KEY, SHOW_KEY, and STAR_STYLE_KEY trigger a rescan.
-    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ kind: 'ok', json: makeRepoPayload() });
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
@@ -689,25 +716,18 @@ describe('startLinkScanner', () => {
 
     // Simulate the popup writing a popup-only key (e.g. the user clicked
     // "Test" and the button flipped to ✓ Valid). This should NOT wipe or
-    // refetch anything in open tabs.
-    __handleSyncStorageChangeForTests({
-      token_validated: { oldValue: false, newValue: true },
-    });
+    // refetch anything in open tabs. Drives through chrome.storage.sync.set
+    // so the enhanced mock fires the real onChanged listener in content.ts.
+    await setSync({ token_validated: true });
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
 
     // Same check for the other popup-only keys — belt and suspenders.
-    __handleSyncStorageChangeForTests({
-      advanced_open: { oldValue: false, newValue: true },
-    });
-    __handleSyncStorageChangeForTests({
-      has_starred: { oldValue: false, newValue: true },
-    });
-    __handleSyncStorageChangeForTests({
-      toolbar_icon: { oldValue: 'gray', newValue: 'colorful' },
-    });
+    await setSync({ advanced_open: true });
+    await setSync({ has_starred: true });
+    await setSync({ toolbar_icon: 'colorful' });
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
@@ -721,12 +741,16 @@ describe('startLinkScanner', () => {
     // old token couldn't see, etc.) and stale cached payloads would be
     // served forever otherwise. show and star_style only re-render; they
     // don't touch the cache. This test guards that branch specifically.
-    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ kind: 'ok', json: makeRepoPayload() });
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
+    // Seed an old access token so the upcoming set() produces a genuine
+    // diff (oldValue !== newValue) and the handler's token-change branch
+    // fires its local-cache flush.
+    await setSync({ access_token: 'ghp_old' });
     startLinkScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
@@ -734,9 +758,7 @@ describe('startLinkScanner', () => {
     const clearSpy = jest.spyOn(chrome.storage.local, 'clear');
     clearSpy.mockClear();
 
-    __handleSyncStorageChangeForTests({
-      access_token: { oldValue: 'ghp_old', newValue: 'ghp_new' },
-    });
+    await setSync({ access_token: 'ghp_new' });
     await waitForScanner();
 
     // Exactly one local-cache flush, triggered by the token change.
@@ -753,7 +775,7 @@ describe('startLinkScanner', () => {
     // sufficient sentinel — the handler is key-driven, so if show
     // triggers correctly, star_style and access_token will too (plus
     // access_token additionally flushes the local cache).
-    mockBatchRespondsWith({ ok: true, json: makeRepoPayload() });
+    mockBatchRespondsWith({ kind: 'ok', json: makeRepoPayload() });
 
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
@@ -763,12 +785,10 @@ describe('startLinkScanner', () => {
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
-    __handleSyncStorageChangeForTests({
-      show: {
-        oldValue: { stars: true, forks: false, update: false },
-        newValue: { stars: true, forks: true, update: false },
-      },
-    });
+    // Flip the show setting — a rescan-trigger key with a genuine diff
+    // from the beforeEach seed (forks: false → true) so the mock
+    // dispatches and the listener's rescan path fires.
+    await setSync({ show: { stars: true, forks: true, update: false } });
     await waitForScanner();
 
     // Rescan should have fired: removeLinkAnnotations() wipes the first
@@ -818,7 +838,7 @@ describe('updateLinks silent-skip handling', () => {
 
   test('FORBIDDEN silent-skip does not append annotation to anchor', async () => {
     document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
-    mockBatchRespondsWith({ ok: false, silent: true });
+    mockBatchRespondsWith({ kind: 'silent' });
 
     // Need to trigger a scan
     startLinkScanner();
@@ -837,7 +857,7 @@ describe('updateLinks silent-skip handling', () => {
     // is a silentSkipAnchors WeakSet that permanently excludes the anchor
     // from subsequent scans until settings change.
     document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
-    mockBatchRespondsWith({ ok: false, silent: true });
+    mockBatchRespondsWith({ kind: 'silent' });
 
     startLinkScanner();
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -876,7 +896,7 @@ describe('updateLinks batching', () => {
       )
     );
     mockBatchRespondsWith({
-      ok: true,
+      kind: 'ok',
       json: {
         forks_count: 1,
         pushed_at: '2025-01-01T00:00:00Z',
@@ -934,7 +954,7 @@ describe('in-memory repo cache hooks', () => {
       [
         'owner/repo',
         {
-          ok: true,
+          kind: 'ok',
           json: {
             forks_count: 1,
             stargazers_count: 2,
@@ -955,7 +975,7 @@ describe('in-memory repo cache hooks', () => {
   });
 
   test('__resetLinkScannerForTests clears the in-memory cache', () => {
-    __setInMemoryRepoCacheForTests(new Map([['a/b', { ok: true } as RepoResponse]]));
+    __setInMemoryRepoCacheForTests(new Map([['a/b', { kind: 'silent' } as RepoResponse]]));
     __resetLinkScannerForTests();
     expect(__getInMemoryRepoCacheForTests()).toBe(null);
   });
@@ -1063,17 +1083,19 @@ describe('scan scheduler behavior', () => {
     // leaves no stale promise lock, so the next call attempts the
     // storage read from scratch.
 
-    // Start clean — clear any cached settings from prior tests.
-    __resetLinkScannerForTests();
-
     // Seed storage with some real settings so the second (successful)
-    // call has something to return.
-    await new Promise<void>((resolve) =>
-      chrome.storage.sync.set(
-        { show: { stars: true, forks: true, update: false }, star_style: 'filled' },
-        resolve
-      )
-    );
+    // call has something to return. The set() fires onChanged via a
+    // microtask, which triggers the content script's
+    // applySettingsChange → getCachedSettings flow. Wait for that to
+    // settle before installing the patch and resetting the scanner,
+    // otherwise the listener's read would populate cachedSettings
+    // ahead of our test's first call.
+    await setSync({ show: { stars: true, forks: true, update: false }, star_style: 'filled' });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Start clean AFTER the listener-triggered read has completed so
+    // the subsequent __getCachedSettingsForTests call goes to storage.
+    __resetLinkScannerForTests();
 
     // Patch chrome.storage.sync.get to reject exactly once via
     // chrome.runtime.lastError (which is how getSettings detects
@@ -1155,7 +1177,7 @@ describe('in-memory repo cache preload', () => {
       exp: Date.now() + 60_000,
       ver: 2,
       pay: {
-        ok: true,
+        kind: 'ok',
         json: {
           forks_count: 0,
           stargazers_count: stars,
@@ -1186,8 +1208,12 @@ describe('in-memory repo cache preload', () => {
     const map = __getInMemoryRepoCacheForTests();
     expect(map).not.toBeNull();
     expect(map!.size).toBe(2);
-    expect(map!.get('ollama/ollama')?.json?.stargazers_count).toBe(42);
-    expect(map!.get('vercel/next.js')?.json?.stargazers_count).toBe(100);
+    const ollama = map!.get('ollama/ollama');
+    const vercel = map!.get('vercel/next.js');
+    expect(ollama?.kind).toBe('ok');
+    expect(vercel?.kind).toBe('ok');
+    if (ollama?.kind === 'ok') expect(ollama.json.stargazers_count).toBe(42);
+    if (vercel?.kind === 'ok') expect(vercel.json.stargazers_count).toBe(100);
   });
 
   test('preload skips expired entries', async () => {
@@ -1195,8 +1221,8 @@ describe('in-memory repo cache preload', () => {
     await new Promise<void>((resolve) =>
       chrome.storage.local.set(
         {
-          'owner/fresh': { exp: now + 60_000, ver: 2, pay: { ok: true } },
-          'owner/stale': { exp: now - 60_000, ver: 2, pay: { ok: true } },
+          'owner/fresh': { exp: now + 60_000, ver: 2, pay: { kind: 'silent' } },
+          'owner/stale': { exp: now - 60_000, ver: 2, pay: { kind: 'silent' } },
         },
         resolve
       )
@@ -1211,8 +1237,8 @@ describe('in-memory repo cache preload', () => {
     await new Promise<void>((resolve) =>
       chrome.storage.local.set(
         {
-          'owner/v1': { exp: Date.now() + 60_000, ver: 1, pay: { ok: true } },
-          'owner/v2': { exp: Date.now() + 60_000, ver: 2, pay: { ok: true } },
+          'owner/v1': { exp: Date.now() + 60_000, ver: 1, pay: { kind: 'silent' } },
+          'owner/v2': { exp: Date.now() + 60_000, ver: 2, pay: { kind: 'silent' } },
         },
         resolve
       )
@@ -1326,9 +1352,8 @@ describe('in-memory cache fast path', () => {
 
   test('silent-skip entries in the in-memory cache populate silentSkipAnchors', async () => {
     __setInMemoryRepoCacheForTests(
-      // Minimal silent-skip RepoResponse — json/status/headers not needed
-      // for this path; paintResult routes on `silent: true`.
-      new Map([['private/repo', { ok: false, silent: true } as RepoResponse]])
+      // Minimal silent-skip RepoResponse — paintResult routes on kind:'silent'.
+      new Map([['private/repo', { kind: 'silent' } as RepoResponse]])
     );
 
     const a = document.createElement('a');
@@ -1424,41 +1449,42 @@ describe('in-memory cache invalidation on settings change', () => {
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
     __resetLinkScannerForTests();
+    // Seed an old access token so the access-token-change test can fire
+    // a genuine diff through the mock. Let the clear+seed onChanged
+    // events flush before the test body runs.
+    await setSync({ access_token: 'old', star_style: 'outline' });
+    await flushStorageEvents();
   });
 
   afterEach(() => {
     __resetLinkScannerForTests();
   });
 
-  test('access-token change clears inMemoryRepoCache', () => {
+  test('access-token change clears inMemoryRepoCache', async () => {
     __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
-    __handleSyncStorageChangeForTests({
-      access_token: { oldValue: 'old', newValue: 'new' },
-    });
+    await setSync({ access_token: 'new' });
+    await flushStorageEvents();
     expect(__getInMemoryRepoCacheForTests()).toBe(null);
   });
 
-  test('show-setting change does NOT clear inMemoryRepoCache', () => {
+  test('show-setting change does NOT clear inMemoryRepoCache', async () => {
+    await setSync({ show: { stars: true, forks: false, update: false } });
+    await flushStorageEvents();
     const seeded = new Map([['a/b', freshResponse()]]);
     __setInMemoryRepoCacheForTests(seeded);
-    __handleSyncStorageChangeForTests({
-      show: {
-        oldValue: { stars: true, forks: false, update: false },
-        newValue: { stars: true, forks: true, update: false },
-      },
-    });
+    await setSync({ show: { stars: true, forks: true, update: false } });
+    await flushStorageEvents();
     // Repo data is still valid — only rendering changed. Map is
     // unchanged; applySettingsChange's rescan reads the same Map and
     // re-paints with the new toggles.
     expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
 
-  test('star_style change does NOT clear inMemoryRepoCache', () => {
+  test('star_style change does NOT clear inMemoryRepoCache', async () => {
     const seeded = new Map([['a/b', freshResponse()]]);
     __setInMemoryRepoCacheForTests(seeded);
-    __handleSyncStorageChangeForTests({
-      star_style: { oldValue: 'outline', newValue: 'filled' },
-    });
+    await setSync({ star_style: 'filled' });
+    await flushStorageEvents();
     expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
 
@@ -1478,9 +1504,8 @@ describe('in-memory cache invalidation on settings change', () => {
         },
       },
     };
-    await new Promise<void>((resolve) =>
-      chrome.storage.local.set({ 'stale/repo': staleData }, resolve)
-    );
+    await setLocal({ 'stale/repo': staleData });
+    await flushStorageEvents();
 
     // Kick off a preload — this is the "in-flight" preload that will
     // read the stale data.
@@ -1490,9 +1515,8 @@ describe('in-memory cache invalidation on settings change', () => {
     // resolves. handleSyncStorageChange clears storage, nulls the
     // in-memory cache, and (with the fix) invalidates the in-flight
     // preload's generation so its pending assignment becomes a no-op.
-    __handleSyncStorageChangeForTests({
-      access_token: { oldValue: 'old-token', newValue: 'new-token' },
-    });
+    await setSync({ access_token: 'new-token' });
+    await flushStorageEvents();
 
     // Now drain the in-flight preload. Without the generation guard,
     // this would stomp inMemoryRepoCache back to { 'stale/repo': ... }.
@@ -1507,6 +1531,10 @@ describe('in-memory cache invalidation on settings change', () => {
 describe('in-memory cache invalidation on local storage clear', () => {
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    // Drain the clear's onChanged dispatch before the test body seeds
+    // its own mirror — otherwise the clear's listener-callback could
+    // race ahead and null out the map we're about to set.
+    await flushStorageEvents();
     __resetLinkScannerForTests();
   });
 
@@ -1514,56 +1542,68 @@ describe('in-memory cache invalidation on local storage clear', () => {
     __resetLinkScannerForTests();
   });
 
-  test('removal of a repo-cache entry clears inMemoryRepoCache', () => {
+  test('removal of a repo-cache entry clears inMemoryRepoCache', async () => {
+    // Seed storage with a cache entry first so the subsequent remove()
+    // produces an onChanged event with oldValue present + newValue
+    // undefined, which is what handleLocalStorageChange gates on.
+    await setLocal({ 'a/b': { exp: 123, pay: {}, ver: 2 } });
+    await flushStorageEvents();
     __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
-    __handleLocalStorageChangeForTests({
-      'a/b': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
-    });
+    await removeLocal('a/b');
+    await flushStorageEvents();
     expect(__getInMemoryRepoCacheForTests()).toBe(null);
   });
 
-  test('full cache clear (multiple removals) clears inMemoryRepoCache', () => {
+  test('full cache clear (multiple removals) clears inMemoryRepoCache', async () => {
+    await setLocal({
+      'a/b': { exp: 123, pay: {}, ver: 2 },
+      'c/d': { exp: 123, pay: {}, ver: 2 },
+      rate_limit: { limit: 5000, remaining: 4999 },
+    });
+    await flushStorageEvents();
     __setInMemoryRepoCacheForTests(
       new Map([
         ['a/b', freshResponse()],
         ['c/d', freshResponse()],
       ])
     );
-    __handleLocalStorageChangeForTests({
-      'a/b': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
-      'c/d': { oldValue: { exp: 123, pay: {}, ver: 2 }, newValue: undefined },
-      rate_limit: { oldValue: { limit: 5000, remaining: 4999 }, newValue: undefined },
-    });
+    // chrome.storage.local.clear() fires onChanged with ALL present
+    // keys removed — same shape handleLocalStorageChange handles when
+    // the options page clicks "Clear cache".
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await flushStorageEvents();
     expect(__getInMemoryRepoCacheForTests()).toBe(null);
   });
 
-  test('fresh cache write (SW bulkWriteCache) does NOT clear inMemoryRepoCache', () => {
+  test('fresh cache write (SW bulkWriteCache) does NOT clear inMemoryRepoCache', async () => {
     // A fresh write has both oldValue and newValue set (or only
     // newValue for a brand-new key). The SW's bulkWriteCache path
     // fires this shape on every scan — it must NOT invalidate the
     // in-memory mirror, otherwise every scan would wipe the cache
     // we're trying to use.
+    await setLocal({ 'existing/repo': { exp: 100, pay: {}, ver: 2 } });
+    await flushStorageEvents();
     const seeded = new Map([['a/b', freshResponse()]]);
     __setInMemoryRepoCacheForTests(seeded);
-    __handleLocalStorageChangeForTests({
-      'new/repo': { newValue: { exp: 123, pay: {}, ver: 2 } },
-      'existing/repo': {
-        oldValue: { exp: 100, pay: {}, ver: 2 },
-        newValue: { exp: 456, pay: {}, ver: 2 },
-      },
+    // Simulates bulkWriteCache: one brand-new key + one updated key.
+    await setLocal({
+      'new/repo': { exp: 123, pay: {}, ver: 2 },
+      'existing/repo': { exp: 456, pay: {}, ver: 2 },
     });
+    await flushStorageEvents();
     expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
 
-  test('rate_limit removal alone does NOT clear inMemoryRepoCache', () => {
+  test('rate_limit removal alone does NOT clear inMemoryRepoCache', async () => {
     // rate_limit is not a cache key (no slash). If it's the only key
     // in a change batch, do not invalidate — rate_limit removals
     // don't represent a cache clear semantics.
+    await setLocal({ rate_limit: { limit: 5000, remaining: 4999 } });
+    await flushStorageEvents();
     const seeded = new Map([['a/b', freshResponse()]]);
     __setInMemoryRepoCacheForTests(seeded);
-    __handleLocalStorageChangeForTests({
-      rate_limit: { oldValue: { limit: 5000, remaining: 4999 }, newValue: undefined },
-    });
+    await removeLocal('rate_limit');
+    await flushStorageEvents();
     expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
   });
 });

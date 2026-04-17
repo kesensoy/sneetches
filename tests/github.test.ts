@@ -48,7 +48,7 @@ describe('fetchRepoDataStreaming REST path', () => {
     const data = { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: false };
     mockFetch({ json: data });
     const info = await getOneRest('owner/repo');
-    expect(info).toEqual({ ok: true, json: data });
+    expect(info).toEqual({ kind: 'ok', json: data });
   });
 
   test('caches repo info', async () => {
@@ -56,7 +56,7 @@ describe('fetchRepoDataStreaming REST path', () => {
     await getOneRest('owner/repo');
     mockFetch({ json: repoInfo2 });
     const info = await getOneRest('owner/repo');
-    expect(info).toEqual({ ok: true, json: repoInfo });
+    expect(info).toEqual({ kind: 'ok', json: repoInfo });
   });
 
   test('distinguishes repos', async () => {
@@ -64,20 +64,20 @@ describe('fetchRepoDataStreaming REST path', () => {
     const info1 = await getOneRest('owner/repo');
     mockFetch({ json: repoInfo2 });
     const info2 = await getOneRest('owner/repo2');
-    expect(info1).toEqual({ ok: true, json: repoInfo });
-    expect(info2).toEqual({ ok: true, json: repoInfo2 });
+    expect(info1).toEqual({ kind: 'ok', json: repoInfo });
+    expect(info2).toEqual({ kind: 'ok', json: repoInfo2 });
   });
 
   test('403 surfaces as per-entry status (not a throw)', async () => {
     mockFetch({ ok: false, status: 403 });
     const info = await getOneRest('owner/repo');
-    expect(info).toEqual({ ok: false, status: 403 });
+    expect(info).toEqual({ kind: 'error', status: 403 });
   });
 
   test("resolves 404's", async () => {
     mockFetch({ ok: false, status: 404 });
     const info = await getOneRest('owner/repo');
-    expect(info).toEqual({ ok: false, status: 404 });
+    expect(info).toEqual({ kind: 'error', status: 404 });
   });
 
   test("doesn't cache 403's", async () => {
@@ -85,7 +85,7 @@ describe('fetchRepoDataStreaming REST path', () => {
     await getOneRest('owner/repo');
     mockFetch({ json: repoInfo });
     const info = await getOneRest('owner/repo');
-    expect(info).toEqual({ ok: true, json: repoInfo });
+    expect(info).toEqual({ kind: 'ok', json: repoInfo });
   });
 
   test("caches 404's", async () => {
@@ -94,7 +94,7 @@ describe('fetchRepoDataStreaming REST path', () => {
     mockFetch({ ok: false, status: 403 });
     await getOneRest('owner/repo');
     const info = await getOneRest('owner/repo');
-    expect(info).toEqual({ ok: false, status: 404 });
+    expect(info).toEqual({ kind: 'error', status: 404 });
   });
 
   test('REST response populates archived field', async () => {
@@ -103,7 +103,7 @@ describe('fetchRepoDataStreaming REST path', () => {
     });
     const info = await getOneRest('owner/repo');
     expect(info).toEqual({
-      ok: true,
+      kind: 'ok',
       json: { forks_count: 1, pushed_at: 2, stargazers_count: 3, archived: true },
     });
   });
@@ -113,7 +113,11 @@ describe('fetchRepoDataStreaming REST path', () => {
       json: { forks_count: 1, pushed_at: 2, stargazers_count: 3 },
     });
     const info = await getOneRest('owner/repo');
-    expect(info.json?.archived).toBe(false);
+    // Narrow to the 'ok' branch so json is defined on the discriminated union.
+    expect(info.kind).toBe('ok');
+    if (info.kind === 'ok') {
+      expect(info.json.archived).toBe(false);
+    }
   });
 });
 
@@ -403,7 +407,7 @@ describe('fetchGraphQLBatch', () => {
 
     expect(result.size).toBe(2);
     expect(result.get('octocat/hello')).toEqual({
-      ok: true,
+      kind: 'ok',
       json: {
         stargazers_count: 100,
         forks_count: 20,
@@ -413,7 +417,7 @@ describe('fetchGraphQLBatch', () => {
       },
     });
     expect(result.get('torvalds/linux')).toEqual({
-      ok: true,
+      kind: 'ok',
       json: {
         stargazers_count: 5,
         forks_count: 1,
@@ -496,7 +500,7 @@ describe('fetchGraphQLBatch', () => {
     });
     const result = await fetchGraphQLBatch(['empty/repo'], 'ghp_fake');
     expect(result.get('empty/repo')).toEqual({
-      ok: true,
+      kind: 'ok',
       json: {
         stargazers_count: 0,
         forks_count: 0,
@@ -567,8 +571,8 @@ describe('fetchGraphQLBatch error distribution', () => {
       },
     });
     const result = await fetchGraphQLBatch(['octocat/hello', 'ghost/gone'], 'ghp_fake');
-    expect(result.get('octocat/hello')?.ok).toBe(true);
-    expect(result.get('ghost/gone')).toEqual({ ok: false, status: 404 });
+    expect(result.get('octocat/hello')?.kind).toBe('ok');
+    expect(result.get('ghost/gone')).toEqual({ kind: 'error', status: 404 });
   });
 
   test('FORBIDDEN path maps to a silent-skip response for that repo', async () => {
@@ -595,8 +599,8 @@ describe('fetchGraphQLBatch error distribution', () => {
       },
     });
     const result = await fetchGraphQLBatch(['octocat/hello', 'private/repo'], 'ghp_fake');
-    expect(result.get('octocat/hello')?.ok).toBe(true);
-    expect(result.get('private/repo')).toEqual({ ok: false, silent: true });
+    expect(result.get('octocat/hello')?.kind).toBe('ok');
+    expect(result.get('private/repo')).toEqual({ kind: 'silent' });
   });
 
   test('other error types become silent-skip + console.error', async () => {
@@ -617,7 +621,7 @@ describe('fetchGraphQLBatch error distribution', () => {
       },
     });
     const result = await fetchGraphQLBatch(['some/repo'], 'ghp_fake');
-    expect(result.get('some/repo')).toEqual({ ok: false, silent: true });
+    expect(result.get('some/repo')).toEqual({ kind: 'silent' });
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
   });
@@ -654,7 +658,7 @@ describe('fetchGraphQLBatch error distribution', () => {
       },
     });
     const result = await fetchGraphQLBatch(['some/repo'], 'ghp_fake');
-    expect(result.get('some/repo')).toEqual({ ok: false, silent: true });
+    expect(result.get('some/repo')).toEqual({ kind: 'silent' });
     spy.mockRestore();
   });
 
@@ -677,7 +681,7 @@ describe('fetchRepoDataStreaming', () => {
     const result = await fetchReposMap(['octocat/hello']);
     expect(result.size).toBe(1);
     expect(result.get('octocat/hello')).toEqual({
-      ok: true,
+      kind: 'ok',
       json: { forks_count: 1, pushed_at: '2025-01-01', stargazers_count: 100, archived: false },
     });
   });
@@ -685,7 +689,7 @@ describe('fetchRepoDataStreaming', () => {
   test('unauthenticated: REST 403 surfaces as per-entry status (not a throw)', async () => {
     mockFetch({ ok: false, status: 403 });
     const result = await fetchReposMap(['octocat/hello']);
-    expect(result.get('octocat/hello')).toEqual({ ok: false, status: 403 });
+    expect(result.get('octocat/hello')).toEqual({ kind: 'error', status: 403 });
   });
 
   test('authenticated: routes to GraphQL batch path', async () => {
@@ -708,7 +712,7 @@ describe('fetchRepoDataStreaming', () => {
     });
     const result = await fetchReposMap(['octocat/hello']);
     expect(result.get('octocat/hello')).toEqual({
-      ok: true,
+      kind: 'ok',
       json: {
         stargazers_count: 100,
         forks_count: 20,
@@ -794,7 +798,7 @@ describe('fetchRepoDataStreaming', () => {
     }) as unknown as typeof fetch;
 
     const result = await fetchReposMap(['octocat/hello']);
-    expect(result.get('octocat/hello')?.ok).toBe(true);
+    expect(result.get('octocat/hello')?.kind).toBe('ok');
   });
 
   test('returns empty map for empty input', async () => {
@@ -819,13 +823,13 @@ describe('fetchRepoDataStreaming', () => {
       },
     });
     const first = await fetchReposMap(['private/repo']);
-    expect(first.get('private/repo')).toEqual({ ok: false, silent: true });
+    expect(first.get('private/repo')).toEqual({ kind: 'silent' });
 
     // Second call: mock fetch to throw so we'd notice a re-fetch.
     global.fetch = jest.fn(() => {
       throw new Error('should not be called');
     }) as unknown as typeof fetch;
     const second = await fetchReposMap(['private/repo']);
-    expect(second.get('private/repo')).toEqual({ ok: false, silent: true });
+    expect(second.get('private/repo')).toEqual({ kind: 'silent' });
   });
 });
