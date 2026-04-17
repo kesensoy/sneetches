@@ -190,6 +190,9 @@ describe('restoreOptions', () => {
     expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(true);
     expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(false);
     expect(document.getElementById('token-section-title')?.hasAttribute('hidden')).toBe(false);
+    // Help text should become visible — consistent with every other path
+    // that opens the expanded view (pre-validation, post-fail, edit-click).
+    expect(document.getElementById('token-help')?.hasAttribute('hidden')).toBe(false);
 
     // Edit is an explicit intent to change — the Test button's visual state
     // and token_validated in storage must both reset so the button/storage
