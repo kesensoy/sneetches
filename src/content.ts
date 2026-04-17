@@ -333,28 +333,13 @@ export function __getInMemoryRepoCacheForTests(): Map<string, RepoResponse> | nu
   return inMemoryRepoCache;
 }
 
-// Preload promise — tests can await this to ensure the initial
-// chrome.storage.local read has completed before driving updateLinks.
-// Production code never awaits it; updateLinks checks `inMemoryRepoCache`
-// directly and falls through to the port path if it's still null
-// (preload hasn't resolved yet).
-let inMemoryRepoCachePromise: Promise<void> | null = null;
-
-// Test-only helper: expose the preload promise so tests can await it
-// after seeding chrome.storage.local with cache entries. Also used by
-// tests that want to verify the initial preload populated correctly.
-export function __getPreloadPromiseForTests(): Promise<void> | null {
-  return inMemoryRepoCachePromise;
-}
-
 // Test-only helper: re-fire the preload against the current
 // chrome.storage.local state. Lets a test seed storage, then trigger
 // a fresh preload, then await it, and finally assert against
 // inMemoryRepoCache. Without this, tests would be stuck with whatever
 // the module-load preload happened to read.
 export function __rerunPreloadForTests(): Promise<void> {
-  inMemoryRepoCachePromise = runPreload();
-  return inMemoryRepoCachePromise;
+  return runPreload();
 }
 
 // The actual preload work. Reads every cache entry from
@@ -394,7 +379,7 @@ async function runPreload(): Promise<void> {
 // to the port path. On awesome-list pages, React hydration takes long
 // enough that the 234ms preload (measured 2026-04-15) resolves well
 // before the first repo anchor appears and the MO fires a scan.
-inMemoryRepoCachePromise = runPreload();
+void runPreload();
 
 function getCachedSettings(): Promise<CachedSettings> {
   if (cachedSettings) return cachedSettings;
@@ -918,7 +903,6 @@ export function __resetLinkScannerForTests(): void {
   silentSkipAnchors = new WeakSet();
   invalidateCachedSettings();
   inMemoryRepoCache = null;
-  inMemoryRepoCachePromise = null;
   // Bump rather than reset so any lingering .then/.catch from a prior
   // test's fetch can't coincidentally match a fresh epoch=0.
   currentEpoch++;

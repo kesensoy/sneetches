@@ -1073,15 +1073,15 @@ describe('scan scheduler behavior', () => {
   });
 
   test('getCachedSettings retries after a transient storage rejection', async () => {
-    // Greptile P2 from the 1.1.3 review: before the try/finally fix,
-    // if `chrome.storage.sync.get` rejected once (e.g. transient
+    // Greptile P2 from the 1.1.3 review: before the catch-and-null
+    // fix, if `chrome.storage.sync.get` rejected once (e.g. transient
     // failure during browser startup or extension update),
-    // `cachedSettingsPromise` would be stuck pointing at that rejected
-    // promise forever, silently disabling all annotation scans until a
-    // settings change fired `invalidateCachedSettings`. This test
-    // verifies the retry-on-rejection contract: a failing first call
-    // leaves no stale promise lock, so the next call attempts the
-    // storage read from scratch.
+    // `cachedSettings` would be stuck pointing at that rejected promise
+    // forever, silently disabling all annotation scans until a settings
+    // change fired `invalidateCachedSettings`. This test verifies the
+    // retry-on-rejection contract: a failing first call leaves no stale
+    // promise lock, so the next call attempts the storage read from
+    // scratch.
 
     // Seed storage with some real settings so the second (successful)
     // call has something to return. The set() fires onChanged via a
@@ -1125,9 +1125,9 @@ describe('scan scheduler behavior', () => {
       await expect(__getCachedSettingsForTests()).rejects.toBeDefined();
 
       // Second call MUST re-attempt the storage read and succeed.
-      // Before the try/finally fix, this would return the same
-      // rejected promise from the first call's `cachedSettingsPromise`
-      // and the test would fail with the same rejection.
+      // Before the catch-and-null fix, this would return the same
+      // rejected promise from the first call's `cachedSettings` and
+      // the test would fail with the same rejection.
       const settings = await __getCachedSettingsForTests();
       expect(settings.starStyle).toBe('filled');
       expect(settings.show.stars).toBe(true);
@@ -1512,16 +1512,16 @@ describe('in-memory cache invalidation on settings change', () => {
     const inflightPreload = __rerunPreloadForTests();
 
     // Simulate a token-change event firing BEFORE the in-flight preload
-    // resolves. handleSyncStorageChange clears storage, nulls the
-    // in-memory cache, and (with the fix) invalidates the in-flight
-    // preload's generation so its pending assignment becomes a no-op.
+    // resolves. handleSyncStorageChange fires chrome.storage.local.clear()
+    // and nulls the in-memory cache. The clear dispatches an onChanged
+    // event; handleLocalStorageChange nulls the mirror again on that event.
     await setSync({ access_token: 'new-token' });
     await flushStorageEvents();
 
-    // Now drain the in-flight preload. Without the generation guard,
-    // this would stomp inMemoryRepoCache back to { 'stale/repo': ... }.
-    // With the guard, the assignment is skipped and inMemoryRepoCache
-    // stays null.
+    // Now drain the in-flight preload. If it assigns stale pre-clear data,
+    // the subsequent onChanged-from-clear nulls the mirror back out — the
+    // race self-heals via the clear→onChanged chain (no explicit
+    // generation counter).
     await inflightPreload;
 
     expect(__getInMemoryRepoCacheForTests()).toBe(null);
