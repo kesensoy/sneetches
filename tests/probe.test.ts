@@ -276,12 +276,13 @@ describe('probe module', () => {
   });
 
   // These tests pin the contract that in production builds
-  // (__DEBUG__ === false), every method call is a no-op. Jest sets
-  // __DEBUG__: true via jest.config.js globals, so we monkey-patch
-  // globalThis to flip the flag for the duration of each test. The
-  // test:dce npm script verifies the same contract from the bundle
-  // side by grepping for SNEETCHES_PROBE in build/*.js after a
-  // production build.
+  // (__DEBUG__ === false), every method call is a no-op. The
+  // top-of-file assignment flips __DEBUG__ to true for this whole
+  // suite (overriding jest.config.js globals, which default to
+  // false); these tests monkey-patch globalThis back to false for
+  // their duration. The test:dce npm script verifies the same
+  // contract from the bundle side by grepping for SNEETCHES_PROBE
+  // in build/*.js after a production build.
   describe('production mode (__DEBUG__ === false)', () => {
     let originalDebug: unknown;
 

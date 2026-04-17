@@ -61,8 +61,8 @@ async function handleFetchReposRequest(
     send({ type: 'done' });
   } catch (err) {
     // Transport-level failure (HTTP 401 / 5xx, network error).
-    // fetchGraphQLBatch throws `{ok:false, status}` and also takes care
-    // of token invalidation on 401 by clearing TOKEN_VALIDATED_KEY
+    // fetchGraphQLBatch throws `{status}` and also takes care of
+    // token invalidation on 401 by clearing TOKEN_VALIDATED_KEY
     // itself, so we just need to relay the status for the content
     // script's error-annotation rendering.
     const status =
