@@ -32,9 +32,15 @@ describe('restoreOptions', () => {
         <input id="show-stars" type="checkbox">
         <input id="show-forks" type="checkbox">
         <input id="show-update" type="checkbox">
-        <input id="access-token" type="password">
-        <button id="token-eye"></button>
-        <button id="token-test">Test</button>
+        <div id="token-collapsed" hidden>
+          <span id="token-dots">••••</span>
+          <button id="token-edit">edit</button>
+        </div>
+        <div id="token-expanded">
+          <input id="access-token" type="password">
+          <button id="token-eye"></button>
+          <button id="token-test">Test</button>
+        </div>
         <p id="token-help"></p>
         <span id="saved-indicator" hidden></span>
         <a class="star-cta" href="#">
@@ -150,6 +156,46 @@ describe('restoreOptions', () => {
     const btn = document.getElementById('token-test')!;
     expect(btn.textContent).toMatch(/Invalid/);
     expect(btn.classList.contains('btn--err')).toBe(true);
+  });
+
+  test('collapsed view renders on load when token is present and validated', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_valid', token_validated: true }, () =>
+        resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(false);
+    expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(true);
+  });
+
+  test('edit button re-expands the token view', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_valid', token_validated: true }, () =>
+        resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    document.getElementById('token-edit')!.click();
+
+    expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(true);
+    expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(false);
+  });
+
+  test('successful Test from expanded view re-collapses', async () => {
+    (validateAccessToken as jest.Mock).mockResolvedValue({ valid: true });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('access-token').value = 'ghp_valid';
+    document.getElementById('token-test')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(false);
+    expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(true);
   });
 
   test('selecting filled star style adds star-style--filled class to body', () => {

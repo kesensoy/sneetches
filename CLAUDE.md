@@ -4,8 +4,8 @@
 Chrome/Firefox browser extension that adds GitHub repo stats (stars, forks, last pushed date) inline next to GitHub repo links on any webpage. Manifest V3, TypeScript, Webpack-bundled.
 
 ## Current state
-- Version 1.1.8 in `package.json` / `src/manifest.json`. 1.1.8 merged to main and uploaded to both stores.
-- Full Jest suite: 219 tests passing across 8 suites.
+- Version 1.1.9 in `package.json` / `src/manifest.json`. 1.1.8 is live in both stores; 1.1.9 adds the collapsed-PAT popup view.
+- Full Jest suite: 222 tests passing across 8 suites.
 
 ## Technology Stack
 - **Node.js** 20+ (fnm recommended), **TypeScript** 5.7.2, **Webpack** 5.97.1

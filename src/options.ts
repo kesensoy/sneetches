@@ -277,6 +277,11 @@ function wireTokenEdit() {
   if (!editBtn) return;
   editBtn.addEventListener('click', () => {
     setTokenViewCollapsed(false);
+    // Expanded view uniformly shows the help text (pre-validation, post-fail,
+    // and now post-edit-click). token_validated isn't flipped here — just the
+    // UI reveals the PAT-creation guidance in case the user clicked edit to
+    // regenerate the token.
+    updateTokenHelpVisibility(false);
     // Focus the input so the user can immediately start typing a new value
     // without an extra click. Tests that don't render the full popup (e.g.
     // jsdom variants) still tolerate the focus call as a no-op.
