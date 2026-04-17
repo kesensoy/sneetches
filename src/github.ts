@@ -128,7 +128,7 @@ async function marshallableResponse(res: Response): Promise<RepoResponse> {
   if (status === 404) {
     return { kind: 'error', status };
   }
-  throw { ok: false, status };
+  throw { status };
 }
 
 // Simpler REST fetcher — no Authorization header, since the dispatcher
@@ -208,7 +208,7 @@ export async function fetchGraphQLBatch(
     if (res.status === 401) {
       chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
     }
-    throw { ok: false, status: res.status };
+    throw { status: res.status };
   }
 
   const body = await res.json();
@@ -308,7 +308,10 @@ export async function fetchGraphQLBatch(
 // 10 is the sweet spot: 52% faster than 50, uses 71 rate-limit points
 // on the worst-case page (vs 15 at 50), and HTTP/2 multiplexes the
 // requests on a single TCP connection.
-const BATCH_SIZE = 10;
+// @internal — exported for unit tests (tests/github.test.ts,
+// tests/service-worker.test.ts). Keep exported even if no prod consumer
+// imports it, so the test assertions stay in sync.
+export const BATCH_SIZE = 10;
 
 // Streaming repo-data fetcher. Called by the service worker's port
 // handler; does ONE chrome.storage.local.get for all nwos up front,

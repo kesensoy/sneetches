@@ -1,4 +1,5 @@
 import {
+  BATCH_SIZE,
   buildBatchQuery,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
@@ -7,8 +8,6 @@ import {
   RepoResponse,
   validateAccessToken,
 } from '../src/github';
-
-const BATCH_SIZE = 10;
 import { mockFetch } from './fetch.mock';
 import { ACCESS_TOKEN_KEY, getAccessToken, TOKEN_VALIDATED_KEY } from '../src/settings';
 
@@ -632,7 +631,6 @@ describe('fetchGraphQLBatch error distribution', () => {
     );
     mockFetch({ ok: false, status: 401 });
     await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toEqual({
-      ok: false,
       status: 401,
     });
     const stored = await new Promise<Record<string, unknown>>((resolve) =>
@@ -644,7 +642,6 @@ describe('fetchGraphQLBatch error distribution', () => {
   test('HTTP 5xx propagates as a rejection for the whole batch', async () => {
     mockFetch({ ok: false, status: 503 });
     await expect(fetchGraphQLBatch(['octocat/hello'], 'ghp_fake')).rejects.toEqual({
-      ok: false,
       status: 503,
     });
   });

@@ -394,12 +394,19 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
 
   async function runPreload(): Promise<void> {
     const frame = probe.newFrame('preload');
+    // Capture the epoch before the await so any teardown or settings
+    // change that bumps currentEpoch mid-flight causes us to skip the
+    // assignment rather than stomp on a just-nulled mirror. Mirrors the
+    // same pattern updateLinks uses for its stale-result guard.
+    const epoch = currentEpoch;
     frame.mark(probe.Phase.PRELOAD_START);
     try {
       const map = await readAllCachedRepos<RepoResponse, number>(CACHE_VERSION);
+      if (currentEpoch !== epoch) return;
       inMemoryRepoCache = map;
       frame.mark(probe.Phase.PRELOAD_DONE, { entries: map.size });
     } catch (e) {
+      if (currentEpoch !== epoch) return;
       console.error('[sneetches] preload failed, falling back to empty cache:', e);
       inMemoryRepoCache = new Map();
     } finally {
@@ -686,6 +693,15 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
   // -------------------------------------------------------------------------
 
   function initialize(): void {
+    // Defensive cleanup — production only calls this once, but a second
+    // call would otherwise orphan the previous storageChangedListener
+    // (leaked forever, since teardown() only knows about the current ref).
+    // Matches the disconnect-then-recreate pattern in startLinkScanner.
+    if (storageChangedListener) {
+      chrome.storage.onChanged.removeListener(storageChangedListener);
+      storageChangedListener = null;
+    }
+
     // Fire the preload against chrome.storage.local. Not awaited —
     // updateLinks handles the "not yet populated" case by falling through
     // to the port path. On awesome-list pages, React hydration takes long

@@ -33,6 +33,11 @@ type GlobalListener = (changes: ChangesMap, areaName: AreaName) => void;
 // objects — which is everything the extension actually stores. Falls back
 // to JSON for the object case because chrome.storage values are already
 // required to be JSON-serializable.
+// Caveat: JSON.stringify is key-order-sensitive, so two objects with the
+// same keys in different insertion order would compare unequal and fire a
+// spurious onChanged. Every value the extension stores is built with a
+// stable key order, so this hasn't bitten; watch for it if a new caller
+// starts writing dynamically-keyed objects here.
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null) return false;

@@ -1524,7 +1524,7 @@ describe('in-memory cache invalidation on settings change', () => {
       exp: Date.now() + 60_000,
       ver: 2,
       pay: {
-        ok: true,
+        kind: 'ok',
         json: {
           forks_count: 0,
           stargazers_count: 999,
