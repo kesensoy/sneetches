@@ -81,11 +81,14 @@
   </section>
 
   <section class="popup-section">
-    <div class="section-title">GitHub Access Token</div>
+    <div class="section-title" id="token-section-title">GitHub Access Token</div>
     <!-- Collapsed status row — shown when token_validated === true. Both the
          expanded and collapsed elements stay in the DOM; restoreOptions picks
          which to reveal so the access-token input is always queryable for
-         tests + the existing input/eye/test handlers. -->
+         tests + the existing input/eye/test handlers. The section title is
+         hidden in the collapsed state (the "✓ GitHub token valid" copy is
+         self-describing, so the redundant uppercase header just eats vertical
+         space without adding information). -->
     <div class="token-collapsed" id="token-collapsed" hidden>
       <span class="token-collapsed-dots" aria-hidden="true">••••</span>
       <span class="token-collapsed-status">✓ GitHub token valid</span>

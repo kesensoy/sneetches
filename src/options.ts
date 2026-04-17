@@ -97,16 +97,21 @@ function updateTokenHelpVisibility(validated: boolean) {
 // input + Test button. Called from restoreOptions on load and from the Test
 // button success path. Both elements stay in the DOM so the access-token
 // input is always present for the existing input/eye/test handlers + tests.
+// The section title is hidden in the collapsed state so the row actually
+// reclaims vertical space (the copy "✓ GitHub token valid" is self-describing).
 function setTokenViewCollapsed(collapsed: boolean) {
   const collapsedEl = document.getElementById('token-collapsed');
   const expandedEl = document.getElementById('token-expanded');
+  const titleEl = document.getElementById('token-section-title');
   if (!collapsedEl || !expandedEl) return;
   if (collapsed) {
     collapsedEl.removeAttribute('hidden');
     expandedEl.setAttribute('hidden', '');
+    titleEl?.setAttribute('hidden', '');
   } else {
     collapsedEl.setAttribute('hidden', '');
     expandedEl.removeAttribute('hidden');
+    titleEl?.removeAttribute('hidden');
   }
 }
 

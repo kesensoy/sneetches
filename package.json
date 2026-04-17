@@ -15,7 +15,7 @@
   "scripts": {
     "build": "webpack --mode production",
     "build:chrome": "npm run build",
-    "build:firefox": "npm run build && web-ext build -s build -a dist -o && git ls-files | zip -@ dist/sources.zip",
+    "build:firefox": "npm run build && node scripts/patch-firefox-manifest.js && web-ext build -s build -a dist -o && git ls-files | zip -@ dist/sources.zip",
     "check": "tsc --noEmit",
     "dev": "webpack --mode development",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
