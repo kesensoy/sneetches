@@ -6,7 +6,7 @@ module.exports = {
     url: 'http://localhost/'
   },
   testRegex: '(/__tests__/.*|(\\.|/).+[_.]test)\\.ts$',
-  testPathIgnorePatterns: ['/node_modules/'],
+  testPathIgnorePatterns: ['/node_modules/', '/.worktrees/'],
   moduleFileExtensions: ['ts', 'js'],
   setupFiles: [
     'jest-webextension-mock',

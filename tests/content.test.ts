@@ -1,16 +1,9 @@
 import { RepoResponse } from '../src/github';
 import {
+  ContentScriptController,
   createAnnotation,
+  createContentScript,
   createErrorAnnotation,
-  detectStarredStateOnSneetchesRepo,
-  startLinkScanner,
-  __resetStarredDetectorForTests,
-  __resetLinkScannerForTests,
-  __setPortFetcherForTests,
-  __setInMemoryRepoCacheForTests,
-  __getInMemoryRepoCacheForTests,
-  __rerunPreloadForTests,
-  __getCachedSettingsForTests,
 } from '../src/content';
 
 // Helper: drive the chrome.storage.onChanged path through the front door.
@@ -39,17 +32,18 @@ const flushStorageEvents = async (): Promise<void> => {
 
 // Test harness for the content script's port-based transport. The real
 // port/service-worker integration is covered in tests/service-worker.test.ts;
-// these tests substitute a controllable fetcher via __setPortFetcherForTests
-// so they can assert updateLinks' own epoch / dedup / silent-skip / rescan
-// behavior in isolation, mirroring the pre-1.1.3 getRepoDataMany-mock style.
+// these tests substitute a controllable fetcher via the
+// createContentScript({ portFetcher }) dep so they can assert
+// updateLinks' own epoch / dedup / silent-skip / rescan behavior in
+// isolation, mirroring the pre-1.1.3 getRepoDataMany-mock style.
 type ChunkCb = (entries: Array<readonly [string, RepoResponse]>) => void;
 type PortFetcherResult = { ok: true } | { ok: false; status?: number };
 
 // Jest mock proxy for the port fetcher. Each test can override its
 // implementation (`.mockImplementation`, `.mockImplementationOnce`, etc.)
 // to drive chunk delivery or hang the fetch open across settings-change
-// scenarios. The mock is installed via __setPortFetcherForTests in each
-// describe-block's beforeEach.
+// scenarios. Each describe block's beforeEach wires it in via
+// createContentScript({ portFetcher: portFetcherMock }).
 const portFetcherMock = jest.fn<Promise<PortFetcherResult>, [string[], ChunkCb]>();
 
 // Helper: make the port fetcher answer every nwo in the requested batch
@@ -335,6 +329,7 @@ describe('createErrorAnnotation', () => {
 
 describe('detectStarredStateOnSneetchesRepo', () => {
   const originalHref = window.location.href;
+  let instance: ContentScriptController;
 
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
@@ -342,7 +337,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
   });
 
   afterEach(() => {
-    __resetStarredDetectorForTests();
+    instance?.teardown();
     // Restore original location
     Object.defineProperty(window, 'location', {
       value: new URL(originalHref),
@@ -357,6 +352,14 @@ describe('detectStarredStateOnSneetchesRepo', () => {
       writable: true,
       configurable: true,
     });
+  }
+
+  // Each test sets window.location.href AND document.body.innerHTML
+  // before calling this, so initialize() can scrape the right DOM
+  // against the right URL.
+  function initStarredDetector() {
+    instance = createContentScript();
+    instance.initialize();
   }
 
   function expectStoredStarred(expected: boolean | undefined) {
@@ -375,7 +378,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
         <button>Unstar</button>
       </form>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(true);
   });
@@ -387,7 +390,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
         <button>Star</button>
       </form>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(false);
   });
@@ -395,7 +398,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
   test('does nothing when neither form matches (logged out)', async () => {
     setHref('https://github.com/kesensoy/sneetches');
     document.body.innerHTML = `<div>no star form here</div>`;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(undefined);
   });
@@ -405,7 +408,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
     document.body.innerHTML = `
       <form action="/kesensoy/sneetches/unstar" method="post"><button>Unstar</button></form>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(undefined);
   });
@@ -415,7 +418,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
     document.body.innerHTML = `
       <form action="/kesensoy/sneetches/unstar" method="post"><button>Unstar</button></form>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(true);
   });
@@ -425,7 +428,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
     document.body.innerHTML = `
       <form action="/someoneelse/somerepo/star"><button>Star</button></form>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(undefined);
   });
@@ -437,7 +440,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
         <button>Star</button>
       </form>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(false);
 
@@ -457,7 +460,7 @@ describe('detectStarredStateOnSneetchesRepo', () => {
         <form action="/kesensoy/sneetches/unstar" method="post"><button>Unstar</button></form>
       </div>
     `;
-    detectStarredStateOnSneetchesRepo();
+    initStarredDetector();
     await new Promise((r) => setTimeout(r, 0));
     await expectStoredStarred(true);
 
@@ -481,13 +484,15 @@ describe('startLinkScanner', () => {
     ...overrides,
   });
 
-  beforeAll(() => {
-    __setPortFetcherForTests(portFetcherMock);
-  });
+  let instance: ContentScriptController;
 
-  afterAll(() => {
-    __setPortFetcherForTests(null);
-  });
+  // Explicit start helper — each test body calls this after seeding
+  // (or not seeding) the DOM, mirroring the pre-refactor pattern where
+  // tests chose when to fire startLinkScanner().
+  const startScanner = () => {
+    instance = createContentScript({ portFetcher: portFetcherMock });
+    instance.initialize();
+  };
 
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
@@ -503,7 +508,7 @@ describe('startLinkScanner', () => {
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
   test('annotates repo links added AFTER the scanner is set up (SPA hydration case)', async () => {
@@ -511,7 +516,7 @@ describe('startLinkScanner', () => {
     // content_scripts injection (document_idle) races ahead of GitHub's
     // client-side README hydration. The initial scan finds zero links, but
     // the observer must catch links as they appear later.
-    startLinkScanner();
+    startScanner();
     await new Promise((r) => setTimeout(r, 10));
     expect(portFetcherMock).not.toHaveBeenCalled();
 
@@ -536,7 +541,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
@@ -570,7 +575,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
@@ -609,7 +614,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     // First scan found the link and fired one fetch (still pending).
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
@@ -670,7 +675,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
@@ -716,7 +721,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
     expect(a.querySelectorAll('.data-sneetch-extension')).toHaveLength(1);
@@ -758,7 +763,7 @@ describe('startLinkScanner', () => {
     // diff (oldValue !== newValue) and the handler's token-change branch
     // fires its local-cache flush.
     await setSync({ access_token: 'ghp_old' });
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
@@ -788,7 +793,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
@@ -815,7 +820,7 @@ describe('startLinkScanner', () => {
     a.href = 'https://github.com/ollama/ollama';
     document.body.appendChild(a);
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
 
     expect(portFetcherMock).not.toHaveBeenCalled();
@@ -824,13 +829,11 @@ describe('startLinkScanner', () => {
 });
 
 describe('updateLinks silent-skip handling', () => {
-  beforeAll(() => {
-    __setPortFetcherForTests(portFetcherMock);
-  });
-
-  afterAll(() => {
-    __setPortFetcherForTests(null);
-  });
+  let instance: ContentScriptController;
+  const startScanner = () => {
+    instance = createContentScript({ portFetcher: portFetcherMock });
+    instance.initialize();
+  };
 
   beforeEach(async () => {
     document.body.innerHTML = '';
@@ -840,7 +843,7 @@ describe('updateLinks silent-skip handling', () => {
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
   test('FORBIDDEN silent-skip does not append annotation to anchor', async () => {
@@ -848,7 +851,7 @@ describe('updateLinks silent-skip handling', () => {
     mockBatchRespondsWith({ kind: 'silent' });
 
     // Need to trigger a scan
-    startLinkScanner();
+    startScanner();
     // Anchor is already in DOM before startLinkScanner, so the initial
     // updateAnnotationsFromSettings() call processes it via microtask —
     // no debounce needed.
@@ -868,7 +871,7 @@ describe('updateLinks silent-skip handling', () => {
     document.body.innerHTML = '<a href="https://github.com/private/repo">private/repo</a>';
     mockBatchRespondsWith({ kind: 'silent' });
 
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
@@ -886,13 +889,11 @@ describe('updateLinks silent-skip handling', () => {
 });
 
 describe('updateLinks batching', () => {
-  beforeAll(() => {
-    __setPortFetcherForTests(portFetcherMock);
-  });
-
-  afterAll(() => {
-    __setPortFetcherForTests(null);
-  });
+  let instance: ContentScriptController;
+  const startScanner = () => {
+    instance = createContentScript({ portFetcher: portFetcherMock });
+    instance.initialize();
+  };
 
   beforeEach(async () => {
     document.body.innerHTML = '';
@@ -917,7 +918,7 @@ describe('updateLinks batching', () => {
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
   test('a scan with N anchors makes ONE port fetch call with N nwos', async () => {
@@ -926,7 +927,7 @@ describe('updateLinks batching', () => {
       <a href="https://github.com/torvalds/linux"></a>
       <a href="https://github.com/anthropics/claude-code"></a>
     `;
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
@@ -943,7 +944,7 @@ describe('updateLinks batching', () => {
       <a href="https://github.com/octocat/hello">two</a>
       <a href="https://github.com/octocat/hello">three</a>
     `;
-    startLinkScanner();
+    startScanner();
     await waitForScanner();
 
     // Only one unique nwo, so the batch call receives an array of 1.
@@ -954,12 +955,20 @@ describe('updateLinks batching', () => {
   });
 });
 
-describe('in-memory repo cache hooks', () => {
-  afterEach(() => {
-    __resetLinkScannerForTests();
+describe('in-memory repo cache accessors', () => {
+  let instance: ContentScriptController;
+
+  beforeEach(() => {
+    instance = createContentScript();
+    // Not initialized — these tests only exercise the getter/setter pair,
+    // no DOM scanning or storage listener.
   });
 
-  test('__setInMemoryRepoCacheForTests stores a Map', () => {
+  afterEach(() => {
+    instance.teardown();
+  });
+
+  test('setInMemoryRepoCache stores a Map', () => {
     const seed = new Map<string, RepoResponse>([
       [
         'owner/repo',
@@ -974,20 +983,20 @@ describe('in-memory repo cache hooks', () => {
         },
       ],
     ]);
-    __setInMemoryRepoCacheForTests(seed);
-    expect(__getInMemoryRepoCacheForTests()).toBe(seed);
+    instance.setInMemoryRepoCache(seed);
+    expect(instance.getInMemoryRepoCache()).toBe(seed);
   });
 
-  test('__setInMemoryRepoCacheForTests null clears the map', () => {
-    __setInMemoryRepoCacheForTests(new Map());
-    __setInMemoryRepoCacheForTests(null);
-    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  test('setInMemoryRepoCache(null) clears the map', () => {
+    instance.setInMemoryRepoCache(new Map());
+    instance.setInMemoryRepoCache(null);
+    expect(instance.getInMemoryRepoCache()).toBe(null);
   });
 
-  test('__resetLinkScannerForTests clears the in-memory cache', () => {
-    __setInMemoryRepoCacheForTests(new Map([['a/b', { kind: 'silent' } as RepoResponse]]));
-    __resetLinkScannerForTests();
-    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+  test('teardown() clears the in-memory cache', () => {
+    instance.setInMemoryRepoCache(new Map([['a/b', { kind: 'silent' } as RepoResponse]]));
+    instance.teardown();
+    expect(instance.getInMemoryRepoCache()).toBe(null);
   });
 });
 
@@ -996,13 +1005,11 @@ describe('scan scheduler behavior', () => {
   // trigger + cumulative max-wait + rolling debounce. Each test isolates
   // one aspect of the scheduler without relying on wall-clock timing
   // precision (which is inherently flaky in jsdom).
-  beforeAll(() => {
-    __setPortFetcherForTests(portFetcherMock);
-  });
-
-  afterAll(() => {
-    __setPortFetcherForTests(null);
-  });
+  let instance: ContentScriptController;
+  const startScanner = () => {
+    instance = createContentScript({ portFetcher: portFetcherMock });
+    instance.initialize();
+  };
 
   beforeEach(async () => {
     document.body.innerHTML = '';
@@ -1019,7 +1026,7 @@ describe('scan scheduler behavior', () => {
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
   test('leading-edge MO trigger fires a scan before the debounce window elapses', async () => {
@@ -1029,7 +1036,7 @@ describe('scan scheduler behavior', () => {
     // 500ms max-wait setTimeout. This test verifies the leading-edge path
     // runs BEFORE either setTimeout could have fired, by giving it less
     // than 200ms (< both debounce and max-wait) after the mutation.
-    startLinkScanner();
+    startScanner();
     // Wait a tick for startLinkScanner to attach its observer.
     await new Promise((r) => setTimeout(r, 10));
     expect(portFetcherMock).not.toHaveBeenCalled();
@@ -1055,7 +1062,7 @@ describe('scan scheduler behavior', () => {
     // should fire AT MOST one leading-edge scan per 100ms window, not
     // one per mutation. Test: insert many anchors rapidly, then assert
     // we didn't fire N scans.
-    startLinkScanner();
+    startScanner();
     await new Promise((r) => setTimeout(r, 10));
 
     // Insert 10 anchors in rapid succession. Each appendChild triggers
@@ -1094,18 +1101,17 @@ describe('scan scheduler behavior', () => {
     // scratch.
 
     // Seed storage with some real settings so the second (successful)
-    // call has something to return. The set() fires onChanged via a
-    // microtask, which triggers the content script's
-    // applySettingsChange → getCachedSettings flow. Wait for that to
-    // settle before installing the patch and resetting the scanner,
-    // otherwise the listener's read would populate cachedSettings
-    // ahead of our test's first call.
+    // call has something to return. No instance exists yet (this test
+    // doesn't call startScanner), so no listener fires on the set().
     await setSync({ show: { stars: true, forks: true, update: false }, star_style: 'filled' });
     await new Promise((r) => setTimeout(r, 10));
 
-    // Start clean AFTER the listener-triggered read has completed so
-    // the subsequent __getCachedSettingsForTests call goes to storage.
-    __resetLinkScannerForTests();
+    // Create a fresh instance but DON'T initialize it — we want the
+    // first getCachedSettings call to be ours, hitting the patched
+    // storage.sync.get below. initialize() would fire preload/listener
+    // setup but also run getCachedSettings via updateAnnotationsFromSettings,
+    // which would prime the cache ahead of our first call.
+    const retryInstance = createContentScript();
 
     // Patch chrome.storage.sync.get to reject exactly once via
     // chrome.runtime.lastError (which is how getSettings detects
@@ -1132,13 +1138,13 @@ describe('scan scheduler behavior', () => {
 
     try {
       // First call should reject — simulating the transient failure.
-      await expect(__getCachedSettingsForTests()).rejects.toBeDefined();
+      await expect(retryInstance.getCachedSettings()).rejects.toBeDefined();
 
       // Second call MUST re-attempt the storage read and succeed.
       // Before the catch-and-null fix, this would return the same
       // rejected promise from the first call's `cachedSettings` and
       // the test would fail with the same rejection.
-      const settings = await __getCachedSettingsForTests();
+      const settings = await retryInstance.getCachedSettings();
       expect(settings.starStyle).toBe('filled');
       expect(settings.show.stars).toBe(true);
       expect(settings.show.forks).toBe(true);
@@ -1146,11 +1152,11 @@ describe('scan scheduler behavior', () => {
       // And a third call should hit the in-memory cache (cachedSettings
       // is now populated), so no additional storage read.
       const before = callCount;
-      await __getCachedSettingsForTests();
+      await retryInstance.getCachedSettings();
       expect(callCount).toBe(before);
     } finally {
       chrome.storage.sync.get = originalGet;
-      __resetLinkScannerForTests();
+      retryInstance.teardown();
     }
   });
 
@@ -1163,7 +1169,7 @@ describe('scan scheduler behavior', () => {
     // the leading-edge path, waits long enough that both setTimeouts
     // would have fired if not cleared (300ms + 500ms + buffer), and
     // asserts only ONE scan fired.
-    startLinkScanner();
+    startScanner();
     await new Promise((r) => setTimeout(r, 10));
 
     const a = document.createElement('a');
@@ -1198,13 +1204,17 @@ describe('in-memory repo cache preload', () => {
     },
   });
 
+  let instance: ContentScriptController;
+
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
-    __resetLinkScannerForTests();
+    instance = createContentScript();
+    // Not initialized — these tests drive preload() directly rather
+    // than through the auto-fire inside initialize().
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance.teardown();
   });
 
   test('preload populates inMemoryRepoCache from storage', async () => {
@@ -1214,8 +1224,8 @@ describe('in-memory repo cache preload', () => {
         resolve
       )
     );
-    await __rerunPreloadForTests();
-    const map = __getInMemoryRepoCacheForTests();
+    await instance.preload();
+    const map = instance.getInMemoryRepoCache();
     expect(map).not.toBeNull();
     expect(map!.size).toBe(2);
     const ollama = map!.get('ollama/ollama');
@@ -1237,8 +1247,8 @@ describe('in-memory repo cache preload', () => {
         resolve
       )
     );
-    await __rerunPreloadForTests();
-    const map = __getInMemoryRepoCacheForTests();
+    await instance.preload();
+    const map = instance.getInMemoryRepoCache();
     expect(map!.has('owner/fresh')).toBe(true);
     expect(map!.has('owner/stale')).toBe(false);
   });
@@ -1253,27 +1263,63 @@ describe('in-memory repo cache preload', () => {
         resolve
       )
     );
-    await __rerunPreloadForTests();
-    const map = __getInMemoryRepoCacheForTests();
+    await instance.preload();
+    const map = instance.getInMemoryRepoCache();
     expect(map!.has('owner/v2')).toBe(true);
     expect(map!.has('owner/v1')).toBe(false);
   });
 
   test('preload results in empty Map when storage is empty', async () => {
-    await __rerunPreloadForTests();
-    const map = __getInMemoryRepoCacheForTests();
+    await instance.preload();
+    const map = instance.getInMemoryRepoCache();
     expect(map).not.toBeNull();
     expect(map!.size).toBe(0);
   });
 });
 
 describe('in-memory cache fast path', () => {
-  beforeAll(() => {
-    __setPortFetcherForTests(portFetcherMock);
-  });
-  afterAll(() => {
-    __setPortFetcherForTests(null);
-  });
+  let instance: ContentScriptController;
+
+  // Seed a map's entries into chrome.storage.local under the real
+  // cache-entry shape (exp/ver/pay). After seeding, the instance's
+  // initialize()→runPreload() chain reads these back into the
+  // in-memory mirror. This is the cleanest way to end up with a
+  // non-empty mirror post-init: avoid racing setInMemoryRepoCache
+  // against the concurrent preload write.
+  const seedStorageFromMap = async (m: Map<string, RepoResponse>): Promise<void> => {
+    const entries: Record<string, unknown> = {};
+    for (const [nwo, res] of m) {
+      entries[nwo] = { exp: Date.now() + 60_000, ver: 2, pay: res };
+    }
+    if (Object.keys(entries).length === 0) return;
+    await new Promise<void>((resolve) => chrome.storage.local.set(entries, resolve));
+  };
+
+  // Build the instance, seed chrome.storage.local so runPreload
+  // populates the mirror with the seed, THEN initialize. Wait for
+  // preload to drain so the first scan inside initialize sees the
+  // seeded mirror (not null, not empty).
+  const startScannerWithSeed = async (seed: Map<string, RepoResponse> | null) => {
+    if (seed && seed.size > 0) {
+      await seedStorageFromMap(seed);
+    }
+    instance = createContentScript({ portFetcher: portFetcherMock });
+    if (seed === null) {
+      // "Preload not resolved" case — don't let the preload run at all.
+      // Force the mirror to null and initialize, but the test expects
+      // the anchor to fall through to the port. We can't actually stop
+      // runPreload; it will race ahead and set the mirror to empty map
+      // eventually. The scan's pending loop branches on `if
+      // (inMemoryRepoCache)` — if the preload has already resolved to
+      // Map(0) by the time updateLinks() evaluates that branch, we take
+      // the uncachedPending-push loop anyway. So an empty Map has the
+      // same observable outcome as null: anchors go to the port.
+      instance.setInMemoryRepoCache(null);
+    }
+    instance.initialize();
+    // Drain preload so the fast-path branch sees a populated mirror.
+    await instance.preload();
+  };
 
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
@@ -1294,17 +1340,23 @@ describe('in-memory cache fast path', () => {
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
-  test('cached anchors are painted from memory without calling the port', async () => {
-    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
-
+  // Append an anchor to document.body. Each test calls this AFTER
+  // startScannerWithSeed so the preload has time to populate the
+  // mirror before the MO leading-edge triggers the scan on the newly-
+  // added anchor.
+  const appendAnchor = (nwo: string): HTMLAnchorElement => {
     const a = document.createElement('a');
-    a.href = 'https://github.com/ollama/ollama';
+    a.href = `https://github.com/${nwo}`;
     document.body.appendChild(a);
+    return a;
+  };
 
-    startLinkScanner();
+  test('cached anchors are painted from memory without calling the port', async () => {
+    await startScannerWithSeed(new Map([['ollama/ollama', freshResponse(42)]]));
+    const a = appendAnchor('ollama/ollama');
     await waitForScanner();
 
     expect(portFetcherMock).not.toHaveBeenCalled();
@@ -1314,13 +1366,8 @@ describe('in-memory cache fast path', () => {
   });
 
   test('uncached anchors fall through to the port fetcher', async () => {
-    __setInMemoryRepoCacheForTests(new Map());
-
-    const a = document.createElement('a');
-    a.href = 'https://github.com/vercel/next.js';
-    document.body.appendChild(a);
-
-    startLinkScanner();
+    await startScannerWithSeed(new Map());
+    const a = appendAnchor('vercel/next.js');
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledWith(['vercel/next.js'], expect.any(Function));
@@ -1328,17 +1375,9 @@ describe('in-memory cache fast path', () => {
   });
 
   test('mixed cached + uncached: only misses go through the port', async () => {
-    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
-
-    const a1 = document.createElement('a');
-    a1.href = 'https://github.com/ollama/ollama';
-    document.body.appendChild(a1);
-
-    const a2 = document.createElement('a');
-    a2.href = 'https://github.com/vercel/next.js';
-    document.body.appendChild(a2);
-
-    startLinkScanner();
+    await startScannerWithSeed(new Map([['ollama/ollama', freshResponse(42)]]));
+    const a1 = appendAnchor('ollama/ollama');
+    const a2 = appendAnchor('vercel/next.js');
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
@@ -1348,29 +1387,17 @@ describe('in-memory cache fast path', () => {
   });
 
   test('null in-memory cache (preload not resolved) falls through entirely to port', async () => {
-    __setInMemoryRepoCacheForTests(null);
-
-    const a = document.createElement('a');
-    a.href = 'https://github.com/ollama/ollama';
-    document.body.appendChild(a);
-
-    startLinkScanner();
+    await startScannerWithSeed(null);
+    appendAnchor('ollama/ollama');
     await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledWith(['ollama/ollama'], expect.any(Function));
   });
 
   test('silent-skip entries in the in-memory cache populate silentSkipAnchors', async () => {
-    __setInMemoryRepoCacheForTests(
-      // Minimal silent-skip RepoResponse — paintResult routes on kind:'silent'.
-      new Map([['private/repo', { kind: 'silent' } as RepoResponse]])
-    );
-
-    const a = document.createElement('a');
-    a.href = 'https://github.com/private/repo';
-    document.body.appendChild(a);
-
-    startLinkScanner();
+    // Minimal silent-skip RepoResponse — paintResult routes on kind:'silent'.
+    await startScannerWithSeed(new Map([['private/repo', { kind: 'silent' } as RepoResponse]]));
+    const a = appendAnchor('private/repo');
     await waitForScanner();
 
     // First scan: no port call, no annotation — paintResult's silent
@@ -1381,8 +1408,7 @@ describe('in-memory cache fast path', () => {
     // Trigger a second scan by adding an unrelated node. If the anchor
     // wasn't in silentSkipAnchors, findUnannotatedRepoLinks would re-pick
     // it up (childElementCount === 0 and no inFlightAnchors entry), and
-    // paintResult would fire again. We verify the WeakSet population
-    // indirectly: the second scan must still not touch this anchor.
+    // paintResult would fire again.
     const trigger = document.createElement('div');
     document.body.appendChild(trigger);
     await waitForScanner();
@@ -1392,17 +1418,9 @@ describe('in-memory cache fast path', () => {
   });
 
   test('deduplicated nwos: cached repo shared across multiple anchors paints once from memory', async () => {
-    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
-
-    const a1 = document.createElement('a');
-    a1.href = 'https://github.com/ollama/ollama';
-    document.body.appendChild(a1);
-
-    const a2 = document.createElement('a');
-    a2.href = 'https://github.com/ollama/ollama';
-    document.body.appendChild(a2);
-
-    startLinkScanner();
+    await startScannerWithSeed(new Map([['ollama/ollama', freshResponse(42)]]));
+    const a1 = appendAnchor('ollama/ollama');
+    const a2 = appendAnchor('ollama/ollama');
     await waitForScanner();
 
     expect(portFetcherMock).not.toHaveBeenCalled();
@@ -1416,8 +1434,7 @@ describe('in-memory cache fast path', () => {
     // annotation and NOT get an error chip stacked on top, because
     // paintResult already drained it from inFlightAnchors and the
     // error handler's epoch guard correctly skips it.
-    __setInMemoryRepoCacheForTests(new Map([['ollama/ollama', freshResponse(42)]]));
-
+    //
     // Override the port mock to simulate a batch-level failure
     // (network error, 5xx, 401) — the port fetcher resolves with
     // { ok: false, status: 500 } and does NOT call the chunk callback.
@@ -1425,15 +1442,9 @@ describe('in-memory cache fast path', () => {
       return { ok: false, status: 500 };
     });
 
-    const cached = document.createElement('a');
-    cached.href = 'https://github.com/ollama/ollama';
-    document.body.appendChild(cached);
-
-    const uncached = document.createElement('a');
-    uncached.href = 'https://github.com/vercel/next.js';
-    document.body.appendChild(uncached);
-
-    startLinkScanner();
+    await startScannerWithSeed(new Map([['ollama/ollama', freshResponse(42)]]));
+    const cached = appendAnchor('ollama/ollama');
+    const uncached = appendAnchor('vercel/next.js');
     await waitForScanner();
 
     // Cached anchor: one clean fast-path annotation with "42" stars.
@@ -1455,47 +1466,55 @@ describe('in-memory cache fast path', () => {
 });
 
 describe('in-memory cache invalidation on settings change', () => {
+  let instance: ContentScriptController;
+
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
-    __resetLinkScannerForTests();
     // Seed an old access token so the access-token-change test can fire
     // a genuine diff through the mock. Let the clear+seed onChanged
-    // events flush before the test body runs.
+    // events flush before the instance is initialized so its listener
+    // doesn't consume them.
     await setSync({ access_token: 'old', star_style: 'outline' });
     await flushStorageEvents();
+    instance = createContentScript();
+    instance.initialize();
+    // initialize fires an async preload. Drain it so the test's later
+    // setInMemoryRepoCache call isn't overwritten by the preload's
+    // assignment landing mid-test.
+    await instance.preload();
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
   test('access-token change clears inMemoryRepoCache', async () => {
-    __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
+    instance.setInMemoryRepoCache(new Map([['a/b', freshResponse()]]));
     await setSync({ access_token: 'new' });
     await flushStorageEvents();
-    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+    expect(instance.getInMemoryRepoCache()).toBe(null);
   });
 
   test('show-setting change does NOT clear inMemoryRepoCache', async () => {
     await setSync({ show: { stars: true, forks: false, update: false } });
     await flushStorageEvents();
     const seeded = new Map([['a/b', freshResponse()]]);
-    __setInMemoryRepoCacheForTests(seeded);
+    instance.setInMemoryRepoCache(seeded);
     await setSync({ show: { stars: true, forks: true, update: false } });
     await flushStorageEvents();
     // Repo data is still valid — only rendering changed. Map is
     // unchanged; applySettingsChange's rescan reads the same Map and
     // re-paints with the new toggles.
-    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+    expect(instance.getInMemoryRepoCache()).toBe(seeded);
   });
 
   test('star_style change does NOT clear inMemoryRepoCache', async () => {
     const seeded = new Map([['a/b', freshResponse()]]);
-    __setInMemoryRepoCacheForTests(seeded);
+    instance.setInMemoryRepoCache(seeded);
     await setSync({ star_style: 'filled' });
     await flushStorageEvents();
-    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+    expect(instance.getInMemoryRepoCache()).toBe(seeded);
   });
 
   test('in-flight preload from before token change does not stomp invalidated cache', async () => {
@@ -1519,7 +1538,7 @@ describe('in-memory cache invalidation on settings change', () => {
 
     // Kick off a preload — this is the "in-flight" preload that will
     // read the stale data.
-    const inflightPreload = __rerunPreloadForTests();
+    const inflightPreload = instance.preload();
 
     // Simulate a token-change event firing BEFORE the in-flight preload
     // resolves. handleSyncStorageChange fires chrome.storage.local.clear()
@@ -1534,22 +1553,28 @@ describe('in-memory cache invalidation on settings change', () => {
     // generation counter).
     await inflightPreload;
 
-    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+    expect(instance.getInMemoryRepoCache()).toBe(null);
   });
 });
 
 describe('in-memory cache invalidation on local storage clear', () => {
+  let instance: ContentScriptController;
+
   beforeEach(async () => {
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
-    // Drain the clear's onChanged dispatch before the test body seeds
-    // its own mirror — otherwise the clear's listener-callback could
-    // race ahead and null out the map we're about to set.
+    // Drain the clear's onChanged dispatch before the instance is
+    // initialized — otherwise its listener would react to the clear
+    // we just did.
     await flushStorageEvents();
-    __resetLinkScannerForTests();
+    instance = createContentScript();
+    instance.initialize();
+    // Drain initialize()'s async preload so subsequent
+    // setInMemoryRepoCache calls aren't overwritten.
+    await instance.preload();
   });
 
   afterEach(() => {
-    __resetLinkScannerForTests();
+    instance?.teardown();
   });
 
   test('removal of a repo-cache entry clears inMemoryRepoCache', async () => {
@@ -1558,10 +1583,10 @@ describe('in-memory cache invalidation on local storage clear', () => {
     // undefined, which is what handleLocalStorageChange gates on.
     await setLocal({ 'a/b': { exp: 123, pay: {}, ver: 2 } });
     await flushStorageEvents();
-    __setInMemoryRepoCacheForTests(new Map([['a/b', freshResponse()]]));
+    instance.setInMemoryRepoCache(new Map([['a/b', freshResponse()]]));
     await removeLocal('a/b');
     await flushStorageEvents();
-    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+    expect(instance.getInMemoryRepoCache()).toBe(null);
   });
 
   test('full cache clear (multiple removals) clears inMemoryRepoCache', async () => {
@@ -1571,7 +1596,7 @@ describe('in-memory cache invalidation on local storage clear', () => {
       rate_limit: { limit: 5000, remaining: 4999 },
     });
     await flushStorageEvents();
-    __setInMemoryRepoCacheForTests(
+    instance.setInMemoryRepoCache(
       new Map([
         ['a/b', freshResponse()],
         ['c/d', freshResponse()],
@@ -1582,7 +1607,7 @@ describe('in-memory cache invalidation on local storage clear', () => {
     // the options page clicks "Clear cache".
     await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
     await flushStorageEvents();
-    expect(__getInMemoryRepoCacheForTests()).toBe(null);
+    expect(instance.getInMemoryRepoCache()).toBe(null);
   });
 
   test('fresh cache write (SW bulkWriteCache) does NOT clear inMemoryRepoCache', async () => {
@@ -1594,14 +1619,14 @@ describe('in-memory cache invalidation on local storage clear', () => {
     await setLocal({ 'existing/repo': { exp: 100, pay: {}, ver: 2 } });
     await flushStorageEvents();
     const seeded = new Map([['a/b', freshResponse()]]);
-    __setInMemoryRepoCacheForTests(seeded);
+    instance.setInMemoryRepoCache(seeded);
     // Simulates bulkWriteCache: one brand-new key + one updated key.
     await setLocal({
       'new/repo': { exp: 123, pay: {}, ver: 2 },
       'existing/repo': { exp: 456, pay: {}, ver: 2 },
     });
     await flushStorageEvents();
-    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+    expect(instance.getInMemoryRepoCache()).toBe(seeded);
   });
 
   test('rate_limit removal alone does NOT clear inMemoryRepoCache', async () => {
@@ -1611,9 +1636,9 @@ describe('in-memory cache invalidation on local storage clear', () => {
     await setLocal({ rate_limit: { limit: 5000, remaining: 4999 } });
     await flushStorageEvents();
     const seeded = new Map([['a/b', freshResponse()]]);
-    __setInMemoryRepoCacheForTests(seeded);
+    instance.setInMemoryRepoCache(seeded);
     await removeLocal('rate_limit');
     await flushStorageEvents();
-    expect(__getInMemoryRepoCacheForTests()).toBe(seeded);
+    expect(instance.getInMemoryRepoCache()).toBe(seeded);
   });
 });
