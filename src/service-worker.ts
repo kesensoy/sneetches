@@ -23,16 +23,16 @@
 // content script reads those on its own, because they're needed
 // synchronously at render time and don't dominate wall-clock.
 
-import * as probe from './debug/probe';
+import * as probe from './probe';
 import { fetchRepoDataStreaming } from './github';
 import { getAccessToken } from './settings';
-import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './shared/rpc';
+import { FetchReposRequest, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './rpc';
 
 // Narrow the per-connection state into a single async handler so we
 // can exercise it directly from tests without going through
 // chrome.runtime.connect. Exported for testing only; production code
 // reaches it via the onConnect listener below.
-export async function handleFetchReposRequest(
+async function handleFetchReposRequest(
   req: FetchReposRequest,
   send: (msg: SneetchesRpcMsg) => void
 ): Promise<void> {
@@ -61,8 +61,8 @@ export async function handleFetchReposRequest(
     send({ type: 'done' });
   } catch (err) {
     // Transport-level failure (HTTP 401 / 5xx, network error).
-    // fetchGraphQLBatch throws `{ok:false, status}` and also takes care
-    // of token invalidation on 401 by clearing TOKEN_VALIDATED_KEY
+    // fetchGraphQLBatch throws `{status}` and also takes care of
+    // token invalidation on 401 by clearing TOKEN_VALIDATED_KEY
     // itself, so we just need to relay the status for the content
     // script's error-annotation rendering.
     const status =

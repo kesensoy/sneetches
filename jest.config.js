@@ -5,21 +5,15 @@ module.exports = {
   testEnvironmentOptions: {
     url: 'http://localhost/'
   },
-  testRegex: '(/__tests__/.*|(\\.|/).+[_.]test)\\.(jsx?|tsx?)$',
-  testPathIgnorePatterns: ['/node_modules/'],
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+  testRegex: '(/__tests__/.*|(\\.|/).+[_.]test)\\.ts$',
+  testPathIgnorePatterns: ['/node_modules/', '/.worktrees/'],
+  moduleFileExtensions: ['ts', 'js'],
   setupFiles: [
     'jest-webextension-mock',
     './tests/chrome-storage.mock.ts',
     './tests/port.mock.ts',
-    './tests/probe-silence.ts',
   ],
   globals: {
-    __DEBUG__: true
-  },
-  transform: {
-    '^.+\\.tsx?$': ['ts-jest', {
-      useESM: false
-    }]
+    __DEBUG__: false
   }
 };

@@ -16,7 +16,7 @@
 import '../src/service-worker';
 import { FakePort } from './port.mock';
 import { mockFetch } from './fetch.mock';
-import { ChunkMsg, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from '../src/shared/rpc';
+import { ChunkMsg, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from '../src/rpc';
 import { ACCESS_TOKEN_KEY, TOKEN_VALIDATED_KEY } from '../src/settings';
 import { BATCH_SIZE } from '../src/github';
 
@@ -93,8 +93,9 @@ describe('service worker: PAT / GraphQL path', () => {
     const chunk = asChunk(msgs[0]);
     expect(chunk.entries).toHaveLength(1);
     expect(chunk.entries[0][0]).toBe('owner/repo');
-    expect(chunk.entries[0][1].ok).toBe(true);
-    expect(chunk.entries[0][1].json?.stargazers_count).toBe(10);
+    const entry = chunk.entries[0][1];
+    expect(entry.kind).toBe('ok');
+    if (entry.kind === 'ok') expect(entry.json.stargazers_count).toBe(10);
     expect(msgs[1].type).toBe('done');
   });
 
@@ -132,7 +133,7 @@ describe('service worker: PAT / GraphQL path', () => {
     const msgs = collectMessages(port);
     expect(msgs).toHaveLength(2);
     expect(msgs[0].type).toBe('chunk');
-    expect(asChunk(msgs[0]).entries[0][1].ok).toBe(true);
+    expect(asChunk(msgs[0]).entries[0][1].kind).toBe('ok');
     expect(msgs[1].type).toBe('done');
   });
 
@@ -165,7 +166,7 @@ describe('service worker: PAT / GraphQL path', () => {
     expect(msgs[0].type).toBe('chunk');
     const entry = asChunk(msgs[0]).entries[0];
     expect(entry[0]).toBe('ghost/repo');
-    expect(entry[1]).toEqual({ ok: false, status: 404 });
+    expect(entry[1]).toEqual({ kind: 'error', status: 404 });
     expect(msgs[1].type).toBe('done');
   });
 
@@ -186,7 +187,7 @@ describe('service worker: PAT / GraphQL path', () => {
 
     const msgs = collectMessages(port);
     const entry = asChunk(msgs[0]).entries[0];
-    expect(entry[1]).toEqual({ ok: false, silent: true });
+    expect(entry[1]).toEqual({ kind: 'silent' });
     expect(msgs[1].type).toBe('done');
   });
 
@@ -308,49 +309,6 @@ describe('service worker: PAT / GraphQL path', () => {
     const firstChunkIdx = msgs.findIndex((m) => m.type === 'chunk');
     const errorIdx = msgs.findIndex((m) => m.type === 'error');
     expect(firstChunkIdx).toBeLessThan(errorIdx);
-  });
-});
-
-describe('service worker: unauthenticated / REST path', () => {
-  beforeEach(async () => {
-    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
-    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
-  });
-
-  test('unauth path fires per-repo chunk messages then done', async () => {
-    mockFetch({
-      json: { forks_count: 1, pushed_at: 'x', stargazers_count: 5, archived: false },
-    });
-
-    const port = openPort();
-    port.postMessage({ nwos: ['owner/repo'] });
-    await flush();
-
-    const msgs = collectMessages(port);
-    // Unauth REST path: one chunk per repo + done.
-    expect(msgs).toHaveLength(2);
-    expect(msgs[0].type).toBe('chunk');
-    const entry = asChunk(msgs[0]).entries[0];
-    expect(entry[0]).toBe('owner/repo');
-    expect(entry[1]).toEqual({
-      ok: true,
-      json: { forks_count: 1, pushed_at: 'x', stargazers_count: 5, archived: false },
-    });
-    expect(msgs[1].type).toBe('done');
-  });
-
-  test('unauth 403 surfaces as per-entry status (not a terminal error)', async () => {
-    mockFetch({ ok: false, status: 403, json: null });
-
-    const port = openPort();
-    port.postMessage({ nwos: ['owner/repo'] });
-    await flush();
-
-    const msgs = collectMessages(port);
-    expect(msgs).toHaveLength(2);
-    const entry = asChunk(msgs[0]).entries[0];
-    expect(entry[1]).toEqual({ ok: false, status: 403 });
-    expect(msgs[1].type).toBe('done');
   });
 });
 

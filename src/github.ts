@@ -21,9 +21,7 @@ export function getStoredRateLimit(): Promise<RateLimitInfo | null> {
   });
 }
 
-export type TokenValidation =
-  | { valid: true }
-  | { valid: false; status?: number; error?: 'network' };
+type TokenValidation = { valid: true } | { valid: false; status?: number; error?: 'network' };
 
 interface HasHeaders {
   headers: { get(name: string): string | null };
@@ -48,17 +46,25 @@ export async function validateAccessToken(token: string): Promise<TokenValidatio
   }
 }
 
+// Shared rate-limit writer. Both the REST header path and the GraphQL
+// body path end here so getStoredRateLimit() consumers don't need to
+// know which source produced the data. The REST path additionally
+// auto-invalidates the token flag when the observed limit looks unauth
+// (see captureRateLimit); that branch lives in the caller because
+// GraphQL responses always reflect an authenticated tier and shouldn't
+// trigger the downgrade check.
+function writeRateLimit(limit: number, remaining: number): void {
+  chrome.storage.local.set({
+    [RATE_LIMIT_KEY]: { limit, remaining },
+  });
+}
+
 function captureRateLimit(res: HasHeaders): void {
   const limit = res.headers.get('x-ratelimit-limit');
   const remaining = res.headers.get('x-ratelimit-remaining');
   if (limit !== null && remaining !== null) {
     const limitNum = Number(limit);
-    chrome.storage.local.set({
-      [RATE_LIMIT_KEY]: {
-        limit: limitNum,
-        remaining: Number(remaining),
-      },
-    });
+    writeRateLimit(limitNum, Number(remaining));
     // If the observed limit is below the authenticated tier (5000),
     // the current token is not working. Auto-invalidate the persisted
     // "validated" flag so the popup shows the honest state on next open.
@@ -76,12 +82,7 @@ function captureRateLimitFromGraphQL(body: unknown): void {
   const rateLimit = (body as { data?: { rateLimit?: { limit?: number; remaining?: number } } })
     ?.data?.rateLimit;
   if (rateLimit && typeof rateLimit.limit === 'number' && typeof rateLimit.remaining === 'number') {
-    chrome.storage.local.set({
-      [RATE_LIMIT_KEY]: {
-        limit: rateLimit.limit,
-        remaining: rateLimit.remaining,
-      },
-    });
+    writeRateLimit(rateLimit.limit, rateLimit.remaining);
   }
 }
 
@@ -93,12 +94,18 @@ interface RepoInfo {
   readonly committed_date?: string;
 }
 
-export interface RepoResponse {
-  readonly ok: boolean;
-  readonly status?: number;
-  readonly json?: RepoInfo;
-  readonly silent?: boolean;
-}
+// Discriminated union over the three states a repo lookup can terminate
+// in: a populated payload, a known HTTP/status error (404 / 403 / else),
+// or a silent skip (FORBIDDEN on a PAT without scope — we don't want to
+// render anything at all, just remember not to retry this scan).
+//
+// Callers should `switch (res.kind)` rather than flag-checking, so
+// TypeScript's exhaustiveness checker catches any branch that forgets a
+// case if we ever add a fourth.
+export type RepoResponse =
+  | { readonly kind: 'ok'; readonly json: RepoInfo }
+  | { readonly kind: 'error'; readonly status?: number }
+  | { readonly kind: 'silent' };
 
 // Transform a fetch Response into something minimal that can be stored
 // in a LocalStorageArea. Only extracts the fields RepoInfo declares —
@@ -116,12 +123,12 @@ async function marshallableResponse(res: Response): Promise<RepoResponse> {
       stargazers_count: raw.stargazers_count,
       archived: raw.archived === true,
     };
-    return { ok: true, json };
+    return { kind: 'ok', json };
   }
   if (status === 404) {
-    return { ok: false, status };
+    return { kind: 'error', status };
   }
-  throw { ok: false, status };
+  throw { status };
 }
 
 // Simpler REST fetcher — no Authorization header, since the dispatcher
@@ -201,7 +208,7 @@ export async function fetchGraphQLBatch(
     if (res.status === 401) {
       chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
     }
-    throw { ok: false, status: res.status };
+    throw { status: res.status };
   }
 
   const body = await res.json();
@@ -238,7 +245,7 @@ export async function fetchGraphQLBatch(
         archived: repo.isArchived === true,
         committed_date: repo.defaultBranchRef?.target?.committedDate,
       };
-      result.set(nwo, { ok: true, json });
+      result.set(nwo, { kind: 'ok', json });
     }
   });
 
@@ -265,12 +272,12 @@ export async function fetchGraphQLBatch(
       const nwo = nwos[idx];
       if (!nwo) continue;
       if (err.type === 'NOT_FOUND') {
-        result.set(nwo, { ok: false, status: 404 });
+        result.set(nwo, { kind: 'error', status: 404 });
       } else if (err.type === 'FORBIDDEN') {
-        result.set(nwo, { ok: false, silent: true });
+        result.set(nwo, { kind: 'silent' });
       } else {
         console.error('sneetches: GraphQL error', err);
-        result.set(nwo, { ok: false, silent: true });
+        result.set(nwo, { kind: 'silent' });
       }
     }
   }
@@ -280,7 +287,7 @@ export async function fetchGraphQLBatch(
   // entries (e.g., path-less errors or partial responses).
   for (const nwo of nwos) {
     if (!result.has(nwo)) {
-      result.set(nwo, { ok: false, silent: true });
+      result.set(nwo, { kind: 'silent' });
     }
   }
 
@@ -301,6 +308,9 @@ export async function fetchGraphQLBatch(
 // 10 is the sweet spot: 52% faster than 50, uses 71 rate-limit points
 // on the worst-case page (vs 15 at 50), and HTTP/2 multiplexes the
 // requests on a single TCP connection.
+// @internal — exported for unit tests (tests/github.test.ts,
+// tests/service-worker.test.ts). Keep exported even if no prod consumer
+// imports it, so the test assertions stay in sync.
 export const BATCH_SIZE = 10;
 
 // Streaming repo-data fetcher. Called by the service worker's port
@@ -388,7 +398,7 @@ export async function fetchRepoDataStreaming(
         // Only cache 200 OK and 404 responses. Don't cache 403s — they
         // represent transient rate-limit state and should retry next
         // scan.
-        if (resp.ok || resp.status === 404) {
+        if (resp.kind === 'ok' || (resp.kind === 'error' && resp.status === 404)) {
           bulkWriteCache(map, CACHE_VERSION);
         }
         onResults(map);
@@ -397,7 +407,7 @@ export async function fetchRepoDataStreaming(
           typeof err === 'object' && err !== null && 'status' in err
             ? (err as { status?: number }).status
             : undefined;
-        onResults(new Map([[nwo, { ok: false, status }]]));
+        onResults(new Map([[nwo, { kind: 'error', status }]]));
       }
     })
   );

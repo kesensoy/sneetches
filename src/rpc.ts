@@ -12,7 +12,7 @@
 // with an 'error' message; a clean run ends with 'done'. Both sides
 // disconnect the port after 'done' or 'error'.
 
-import type { RepoResponse } from '../github';
+import type { RepoResponse } from './github';
 
 export const SNEETCHES_PORT_NAME = 'sneetches:fetchRepos';
 

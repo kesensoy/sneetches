@@ -13,11 +13,9 @@ Test in Chrome:
 1. `npm run dev`
 2. Open `chrome://extensions/`, enable "Developer mode", click "Load unpacked", select `./build`.
 
-Use Python to run a local HTTP server, and open the `./example/sampler.html`
-sampler in the default browser: `npm run sampler`.
-
-This leaves the Python server running. Run `lsof -i :8000` to find the PID and
-`kill` it.
+To exercise the extension against a known set of repo links, open
+`examples/sampler.html` in a browser (e.g. via `python3 -m http.server` in the
+repo root, then visit `http://localhost:8000/examples/sampler.html`).
 
 ## Build (Chrome)
 

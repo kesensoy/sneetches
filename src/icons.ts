@@ -29,35 +29,34 @@ const STAR_FILL_PATH =
 const UNLINK_PATH =
   'M12.914 5.914a2 2 0 0 0-2.828-2.828l-.837.837a.75.75 0 1 1-1.06-1.061l.836-.837a3.5 3.5 0 1 1 4.95 4.95l-.195.194a.75.75 0 0 1-1.06-1.06l.194-.195Zm-1.87 3.482a.759.759 0 0 1-.07.079c-.63.63-1.468 1.108-2.343 1.263-.89.159-1.86-.017-2.606-.763a.75.75 0 1 1 1.06-1.06c.329.327.767.438 1.284.347.493-.088 1.018-.36 1.445-.752l-1.247-.897a.709.709 0 0 1-.01-.008l-.295-.212c-.94-.597-1.984-.499-2.676.193l-2.5 2.5a2 2 0 1 0 2.828 2.828l.837-.836a.75.75 0 0 1 1.06 1.06l-.836.837a3.5 3.5 0 0 1-4.95-4.95l2.5-2.5a3.472 3.472 0 0 1 1.354-.848L2.312 3.109a.75.75 0 0 1 .876-1.218l5.93 4.27c.115.074.226.155.335.24l6.235 4.49a.75.75 0 0 1-.876 1.218l-3.768-2.713Z';
 
-function svg(path: string, className: string): string {
-  const safeClass = className.replace(/[^\w\s-]/g, '');
-  return `<svg class="${safeClass}" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="${path}"/></svg>`;
+function svg(path: string): string {
+  return `<svg class="sneetch-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="${path}"/></svg>`;
 }
 
-export function archiveIcon(className = 'sneetch-icon'): string {
-  return svg(ARCHIVE_PATH, className);
+export function archiveIcon(): string {
+  return svg(ARCHIVE_PATH);
 }
 
-export function bugIcon(className = 'sneetch-icon'): string {
-  return svg(BUG_PATH, className);
+export function bugIcon(): string {
+  return svg(BUG_PATH);
 }
 
-export function clockIcon(className = 'sneetch-icon'): string {
-  return svg(CLOCK_PATH, className);
+export function clockIcon(): string {
+  return svg(CLOCK_PATH);
 }
 
-export function hourglassIcon(className = 'sneetch-icon'): string {
-  return svg(HOURGLASS_PATH, className);
+export function hourglassIcon(): string {
+  return svg(HOURGLASS_PATH);
 }
 
-export function repoForkedIcon(className = 'sneetch-icon'): string {
-  return svg(REPO_FORKED_PATH, className);
+export function repoForkedIcon(): string {
+  return svg(REPO_FORKED_PATH);
 }
 
-export function starIcon(className = 'sneetch-icon', filled = false): string {
-  return filled ? svg(STAR_FILL_PATH, className) : svg(STAR_PATH, className);
+export function starIcon(filled = false): string {
+  return filled ? svg(STAR_FILL_PATH) : svg(STAR_PATH);
 }
 
-export function unlinkIcon(className = 'sneetch-icon'): string {
-  return svg(UNLINK_PATH, className);
+export function unlinkIcon(): string {
+  return svg(UNLINK_PATH);
 }

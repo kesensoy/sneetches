@@ -43,68 +43,49 @@ describe('settingsP', () => {
     });
   });
 
-  test('star style defaults to outline', async () => {
-    const settings = await getSettings();
-    expect(settings.starStyle).toBe('outline');
-  });
-
-  test('honors stored star style', async () => {
-    await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ star_style: 'filled' }, () => resolve());
+  describe.each([
+    {
+      storageKey: 'star_style',
+      settingKey: 'starStyle',
+      defaultValue: 'outline',
+      overrideValue: 'filled',
+    },
+    {
+      storageKey: 'advanced_open',
+      settingKey: 'advancedOpen',
+      defaultValue: false,
+      overrideValue: true,
+    },
+    {
+      storageKey: 'token_validated',
+      settingKey: 'tokenValidated',
+      defaultValue: false,
+      overrideValue: true,
+    },
+    {
+      storageKey: 'has_starred',
+      settingKey: 'hasStarred',
+      defaultValue: false,
+      overrideValue: true,
+    },
+    {
+      storageKey: 'toolbar_icon',
+      settingKey: 'toolbarIcon',
+      defaultValue: 'gray',
+      overrideValue: 'colorful',
+    },
+  ] as const)('$storageKey', ({ storageKey, settingKey, defaultValue, overrideValue }) => {
+    test(`defaults to ${JSON.stringify(defaultValue)}`, async () => {
+      const settings = await getSettings();
+      expect(settings[settingKey]).toBe(defaultValue);
     });
-    const settings = await getSettings();
-    expect(settings.starStyle).toBe('filled');
-  });
 
-  test('advanced_open defaults to false', async () => {
-    const settings = await getSettings();
-    expect(settings.advancedOpen).toBe(false);
-  });
-
-  test('honors stored advanced_open', async () => {
-    await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ advanced_open: true }, () => resolve());
+    test(`honors stored value ${JSON.stringify(overrideValue)}`, async () => {
+      await new Promise<void>((resolve) => {
+        chrome.storage.sync.set({ [storageKey]: overrideValue }, () => resolve());
+      });
+      const settings = await getSettings();
+      expect(settings[settingKey]).toBe(overrideValue);
     });
-    const settings = await getSettings();
-    expect(settings.advancedOpen).toBe(true);
-  });
-
-  test('token_validated defaults to false', async () => {
-    const settings = await getSettings();
-    expect(settings.tokenValidated).toBe(false);
-  });
-
-  test('honors stored token_validated', async () => {
-    await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ token_validated: true }, () => resolve());
-    });
-    const settings = await getSettings();
-    expect(settings.tokenValidated).toBe(true);
-  });
-
-  test('has_starred defaults to false', async () => {
-    const settings = await getSettings();
-    expect(settings.hasStarred).toBe(false);
-  });
-
-  test('honors stored has_starred', async () => {
-    await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ has_starred: true }, () => resolve());
-    });
-    const settings = await getSettings();
-    expect(settings.hasStarred).toBe(true);
-  });
-
-  test('toolbar_icon defaults to gray', async () => {
-    const settings = await getSettings();
-    expect(settings.toolbarIcon).toBe('gray');
-  });
-
-  test('honors stored toolbar_icon', async () => {
-    await new Promise<void>((resolve) => {
-      chrome.storage.sync.set({ toolbar_icon: 'colorful' }, () => resolve());
-    });
-    const settings = await getSettings();
-    expect(settings.toolbarIcon).toBe('colorful');
   });
 });
