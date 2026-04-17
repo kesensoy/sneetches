@@ -32,6 +32,7 @@ describe('restoreOptions', () => {
         <input id="show-stars" type="checkbox">
         <input id="show-forks" type="checkbox">
         <input id="show-update" type="checkbox">
+        <div id="token-section-title">GitHub Access Token</div>
         <div id="token-collapsed" hidden>
           <span id="token-dots">••••</span>
           <button id="token-edit">edit</button>
@@ -169,6 +170,9 @@ describe('restoreOptions', () => {
 
     expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(false);
     expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(true);
+    // The section title is hidden in the collapsed state so the compact
+    // status row actually reclaims vertical space.
+    expect(document.getElementById('token-section-title')?.hasAttribute('hidden')).toBe(true);
   });
 
   test('edit button re-expands the token view', async () => {
@@ -181,9 +185,23 @@ describe('restoreOptions', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     document.getElementById('token-edit')!.click();
+    await new Promise((r) => setTimeout(r, 0));
 
     expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(true);
     expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(false);
+    expect(document.getElementById('token-section-title')?.hasAttribute('hidden')).toBe(false);
+
+    // Edit is an explicit intent to change — the Test button's visual state
+    // and token_validated in storage must both reset so the button/storage
+    // invariant (see wireTokenEdit comment) holds across a close+reopen.
+    const testBtn = document.getElementById('token-test')!;
+    expect(testBtn.textContent).toBe('Test');
+    expect(testBtn.classList.contains('btn--primary')).toBe(true);
+
+    const items = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['token_validated'], (v) => resolve(v))
+    );
+    expect(items.token_validated).toBe(false);
   });
 
   test('successful Test from expanded view re-collapses', async () => {

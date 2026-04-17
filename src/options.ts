@@ -282,11 +282,21 @@ function wireTokenEdit() {
   if (!editBtn) return;
   editBtn.addEventListener('click', () => {
     setTokenViewCollapsed(false);
-    // Expanded view uniformly shows the help text (pre-validation, post-fail,
-    // and now post-edit-click). token_validated isn't flipped here — just the
-    // UI reveals the PAT-creation guidance in case the user clicked edit to
-    // regenerate the token.
     updateTokenHelpVisibility(false);
+    // Clicking "edit" is an explicit intent to change — reset the Test
+    // button visual AND flip token_validated to false in storage so they
+    // stay in sync. The in-memory button-state-as-proxy is load-bearing
+    // for the input handler's de-dup guard (it short-circuits keystrokes
+    // when the button is already primary); decoupling would let a user
+    // type a new token mid-edit, close the popup, and have the next open
+    // erroneously render the collapsed view with the unvalidated partial
+    // token.
+    const testBtn = document.getElementById('token-test');
+    if (testBtn) {
+      testBtn.textContent = 'Test';
+      testBtn.className = 'btn btn--primary';
+    }
+    chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
     // Focus the input so the user can immediately start typing a new value
     // without an extra click. Tests that don't render the full popup (e.g.
     // jsdom variants) still tolerate the focus call as a no-op.
