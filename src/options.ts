@@ -93,6 +93,23 @@ function updateTokenHelpVisibility(validated: boolean) {
   }
 }
 
+// Toggle between the compact "✓ GitHub token valid" status row and the full
+// input + Test button. Called from restoreOptions on load and from the Test
+// button success path. Both elements stay in the DOM so the access-token
+// input is always present for the existing input/eye/test handlers + tests.
+function setTokenViewCollapsed(collapsed: boolean) {
+  const collapsedEl = document.getElementById('token-collapsed');
+  const expandedEl = document.getElementById('token-expanded');
+  if (!collapsedEl || !expandedEl) return;
+  if (collapsed) {
+    collapsedEl.removeAttribute('hidden');
+    expandedEl.setAttribute('hidden', '');
+  } else {
+    collapsedEl.setAttribute('hidden', '');
+    expandedEl.removeAttribute('hidden');
+  }
+}
+
 function applyStarredState(isStarred: boolean) {
   const cta = document.querySelector('.star-cta');
   if (!cta) return;
@@ -147,12 +164,15 @@ function restoreOptions() {
 
       inputElement('access-token').value = accessToken || '';
 
-      // Restore Test button state based on persisted token_validated flag
+      // Restore Test button state based on persisted token_validated flag.
+      // Also drive the collapsed/expanded view: validated + token-present →
+      // compact status row; otherwise the full input + Test button.
       const testBtn = document.getElementById('token-test');
       if (testBtn && tokenValidated) {
         testBtn.textContent = '✓ Valid';
         testBtn.className = 'btn btn--ok';
       }
+      setTokenViewCollapsed(Boolean(tokenValidated && accessToken));
 
       updateTokenHelpVisibility(tokenValidated);
       applyStarredState(hasStarred);
@@ -221,6 +241,7 @@ function wireTokenTest() {
         btn.className = 'btn btn--ok';
         chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true });
         updateTokenHelpVisibility(true);
+        setTokenViewCollapsed(true);
       } else {
         btn.textContent = '✗ Invalid';
         btn.className = 'btn btn--err';
@@ -248,6 +269,18 @@ function wireTokenTest() {
     btn.className = 'btn btn--primary';
     chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
     updateTokenHelpVisibility(false);
+  });
+}
+
+function wireTokenEdit() {
+  const editBtn = document.getElementById('token-edit');
+  if (!editBtn) return;
+  editBtn.addEventListener('click', () => {
+    setTokenViewCollapsed(false);
+    // Focus the input so the user can immediately start typing a new value
+    // without an extra click. Tests that don't render the full popup (e.g.
+    // jsdom variants) still tolerate the focus call as a no-op.
+    inputElement('access-token').focus();
   });
 }
 
@@ -383,6 +416,7 @@ document.addEventListener('DOMContentLoaded', () => {
   addInputEventListeners();
   wireTokenEye();
   wireTokenTest();
+  wireTokenEdit();
   wireStarStylePreview();
   wireAdvancedToggle();
   wireClearCache();

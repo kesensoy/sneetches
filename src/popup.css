@@ -320,6 +320,39 @@ body.star-style--filled .star-cta-icon--filled { display: inline-block; }
   color: var(--err);
 }
 
+/* Collapsed token status row — shown in place of the input + Test button
+   when the token has already been validated. Sits in the same section
+   anchor as .token-field so the popup doesn't jump when toggling. */
+.token-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+.token-collapsed-dots {
+  font: 14px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+}
+.token-collapsed-status {
+  flex: 1;
+  font: 500 12px/1 -apple-system, sans-serif;
+  color: var(--ok);
+}
+.token-edit {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: 500 11px/1 -apple-system, sans-serif;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.token-edit:hover { background: var(--surface-2); }
+
 .token-help {
   margin-top: 8px;
   margin-bottom: 0;

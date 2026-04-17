@@ -22,6 +22,7 @@
     "128": "images/icon128.png"
   },
   "background": {
+    "scripts": ["service-worker.js"],
     "service_worker": "service-worker.js",
     "type": "module"
   },

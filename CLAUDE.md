@@ -4,7 +4,7 @@
 Chrome/Firefox browser extension that adds GitHub repo stats (stars, forks, last pushed date) inline next to GitHub repo links on any webpage. Manifest V3, TypeScript, Webpack-bundled.
 
 ## Current state
-- Version 1.1.7 in `package.json` / `src/manifest.json`; branch `1.1.8` for structural cleanup work.
+- Version 1.1.8 in `package.json` / `src/manifest.json`. 1.1.8 merged to main and uploaded to both stores.
 - Full Jest suite: 219 tests passing across 8 suites.
 
 ## Technology Stack
@@ -42,7 +42,7 @@ Invariants organized by subsystem. These are load-bearing — future work must n
 - `host_permissions` is tight to `https://api.github.com/*`, NOT `<all_urls>`. The content script talks through the service worker; no host access needed on host pages.
 - `permissions` is `["storage"]` only.
 - `content_scripts.run_at` is `"document_start"`. This is what makes the preload cheap — the content script runs before the HTML parser finishes, giving `readAllCachedRepos` a main-thread window before React / 1Password / GitHub chrome start contending. Moving it to `document_idle` would reintroduce the multi-second storage-read stalls we spent 1.1.3–1.1.4 eliminating.
-- `background` SW uses `"type": "module"`. Firefox 121+ (Dec 2023) supports this; older Firefox is out of scope.
+- `background` declares **both** `scripts: ["service-worker.js"]` and `service_worker: "service-worker.js"` with `"type": "module"`. Chrome reads `service_worker` and ignores `scripts`; Firefox reads `scripts` and ignores `service_worker`. The dual-key is **required by AMO's static validator** (it rejects `service_worker`-only manifests on listed submission), even though Firefox 121+'s runtime accepts `service_worker` directly. Don't drop `scripts` thinking the runtime support is enough — the validator runs first.
 - No `key` field on manifest.json — adding one would conflict with the Chrome Web Store extension ID.
 
 ### Cache layer (`src/cache.ts`)

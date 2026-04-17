@@ -82,7 +82,16 @@
 
   <section class="popup-section">
     <div class="section-title">GitHub Access Token</div>
-    <div class="token-field">
+    <!-- Collapsed status row — shown when token_validated === true. Both the
+         expanded and collapsed elements stay in the DOM; restoreOptions picks
+         which to reveal so the access-token input is always queryable for
+         tests + the existing input/eye/test handlers. -->
+    <div class="token-collapsed" id="token-collapsed" hidden>
+      <span class="token-collapsed-dots" aria-hidden="true">••••</span>
+      <span class="token-collapsed-status">✓ GitHub token valid</span>
+      <button type="button" class="token-edit" id="token-edit">edit</button>
+    </div>
+    <div class="token-field" id="token-expanded">
       <div class="token-input-wrap">
         <input class="token-input" id="access-token" type="password" placeholder="ghp_…">
         <button type="button" class="token-eye" id="token-eye" title="Show token">
