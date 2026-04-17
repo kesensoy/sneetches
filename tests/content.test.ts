@@ -56,9 +56,16 @@ const portFetcherMock = jest.fn<Promise<PortFetcherResult>, [string[], ChunkCb]>
 // with the given fixed response, delivering a single chunk + ok:true.
 // Equivalent to the old mockBatchRespondsWith that stubbed
 // getRepoDataMany's Map return.
-// Helper: wait for MutationObserver debounce + an extra tick for the
-// microtask from the port fetcher's then() to flush. Debounce is 300ms.
-const waitForScanner = () => new Promise((r) => setTimeout(r, 400));
+// Helper: wait for a scan to complete. The scanner's leading-edge path
+// fires updateAnnotationsFromSettings() as a microtask directly from the
+// MO callback when a github.com anchor is added, so in practice the scan
+// + its async settings read + port fetcher call + paint all resolve
+// within a few microtask ticks. 50ms is comfortably longer than that
+// resolution chain while being 8x cheaper than waiting out the 300ms
+// rolling debounce. Tests that specifically need to wait PAST the
+// leading-edge 100ms throttle or the debounce/max-wait timers inline
+// their own larger setTimeout rather than use this helper.
+const waitForScanner = () => new Promise((r) => setTimeout(r, 50));
 
 // Helper: build a RepoResponse with a given star count (defaults to 1).
 // Used across multiple describe blocks for seeding in-memory cache, port
@@ -842,8 +849,10 @@ describe('updateLinks silent-skip handling', () => {
 
     // Need to trigger a scan
     startLinkScanner();
-    // Wait for the debounce + async fetch resolution
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // Anchor is already in DOM before startLinkScanner, so the initial
+    // updateAnnotationsFromSettings() call processes it via microtask —
+    // no debounce needed.
+    await waitForScanner();
 
     const anchor = document.querySelector('a');
     expect(anchor?.querySelector('.data-sneetch-extension')).toBeNull();
@@ -860,13 +869,14 @@ describe('updateLinks silent-skip handling', () => {
     mockBatchRespondsWith({ kind: 'silent' });
 
     startLinkScanner();
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await waitForScanner();
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
 
     // Trigger a second scan via a new mutation. The silent-skipped anchor
     // must not be re-fetched — findUnannotatedRepoLinks filters it out,
     // so updateLinks sees pending.length === 0 and returns without
-    // calling the port fetcher again.
+    // calling the port fetcher again. A non-anchor mutation goes through
+    // the debounce path (not leading-edge), so wait past the 300ms debounce.
     const marker = document.createElement('div');
     document.body.appendChild(marker);
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -917,7 +927,7 @@ describe('updateLinks batching', () => {
       <a href="https://github.com/anthropics/claude-code"></a>
     `;
     startLinkScanner();
-    await new Promise((r) => setTimeout(r, 400));
+    await waitForScanner();
 
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
     expect(portFetcherMock).toHaveBeenCalledWith(
@@ -934,7 +944,7 @@ describe('updateLinks batching', () => {
       <a href="https://github.com/octocat/hello">three</a>
     `;
     startLinkScanner();
-    await new Promise((r) => setTimeout(r, 400));
+    await waitForScanner();
 
     // Only one unique nwo, so the batch call receives an array of 1.
     expect(portFetcherMock).toHaveBeenCalledTimes(1);

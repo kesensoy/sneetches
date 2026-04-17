@@ -46,17 +46,25 @@ export async function validateAccessToken(token: string): Promise<TokenValidatio
   }
 }
 
+// Shared rate-limit writer. Both the REST header path and the GraphQL
+// body path end here so getStoredRateLimit() consumers don't need to
+// know which source produced the data. The REST path additionally
+// auto-invalidates the token flag when the observed limit looks unauth
+// (see captureRateLimit); that branch lives in the caller because
+// GraphQL responses always reflect an authenticated tier and shouldn't
+// trigger the downgrade check.
+function writeRateLimit(limit: number, remaining: number): void {
+  chrome.storage.local.set({
+    [RATE_LIMIT_KEY]: { limit, remaining },
+  });
+}
+
 function captureRateLimit(res: HasHeaders): void {
   const limit = res.headers.get('x-ratelimit-limit');
   const remaining = res.headers.get('x-ratelimit-remaining');
   if (limit !== null && remaining !== null) {
     const limitNum = Number(limit);
-    chrome.storage.local.set({
-      [RATE_LIMIT_KEY]: {
-        limit: limitNum,
-        remaining: Number(remaining),
-      },
-    });
+    writeRateLimit(limitNum, Number(remaining));
     // If the observed limit is below the authenticated tier (5000),
     // the current token is not working. Auto-invalidate the persisted
     // "validated" flag so the popup shows the honest state on next open.
@@ -74,12 +82,7 @@ function captureRateLimitFromGraphQL(body: unknown): void {
   const rateLimit = (body as { data?: { rateLimit?: { limit?: number; remaining?: number } } })
     ?.data?.rateLimit;
   if (rateLimit && typeof rateLimit.limit === 'number' && typeof rateLimit.remaining === 'number') {
-    chrome.storage.local.set({
-      [RATE_LIMIT_KEY]: {
-        limit: rateLimit.limit,
-        remaining: rateLimit.remaining,
-      },
-    });
+    writeRateLimit(rateLimit.limit, rateLimit.remaining);
   }
 }
 
