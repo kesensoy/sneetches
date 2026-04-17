@@ -15,6 +15,7 @@
     }
   },
   "host_permissions": ["https://api.github.com/*"],
+  "optional_host_permissions": ["*://*/*"],
   "permissions": ["storage"],
   "icons": {
     "48": "images/icon128.png",
