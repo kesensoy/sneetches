@@ -81,8 +81,28 @@
   </section>
 
   <section class="popup-section">
-    <div class="section-title">GitHub Access Token</div>
-    <div class="token-field">
+    <div class="section-title" id="token-section-title">GitHub Access Token</div>
+    <!-- Collapsed status row — shown when token_validated === true. Both the
+         expanded and collapsed elements stay in the DOM; restoreOptions picks
+         which to reveal so the access-token input is always queryable for
+         tests + the existing input/eye/test handlers. The section title is
+         hidden in the collapsed state (the "✓ GitHub token valid" copy is
+         self-describing, so the redundant uppercase header just eats vertical
+         space without adding information). -->
+    <!-- Token tail (dimmed dots + last 4 chars) is populated by
+         setTokenViewCollapsed() when the view flips to collapsed. The
+         reveal span animates out leftward from the check on row hover;
+         :has(.token-edit:hover) suppresses the reveal when the user is
+         aiming at edit instead. -->
+    <div class="token-collapsed" id="token-collapsed" hidden>
+      <span class="token-collapsed-token" id="token-collapsed-token"></span>
+      <span class="token-collapsed-group">
+        <span class="token-collapsed-reveal" aria-hidden="true">GitHub token valid</span>
+        <svg class="token-collapsed-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" role="img"><title>GitHub token valid</title><path d="M3 8l3.5 3.5L13 5"/></svg>
+      </span>
+      <button type="button" class="token-edit" id="token-edit">edit</button>
+    </div>
+    <div class="token-field" id="token-expanded">
       <div class="token-input-wrap">
         <input class="token-input" id="access-token" type="password" placeholder="ghp_…">
         <button type="button" class="token-eye" id="token-eye" title="Show token">

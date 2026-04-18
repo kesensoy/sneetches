@@ -32,9 +32,20 @@ describe('restoreOptions', () => {
         <input id="show-stars" type="checkbox">
         <input id="show-forks" type="checkbox">
         <input id="show-update" type="checkbox">
-        <input id="access-token" type="password">
-        <button id="token-eye"></button>
-        <button id="token-test">Test</button>
+        <div id="token-section-title">GitHub Access Token</div>
+        <div id="token-collapsed" hidden>
+          <span id="token-collapsed-token"></span>
+          <span class="token-collapsed-group">
+            <span class="token-collapsed-reveal" aria-hidden="true">GitHub token valid</span>
+            <svg class="token-collapsed-check" role="img"><title>GitHub token valid</title></svg>
+          </span>
+          <button id="token-edit">edit</button>
+        </div>
+        <div id="token-expanded">
+          <input id="access-token" type="password">
+          <button id="token-eye"></button>
+          <button id="token-test">Test</button>
+        </div>
         <p id="token-help"></p>
         <span id="saved-indicator" hidden></span>
         <a class="star-cta" href="#">
@@ -150,6 +161,109 @@ describe('restoreOptions', () => {
     const btn = document.getElementById('token-test')!;
     expect(btn.textContent).toMatch(/Invalid/);
     expect(btn.classList.contains('btn--err')).toBe(true);
+  });
+
+  test('collapsed view renders on load when token is present and validated', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_valid', token_validated: true }, () =>
+        resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(false);
+    expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(true);
+    // The section title is hidden in the collapsed state so the compact
+    // status row actually reclaims vertical space.
+    expect(document.getElementById('token-section-title')?.hasAttribute('hidden')).toBe(true);
+  });
+
+  test('collapsed view renders dimmed dots + last-4 of the stored token', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set(
+        { access_token: 'ghp_FAKE_TOKEN_xyz_abcd', token_validated: true },
+        () => resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const tokenEl = document.getElementById('token-collapsed-token');
+    const spans = tokenEl?.querySelectorAll('span');
+    expect(spans).toHaveLength(2);
+    expect(spans![0].textContent).toBe('••••••••');
+    expect(spans![0].classList.contains('mute')).toBe(true);
+    expect(spans![1].textContent).toBe('abcd');
+  });
+
+  test('collapsed view exposes the status to screen readers via the SVG title', () => {
+    // The reveal span is aria-hidden; the ✓ SVG is the only a11y surface
+    // for "GitHub token valid". A future refactor that drops the inner
+    // <title> would silently break SR users — hence this lock-in.
+    const svg = document.querySelector('.token-collapsed-check');
+    expect(svg?.getAttribute('role')).toBe('img');
+    expect(svg?.querySelector('title')?.textContent).toBe('GitHub token valid');
+  });
+
+  test('collapsed view treats fine-grained tokens identically (no prefix shown)', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set(
+        { access_token: 'github_pat_FAKE_TOKEN_wxyz', token_validated: true },
+        () => resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const spans = document.getElementById('token-collapsed-token')?.querySelectorAll('span');
+    expect(spans).toHaveLength(2);
+    expect(spans![0].textContent).toBe('••••••••');
+    expect(spans![1].textContent).toBe('wxyz');
+  });
+
+  test('edit button re-expands the token view', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ access_token: 'ghp_valid', token_validated: true }, () =>
+        resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    document.getElementById('token-edit')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(true);
+    expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(false);
+    expect(document.getElementById('token-section-title')?.hasAttribute('hidden')).toBe(false);
+    // Help text should become visible — consistent with every other path
+    // that opens the expanded view (pre-validation, post-fail, edit-click).
+    expect(document.getElementById('token-help')?.hasAttribute('hidden')).toBe(false);
+
+    // Edit is an explicit intent to change — the Test button's visual state
+    // and token_validated in storage must both reset so the button/storage
+    // invariant (see wireTokenEdit comment) holds across a close+reopen.
+    const testBtn = document.getElementById('token-test')!;
+    expect(testBtn.textContent).toBe('Test');
+    expect(testBtn.classList.contains('btn--primary')).toBe(true);
+
+    const items = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get(['token_validated'], (v) => resolve(v))
+    );
+    expect(items.token_validated).toBe(false);
+  });
+
+  test('successful Test from expanded view re-collapses', async () => {
+    (validateAccessToken as jest.Mock).mockResolvedValue({ valid: true });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+
+    inputElement('access-token').value = 'ghp_valid';
+    document.getElementById('token-test')!.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(document.getElementById('token-collapsed')?.hasAttribute('hidden')).toBe(false);
+    expect(document.getElementById('token-expanded')?.hasAttribute('hidden')).toBe(true);
   });
 
   test('selecting filled star style adds star-style--filled class to body', () => {

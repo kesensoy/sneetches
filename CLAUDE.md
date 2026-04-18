@@ -4,8 +4,8 @@
 Chrome/Firefox browser extension that adds GitHub repo stats (stars, forks, last pushed date) inline next to GitHub repo links on any webpage. Manifest V3, TypeScript, Webpack-bundled.
 
 ## Current state
-- Version 1.1.7 in `package.json` / `src/manifest.json`; branch `1.1.8` for structural cleanup work.
-- Full Jest suite: 219 tests passing across 8 suites.
+- Version 1.1.9 in `package.json` / `src/manifest.json`. 1.1.8 is live in both stores; 1.1.9 adds the collapsed-PAT popup view.
+- Full Jest suite: 222 tests passing across 8 suites.
 
 ## Technology Stack
 - **Node.js** 20+ (fnm recommended), **TypeScript** 5.7.2, **Webpack** 5.97.1
@@ -42,7 +42,7 @@ Invariants organized by subsystem. These are load-bearing — future work must n
 - `host_permissions` is tight to `https://api.github.com/*`, NOT `<all_urls>`. The content script talks through the service worker; no host access needed on host pages.
 - `permissions` is `["storage"]` only.
 - `content_scripts.run_at` is `"document_start"`. This is what makes the preload cheap — the content script runs before the HTML parser finishes, giving `readAllCachedRepos` a main-thread window before React / 1Password / GitHub chrome start contending. Moving it to `document_idle` would reintroduce the multi-second storage-read stalls we spent 1.1.3–1.1.4 eliminating.
-- `background` SW uses `"type": "module"`. Firefox 121+ (Dec 2023) supports this; older Firefox is out of scope.
+- `src/manifest.json`'s `background` declares **only** `service_worker` + `"type": "module"` — this is the Chrome-safe shape. The Firefox build script (`scripts/patch-firefox-manifest.js`, wired into `build:firefox`) post-processes `build/manifest.json` to ADD `"scripts": ["service-worker.js"]` alongside, because AMO's static validator rejects MV3 manifests that only declare `service_worker` (even though Firefox 121+'s runtime accepts it directly). The two keys can NOT coexist in the shipped Chrome artifact — Chrome emits a user-visible *"'background.scripts' requires manifest version of 2 or lower"* warning when both are present. Source of truth: Chrome-clean; Firefox gets the patch at build time only. After `web-ext build` zips the Firefox artifact, `build:firefox` runs `patch-firefox-manifest.js --revert` to restore `build/` to Chrome-clean, so `build/` stays safe to load unpacked in Chrome for dev testing afterward.
 - No `key` field on manifest.json — adding one would conflict with the Chrome Web Store extension ID.
 
 ### Cache layer (`src/cache.ts`)

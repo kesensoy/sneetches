@@ -320,6 +320,106 @@ body.star-style--filled .star-cta-icon--filled { display: inline-block; }
   color: var(--err);
 }
 
+/* Collapsed token status row — shown in place of the input + Test button
+   when the token has already been validated. Outer chrome (padding 4×9,
+   11px font, 6px border-radius) is patterned after .segmented's label
+   for visual compactness; final row height (~32px) is driven by
+   .token-edit's 24px WCAG 2.5.8 hit-target minimum rather than the
+   chrome itself. Still about a third shorter than the expanded input +
+   Test-button state. */
+.token-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+.token-collapsed-token {
+  font: 11.5px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.token-collapsed-token .mute {
+  color: var(--text-dim);
+  letter-spacing: 1.5px;
+}
+/* flex:1 + justify-end parks the check at the right edge; the reveal
+   sits to its left at max-width:0. On row hover it grows back toward
+   the token — "GitHub token valid" extending leftward from the ✓. */
+.token-collapsed-group {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.token-collapsed-reveal {
+  overflow: hidden;
+  max-width: 0;
+  opacity: 0;
+  white-space: nowrap;
+  font: 500 11px/1 -apple-system, sans-serif;
+  color: var(--ok);
+  transition:
+    max-width 0.22s ease,
+    opacity 0.18s ease 0.02s;
+}
+.token-collapsed:hover .token-collapsed-reveal {
+  max-width: 130px;
+  opacity: 1;
+}
+/* Suppress the reveal when the user is aiming at edit — the button has
+   its own hover state and affordance; the reveal shouldn't compete. */
+.token-collapsed:has(.token-edit:hover) .token-collapsed-reveal {
+  max-width: 0;
+  opacity: 0;
+}
+.token-collapsed-check {
+  width: 13px;
+  height: 13px;
+  color: var(--ok);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.token-collapsed:hover .token-collapsed-check {
+  transform: scale(1.08);
+}
+.token-collapsed:has(.token-edit:hover) .token-collapsed-check {
+  transform: none;
+}
+
+/* Respect prefers-reduced-motion: the hover reveal and the starred-CTA
+   spin are both decorative, so suppress their animations for users who
+   opt out of motion at the OS level (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  .token-collapsed-reveal,
+  .token-collapsed-check {
+    transition: none;
+  }
+  .star-cta-icon.spinning {
+    animation: none;
+  }
+}
+/* min-height/min-width 24px meets WCAG 2.5.8 Target Size (Minimum, AA)
+   without inflating the visual weight — padding/font stay compact. */
+.token-edit {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: 500 11px/1 -apple-system, sans-serif;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-height: 24px;
+  min-width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.token-edit:hover { background: var(--surface-2); }
+
 .token-help {
   margin-top: 8px;
   margin-bottom: 0;

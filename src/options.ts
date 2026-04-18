@@ -93,6 +93,54 @@ function updateTokenHelpVisibility(validated: boolean) {
   }
 }
 
+// Populate the collapsed row's token display: dimmed dots + last 4 chars
+// (e.g. ••••••••493C). The last-4 tail matches GitHub's own tokens page
+// convention so users can tell which stored token this is when they
+// rotate between several. The prefix (ghp_ / github_pat_) is deliberately
+// dropped — github_pat_ alone is 11 chars and visually dominated the
+// 324px popup width without adding distinguishing value (the tail is
+// already unique per token).
+function populateCollapsedTokenDisplay() {
+  const tokenEl = document.getElementById('token-collapsed-token');
+  if (!tokenEl) return;
+  // .trim() mirrors saveOptions/wireTokenTest — defends against any legacy
+  // stored value with surrounding whitespace leaking into the tail display.
+  const token = (
+    (document.getElementById('access-token') as HTMLInputElement | null)?.value ?? ''
+  ).trim();
+  tokenEl.textContent = '';
+  if (!token) return;
+  const dotsSpan = document.createElement('span');
+  dotsSpan.className = 'mute';
+  dotsSpan.textContent = '••••••••';
+  const tailSpan = document.createElement('span');
+  tailSpan.textContent = token.slice(-4);
+  tokenEl.append(dotsSpan, tailSpan);
+}
+
+// Toggle between the compact token-tail status row and the full input +
+// Test button. Called from restoreOptions on load and from the Test
+// button success path. Both elements stay in the DOM so the access-token
+// input is always present for the existing input/eye/test handlers + tests.
+// The section title is hidden in the collapsed state so the row actually
+// reclaims vertical space.
+function setTokenViewCollapsed(collapsed: boolean) {
+  const collapsedEl = document.getElementById('token-collapsed');
+  const expandedEl = document.getElementById('token-expanded');
+  const titleEl = document.getElementById('token-section-title');
+  if (!collapsedEl || !expandedEl) return;
+  if (collapsed) {
+    populateCollapsedTokenDisplay();
+    collapsedEl.removeAttribute('hidden');
+    expandedEl.setAttribute('hidden', '');
+    titleEl?.setAttribute('hidden', '');
+  } else {
+    collapsedEl.setAttribute('hidden', '');
+    expandedEl.removeAttribute('hidden');
+    titleEl?.removeAttribute('hidden');
+  }
+}
+
 function applyStarredState(isStarred: boolean) {
   const cta = document.querySelector('.star-cta');
   if (!cta) return;
@@ -147,12 +195,15 @@ function restoreOptions() {
 
       inputElement('access-token').value = accessToken || '';
 
-      // Restore Test button state based on persisted token_validated flag
+      // Restore Test button state based on persisted token_validated flag.
+      // Also drive the collapsed/expanded view: validated + token-present →
+      // compact status row; otherwise the full input + Test button.
       const testBtn = document.getElementById('token-test');
       if (testBtn && tokenValidated) {
         testBtn.textContent = '✓ Valid';
         testBtn.className = 'btn btn--ok';
       }
+      setTokenViewCollapsed(Boolean(tokenValidated && accessToken));
 
       updateTokenHelpVisibility(tokenValidated);
       applyStarredState(hasStarred);
@@ -221,6 +272,7 @@ function wireTokenTest() {
         btn.className = 'btn btn--ok';
         chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true });
         updateTokenHelpVisibility(true);
+        setTokenViewCollapsed(true);
       } else {
         btn.textContent = '✗ Invalid';
         btn.className = 'btn btn--err';
@@ -248,6 +300,33 @@ function wireTokenTest() {
     btn.className = 'btn btn--primary';
     chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
     updateTokenHelpVisibility(false);
+  });
+}
+
+function wireTokenEdit() {
+  const editBtn = document.getElementById('token-edit');
+  if (!editBtn) return;
+  editBtn.addEventListener('click', () => {
+    setTokenViewCollapsed(false);
+    updateTokenHelpVisibility(false);
+    // Clicking "edit" is an explicit intent to change — reset the Test
+    // button visual AND flip token_validated to false in storage so they
+    // stay in sync. The in-memory button-state-as-proxy is load-bearing
+    // for the input handler's de-dup guard (it short-circuits keystrokes
+    // when the button is already primary); decoupling would let a user
+    // type a new token mid-edit, close the popup, and have the next open
+    // erroneously render the collapsed view with the unvalidated partial
+    // token.
+    const testBtn = document.getElementById('token-test');
+    if (testBtn) {
+      testBtn.textContent = 'Test';
+      testBtn.className = 'btn btn--primary';
+    }
+    chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: false });
+    // Focus the input so the user can immediately start typing a new value
+    // without an extra click. Tests that don't render the full popup (e.g.
+    // jsdom variants) still tolerate the focus call as a no-op.
+    inputElement('access-token').focus();
   });
 }
 
@@ -383,6 +462,7 @@ document.addEventListener('DOMContentLoaded', () => {
   addInputEventListeners();
   wireTokenEye();
   wireTokenTest();
+  wireTokenEdit();
   wireStarStylePreview();
   wireAdvancedToggle();
   wireClearCache();
