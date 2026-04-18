@@ -34,7 +34,11 @@ describe('restoreOptions', () => {
         <input id="show-update" type="checkbox">
         <div id="token-section-title">GitHub Access Token</div>
         <div id="token-collapsed" hidden>
-          <span id="token-dots">••••</span>
+          <span id="token-collapsed-token"></span>
+          <span class="token-collapsed-group">
+            <span class="token-collapsed-reveal" aria-hidden="true">GitHub token valid</span>
+            <svg class="token-collapsed-check" role="img"><title>GitHub token valid</title></svg>
+          </span>
           <button id="token-edit">edit</button>
         </div>
         <div id="token-expanded">
@@ -173,6 +177,49 @@ describe('restoreOptions', () => {
     // The section title is hidden in the collapsed state so the compact
     // status row actually reclaims vertical space.
     expect(document.getElementById('token-section-title')?.hasAttribute('hidden')).toBe(true);
+  });
+
+  test('collapsed view renders dimmed dots + last-4 of the stored token', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set(
+        { access_token: 'ghp_FAKE_TOKEN_xyz_abcd', token_validated: true },
+        () => resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const tokenEl = document.getElementById('token-collapsed-token');
+    const spans = tokenEl?.querySelectorAll('span');
+    expect(spans).toHaveLength(2);
+    expect(spans![0].textContent).toBe('••••••••');
+    expect(spans![0].classList.contains('mute')).toBe(true);
+    expect(spans![1].textContent).toBe('abcd');
+  });
+
+  test('collapsed view exposes the status to screen readers via the SVG title', () => {
+    // The reveal span is aria-hidden; the ✓ SVG is the only a11y surface
+    // for "GitHub token valid". A future refactor that drops the inner
+    // <title> would silently break SR users — hence this lock-in.
+    const svg = document.querySelector('.token-collapsed-check');
+    expect(svg?.getAttribute('role')).toBe('img');
+    expect(svg?.querySelector('title')?.textContent).toBe('GitHub token valid');
+  });
+
+  test('collapsed view treats fine-grained tokens identically (no prefix shown)', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set(
+        { access_token: 'github_pat_FAKE_TOKEN_wxyz', token_validated: true },
+        () => resolve()
+      );
+    });
+    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const spans = document.getElementById('token-collapsed-token')?.querySelectorAll('span');
+    expect(spans).toHaveLength(2);
+    expect(spans![0].textContent).toBe('••••••••');
+    expect(spans![1].textContent).toBe('wxyz');
   });
 
   test('edit button re-expands the token view', async () => {

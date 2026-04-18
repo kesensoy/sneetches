@@ -93,18 +93,44 @@ function updateTokenHelpVisibility(validated: boolean) {
   }
 }
 
-// Toggle between the compact "✓ GitHub token valid" status row and the full
-// input + Test button. Called from restoreOptions on load and from the Test
+// Populate the collapsed row's token display: dimmed dots + last 4 chars
+// (e.g. ••••••••493C). The last-4 tail matches GitHub's own tokens page
+// convention so users can tell which stored token this is when they
+// rotate between several. The prefix (ghp_ / github_pat_) is deliberately
+// dropped — github_pat_ alone is 11 chars and visually dominated the
+// 324px popup width without adding distinguishing value (the tail is
+// already unique per token).
+function populateCollapsedTokenDisplay() {
+  const tokenEl = document.getElementById('token-collapsed-token');
+  if (!tokenEl) return;
+  // .trim() mirrors saveOptions/wireTokenTest — defends against any legacy
+  // stored value with surrounding whitespace leaking into the tail display.
+  const token = (
+    (document.getElementById('access-token') as HTMLInputElement | null)?.value ?? ''
+  ).trim();
+  tokenEl.textContent = '';
+  if (!token) return;
+  const dotsSpan = document.createElement('span');
+  dotsSpan.className = 'mute';
+  dotsSpan.textContent = '••••••••';
+  const tailSpan = document.createElement('span');
+  tailSpan.textContent = token.slice(-4);
+  tokenEl.append(dotsSpan, tailSpan);
+}
+
+// Toggle between the compact token-tail status row and the full input +
+// Test button. Called from restoreOptions on load and from the Test
 // button success path. Both elements stay in the DOM so the access-token
 // input is always present for the existing input/eye/test handlers + tests.
 // The section title is hidden in the collapsed state so the row actually
-// reclaims vertical space (the copy "✓ GitHub token valid" is self-describing).
+// reclaims vertical space.
 function setTokenViewCollapsed(collapsed: boolean) {
   const collapsedEl = document.getElementById('token-collapsed');
   const expandedEl = document.getElementById('token-expanded');
   const titleEl = document.getElementById('token-section-title');
   if (!collapsedEl || !expandedEl) return;
   if (collapsed) {
+    populateCollapsedTokenDisplay();
     collapsedEl.removeAttribute('hidden');
     expandedEl.setAttribute('hidden', '');
     titleEl?.setAttribute('hidden', '');

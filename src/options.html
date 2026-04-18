@@ -89,9 +89,17 @@
          hidden in the collapsed state (the "✓ GitHub token valid" copy is
          self-describing, so the redundant uppercase header just eats vertical
          space without adding information). -->
+    <!-- Token tail (dimmed dots + last 4 chars) is populated by
+         setTokenViewCollapsed() when the view flips to collapsed. The
+         reveal span animates out leftward from the check on row hover;
+         :has(.token-edit:hover) suppresses the reveal when the user is
+         aiming at edit instead. -->
     <div class="token-collapsed" id="token-collapsed" hidden>
-      <span class="token-collapsed-dots" aria-hidden="true">••••</span>
-      <span class="token-collapsed-status">✓ GitHub token valid</span>
+      <span class="token-collapsed-token" id="token-collapsed-token"></span>
+      <span class="token-collapsed-group">
+        <span class="token-collapsed-reveal" aria-hidden="true">GitHub token valid</span>
+        <svg class="token-collapsed-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" role="img"><title>GitHub token valid</title><path d="M3 8l3.5 3.5L13 5"/></svg>
+      </span>
       <button type="button" class="token-edit" id="token-edit">edit</button>
     </div>
     <div class="token-field" id="token-expanded">
