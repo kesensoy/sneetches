@@ -24,7 +24,7 @@ import puppeteer from 'puppeteer';
 import { promises as fs, existsSync } from 'fs';
 import * as path from 'path';
 import * as http from 'http';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -54,6 +54,41 @@ const CAPTURES = [
     height: 640,
     dsf: 2,
     out: path.join(ASSETS_DIR, 'social-preview.png'),
+  },
+  // Chrome Web Store assets — strict canvas sizes. CWS accepts JPEG OR
+  // 24-bit-PNG-no-alpha; we go PNG for sharper text. Puppeteer's PNG
+  // output includes an alpha channel (32-bit RGBA) even with a fully
+  // opaque background, which CWS's validator rejects, so we route the
+  // screenshot through `sips -s format png` (stripAlpha) — sips re-encodes
+  // as 24-bit RGB PNG with no alpha. macOS-only, but this is a dev-time
+  // tool so that's fine.
+  {
+    label: 'cws-screenshot',
+    html: 'cws-screenshot.html',
+    width: 1280,
+    height: 800,
+    dsf: 1,
+    out: path.join(ASSETS_DIR, 'cws-screenshot.png'),
+    stripAlpha: true,
+  },
+  {
+    label: 'cws-promo-small',
+    html: 'cws-promo-small.html',
+    width: 440,
+    height: 280,
+    dsf: 1,
+    out: path.join(ASSETS_DIR, 'cws-promo-small.png'),
+    stripAlpha: true,
+    skipArchivedWait: true,
+  },
+  {
+    label: 'cws-promo-marquee',
+    html: 'cws-promo-marquee.html',
+    width: 1400,
+    height: 560,
+    dsf: 1,
+    out: path.join(ASSETS_DIR, 'cws-promo-marquee.png'),
+    stripAlpha: true,
   },
   // Popup has its own dedicated capture flow (capturePopup) below: renders
   // the real extension options.html at chrome-extension://<ID>/ with rich
@@ -316,16 +351,32 @@ async function main() {
         waitUntil: 'networkidle2',
         timeout: 30000,
       });
-      try {
-        await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
-      } catch {
-        console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
+      if (!c.skipArchivedWait) {
+        try {
+          await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
+        } catch {
+          console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
+        }
+        await new Promise((r) => setTimeout(r, 2500));
+      } else {
+        await new Promise((r) => setTimeout(r, 500));
       }
-      await new Promise((r) => setTimeout(r, 2500));
+      const screenshotPath = c.stripAlpha ? `${c.out}.tmp` : c.out;
       await page.screenshot({
-        path: c.out,
+        path: screenshotPath,
         clip: { x: 0, y: 0, width: c.width, height: c.height },
+        ...(c.type === 'jpeg' ? { type: 'jpeg', quality: 92 } : {}),
       });
+      if (c.stripAlpha) {
+        // sips re-encodes as 24-bit RGB PNG (no alpha), satisfying CWS.
+        const r = spawnSync('sips', ['-s', 'format', 'png', screenshotPath, '--out', c.out], {
+          stdio: 'pipe',
+        });
+        if (r.status !== 0) {
+          throw new Error(`[screenshots:${c.label}] sips failed: ${r.stderr?.toString() ?? ''}`);
+        }
+        await fs.unlink(screenshotPath);
+      }
       console.log(`[screenshots:${c.label}] wrote ${path.relative(REPO_ROOT, c.out)}`);
       await page.close();
     }
