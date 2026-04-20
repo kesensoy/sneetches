@@ -4,8 +4,8 @@
 Chrome/Firefox browser extension that adds GitHub repo stats (stars, forks, last pushed date) inline next to GitHub repo links on any webpage. Manifest V3, TypeScript, Webpack-bundled.
 
 ## Current state
-- Version 1.1.9 in `package.json` / `src/manifest.json`. 1.1.8 is live in both stores; 1.1.9 adds the collapsed-PAT popup view.
-- Full Jest suite: 222 tests passing across 8 suites.
+- Version 1.2.0 in `package.json` / `src/manifest.json`. 1.1.9 is live in both stores; 1.2.0 adds cache eviction (`sweepCache` removes expired/wrong-version/malformed entries on demand) and a 25k hard cap (oldest-by-exp trimmed first). Fixes pre-1.2.0 cache bloat — expired entries previously accrued on disk forever, since both readers only filtered them out without removing them.
+- Full Jest suite: 235 tests passing across 8 suites.
 
 ## Technology Stack
 - **Node.js** 20+ (fnm recommended), **TypeScript** 5.7.2, **Webpack** 5.97.1
@@ -31,6 +31,8 @@ npm run check         # tsc --noEmit
 npm test              # Jest
 npm run test:dce      # Prod build + grep build/*.js for 'SNEETCHES_PROBE' leak
 npm run probe         # ts-node scripts/probe-run.ts (requires --url --label)
+npm run screenshots   # Regenerate assets/comparison.png + assets/social-preview.png
+
 ```
 
 ## Architecture + Locked-in Decisions
@@ -46,8 +48,10 @@ Invariants organized by subsystem. These are load-bearing — future work must n
 - No `key` field on manifest.json — adding one would conflict with the Chrome Web Store extension ID.
 
 ### Cache layer (`src/cache.ts`)
-- **`CACHE_VERSION = 2`** (exported from `src/github.ts`; `content.ts` imports it). On-disk entry shape is `{exp: number, pay: T, ver: V}` — do not change the field names; 1.1.0 entries at `ver: 1` are still silently dropped by the version-mismatch path.
-- Four primitives: `bulkReadCache(keys, version)` (array-in / partition-out into `{cached, missing}`), `bulkWriteCache(fresh, version)` (fire-and-forget, clears cache area on storage error), `readAllCachedRepos(version)` (single `get(null)` for the preload path, filters by nwo-shape `"owner/name"`), `getCacheEntryCount` / `clearCache` (both exclude the `rate_limit` key). The earlier `locallyCached` / `locallyCachedBatch` helpers are deleted — do not resurrect them.
+- **`CACHE_VERSION = 2`** (exported from `src/github.ts`; `content.ts` imports it). On-disk entry shape is `{exp: number, pay: T, ver: V}` — do not change the field names. Pre-`CACHE_VERSION=2` entries at `ver: 1` are actively evicted by the sweep path (1.2.0+), not just filtered on read.
+- **`CACHE_DUR_SECONDS = 4 * 3600`** TTL, **`CACHE_MAX_ENTRIES = 25_000`** hard cap (25k × ~215B ≈ 5.4MB, safely under `chrome.storage.local`'s 10MB default quota). Pre-1.2.0 the cache had no eviction — expired entries accrued forever until a token-change `clear()` or manual Clear Cache. Do not remove the cap without plotting the replacement bound.
+- Five primitives: `bulkReadCache(keys, version)` (array-in / partition-out into `{cached, missing}`, opportunistically fires-and-forgets removal of expired/wrong-version keys it encountered), `bulkWriteCache(fresh, version)` (fire-and-forget, clears cache area on storage error), `readAllCachedRepos(version)` (single `get(null)` for the preload path, filters by nwo-shape `"owner/name"`, fires-and-forgets eviction of expired/wrong-version/malformed/over-cap entries — `document_start` is our natural GC tick), `sweepCache(version)` (awaited standalone GC for callers like the options page that need a post-sweep state before reading a downstream derivation), `getCacheEntryCount` / `clearCache` (both exclude the `rate_limit` key). The earlier `locallyCached` / `locallyCachedBatch` helpers are deleted — do not resurrect them.
+- Eviction rules live in one place: `scanEntries` (shared by `readAllCachedRepos` + `sweepCache`). Evicts expired (`exp <= now`), wrong-version, malformed (missing any of exp/pay/ver), and overflow (when live > `CACHE_MAX_ENTRIES`, oldest-by-`exp` trimmed until at cap — "oldest write," not true LRU, since bumping `exp` on read would defeat TTL staleness). Never touches keys without a `/` — that's how `rate_limit` and future non-cache keys stay safe. Options page MUST call `sweepCache` before `getCacheEntryCount` (options path isn't covered by the content-script preload, so it's the only GC trigger for users who don't browse).
 - `RATE_LIMIT_KEY = 'rate_limit'` is duplicated as a local constant in `cache.ts` rather than imported from `github.ts` to avoid a `cache.ts ← github.ts ← cache.ts` cycle. Comment in source explains; don't "fix" it.
 
 ### Data layer (`src/github.ts`)
@@ -87,7 +91,7 @@ Invariants organized by subsystem. These are load-bearing — future work must n
 - Absolute `12px` font-size on all chips (pre-1.1.2 `0.9em` blew up on host pages with 28px base font). `.sneetch-icon` stays `0.9em` because it sizes relative to the chip.
 - **`.is-archived` modifier must dim siblings via per-chip rules, NOT wrapper-level `opacity`.** A wrapper opacity rule would dim the archive chip itself due to CSS opacity cascading. Existing comment in `style.css` warns against this.
 - Three-wash error system: red (`#d1242f`) broken / amber (`#d97706`) rate-limited / green (`#1a7f37`) else. Amber shares with `.sneetch-archived` — intentional; both are "not fully available" and can't appear on the same anchor. Green-as-success collision is accepted because the `else` branch is rare and `bug` + "error" wording disambiguates.
-- Icons (inline Octicons SVG, no npm dep): `archiveIcon`, `bugIcon`, `clockIcon`, `repoForkedIcon`, `hourglassIcon`, `starIcon(filled?)`, `unlinkIcon`. `unlink` is the upstream's closest "broken chain" glyph (no `link-slash` in current Octicons).
+- Icons (inline Octicons SVG paths, no npm dep): `archiveIcon`, `bugIcon`, `clockIcon`, `repoForkedIcon`, `hourglassIcon`, `starIcon(filled?)`, `unlinkIcon`. Each returns a freshly-built `SVGSVGElement` via `document.createElementNS` — NOT an HTML string. Do not "simplify" to template literals + `insertAdjacentHTML`/`innerHTML`; AMO's static linter flags those as unsafe calls (which blocked 1.1.9 from shipping) even when the argument is a compile-time constant. `buildChip` takes the `SVGSVGElement` directly and `appendChild`s it. `unlink` is the upstream's closest "broken chain" glyph (no `link-slash` in current Octicons).
 - Display date prefers `committed_date ?? pushed_at`; tooltip is `"last updated"` (convergent with npm/PyPI/crates.io/pkg.go.dev). Archive chip is unconditional (not gated on a show setting).
 
 ### Dev probe (`src/probe.ts`, `scripts/probe-run.ts`)

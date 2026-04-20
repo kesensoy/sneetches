@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sneetches</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .page {
+    width: 100%;
+    padding: 18px 24px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 20px;
+    align-items: stretch;
+    box-sizing: border-box;
+  }
+  .arrow {
+    font-size: 44px;
+    color: #6e7681;
+    font-weight: 200;
+    align-self: center;
+    user-select: none;
+    line-height: 1;
+  }
+  .panel {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 14px 20px;
+  }
+  .panel h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #8b949e;
+    margin: 0 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #21262d;
+  }
+  .panel h2 .hl {
+    display: inline-block;
+    background: rgba(242, 204, 96, 0.14);
+    color: #f2cc60;
+    border: 1px solid rgba(242, 204, 96, 0.35);
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-weight: 700;
+  }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { margin: 4px 0; color: #c9d1d9; }
+  a {
+    color: #2f81f7;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  a:visited { color: #2f81f7; }
+</style>
+</head>
+<body>
+  <div class="page">
+    <!--
+      Left column: each <a> contains a <span> child so Sneetches' isRepoLink
+      check (childElementCount === 0) excludes them — URL text still renders.
+    -->
+    <section class="panel">
+      <h2>Without Sneetches</h2>
+      <ul>
+        <li><a href="https://github.com/torvalds/linux"><span>torvalds/linux</span></a> - Linux kernel source</li>
+        <li><a href="https://github.com/sindresorhus/awesome"><span>sindresorhus/awesome</span></a> - Curated awesome lists</li>
+        <li><a href="https://github.com/home-assistant/frontend"><span>home-assistant/frontend</span></a> - Home Assistant UI</li>
+        <li><a href="https://github.com/Shopify/dashing"><span>Shopify/dashing</span></a> - Ruby dashboards</li>
+        <li><a href="https://github.com/angular/angular.js"><span>angular/angular.js</span></a> - AngularJS (v1)</li>
+        <li><a href="https://github.com/google/closure-library"><span>google/closure-library</span></a> - Closure utilities</li>
+        <li><a href="https://github.com/sneetches-demo/removed-project"><span>sneetches-demo/removed-project</span></a> - Removed project</li>
+      </ul>
+    </section>
+
+    <div class="arrow">&rarr;</div>
+
+    <section class="panel">
+      <h2><span class="hl">With Sneetches</span></h2>
+      <ul>
+        <li><a href="https://github.com/torvalds/linux">torvalds/linux</a> - Linux kernel source</li>
+        <li><a href="https://github.com/sindresorhus/awesome">sindresorhus/awesome</a> - Curated awesome lists</li>
+        <li><a href="https://github.com/home-assistant/frontend">home-assistant/frontend</a> - Home Assistant UI</li>
+        <li><a href="https://github.com/Shopify/dashing">Shopify/dashing</a> - Ruby dashboards</li>
+        <li><a href="https://github.com/angular/angular.js">angular/angular.js</a> - AngularJS (v1)</li>
+        <li><a href="https://github.com/google/closure-library">google/closure-library</a> - Closure utilities</li>
+        <li><a href="https://github.com/sneetches-demo/removed-project">sneetches-demo/removed-project</a> - Removed project</li>
+      </ul>
+    </section>
+  </div>
+</body>
+</html>

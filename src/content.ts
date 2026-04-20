@@ -83,14 +83,15 @@ export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
 
 // Build a single chip span with optional text before and/or after the
 // SVG icon, and append it to the parent element. Text is inserted via
-// text nodes (escaped); the icon string is the only thing ever handed
-// to innerHTML-style insertion. Returns the span for any caller that
-// needs further customization.
+// text nodes (escaped); the icon is a DOM element built by icons.ts and
+// is appended directly — no HTML strings cross this boundary, so AMO's
+// static linter does not flag the construction. Returns the span for
+// any caller that needs further customization.
 function buildChip(
   parent: HTMLElement,
   className: string,
   ariaLabel: string,
-  iconHtml: string,
+  iconEl: SVGSVGElement,
   textBefore?: string,
   textAfter?: string
 ): HTMLSpanElement {
@@ -98,7 +99,7 @@ function buildChip(
   span.className = className;
   span.setAttribute('aria-label', ariaLabel);
   if (textBefore) span.append(textBefore);
-  span.insertAdjacentHTML('beforeend', iconHtml);
+  span.appendChild(iconEl);
   if (textAfter) span.append(textAfter);
   parent.appendChild(span);
   return span;

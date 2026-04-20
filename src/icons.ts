@@ -29,34 +29,48 @@ const STAR_FILL_PATH =
 const UNLINK_PATH =
   'M12.914 5.914a2 2 0 0 0-2.828-2.828l-.837.837a.75.75 0 1 1-1.06-1.061l.836-.837a3.5 3.5 0 1 1 4.95 4.95l-.195.194a.75.75 0 0 1-1.06-1.06l.194-.195Zm-1.87 3.482a.759.759 0 0 1-.07.079c-.63.63-1.468 1.108-2.343 1.263-.89.159-1.86-.017-2.606-.763a.75.75 0 1 1 1.06-1.06c.329.327.767.438 1.284.347.493-.088 1.018-.36 1.445-.752l-1.247-.897a.709.709 0 0 1-.01-.008l-.295-.212c-.94-.597-1.984-.499-2.676.193l-2.5 2.5a2 2 0 1 0 2.828 2.828l.837-.836a.75.75 0 0 1 1.06 1.06l-.836.837a3.5 3.5 0 0 1-4.95-4.95l2.5-2.5a3.472 3.472 0 0 1 1.354-.848L2.312 3.109a.75.75 0 0 1 .876-1.218l5.93 4.27c.115.074.226.155.335.24l6.235 4.49a.75.75 0 0 1-.876 1.218l-3.768-2.713Z';
 
-function svg(path: string): string {
-  return `<svg class="sneetch-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="${path}"/></svg>`;
+// DOM-constructed so AMO's static linter doesn't flag HTML-string injection
+// (`insertAdjacentHTML`/`innerHTML` raises "Unsafe call" warnings even when
+// the argument is a compile-time constant). Each call returns a fresh element
+// — callers append without worrying about re-parenting.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svg(path: string): SVGSVGElement {
+  const svgEl = document.createElementNS(SVG_NS, 'svg');
+  svgEl.setAttribute('class', 'sneetch-icon');
+  svgEl.setAttribute('viewBox', '0 0 16 16');
+  svgEl.setAttribute('fill', 'currentColor');
+  svgEl.setAttribute('aria-hidden', 'true');
+  const pathEl = document.createElementNS(SVG_NS, 'path');
+  pathEl.setAttribute('d', path);
+  svgEl.appendChild(pathEl);
+  return svgEl;
 }
 
-export function archiveIcon(): string {
+export function archiveIcon(): SVGSVGElement {
   return svg(ARCHIVE_PATH);
 }
 
-export function bugIcon(): string {
+export function bugIcon(): SVGSVGElement {
   return svg(BUG_PATH);
 }
 
-export function clockIcon(): string {
+export function clockIcon(): SVGSVGElement {
   return svg(CLOCK_PATH);
 }
 
-export function hourglassIcon(): string {
+export function hourglassIcon(): SVGSVGElement {
   return svg(HOURGLASS_PATH);
 }
 
-export function repoForkedIcon(): string {
+export function repoForkedIcon(): SVGSVGElement {
   return svg(REPO_FORKED_PATH);
 }
 
-export function starIcon(filled = false): string {
+export function starIcon(filled = false): SVGSVGElement {
   return filled ? svg(STAR_FILL_PATH) : svg(STAR_PATH);
 }
 
-export function unlinkIcon(): string {
+export function unlinkIcon(): SVGSVGElement {
   return svg(UNLINK_PATH);
 }

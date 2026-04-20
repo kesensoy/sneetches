@@ -5,10 +5,11 @@ jest.mock('../src/github', () => ({
   getStoredRateLimit: jest.fn(),
 }));
 
-import { getCacheEntryCount, clearCache } from '../src/cache';
+import { getCacheEntryCount, clearCache, sweepCache } from '../src/cache';
 jest.mock('../src/cache', () => ({
   getCacheEntryCount: jest.fn(),
   clearCache: jest.fn(),
+  sweepCache: jest.fn(),
 }));
 
 describe('restoreOptions', () => {
@@ -22,10 +23,12 @@ describe('restoreOptions', () => {
     (getStoredRateLimit as jest.Mock).mockReset();
     (getCacheEntryCount as jest.Mock).mockReset();
     (clearCache as jest.Mock).mockReset();
+    (sweepCache as jest.Mock).mockReset();
     (validateAccessToken as jest.Mock).mockReset();
     (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
     (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
     (clearCache as jest.Mock).mockResolvedValue(undefined);
+    (sweepCache as jest.Mock).mockResolvedValue(undefined);
 
     document.body.innerHTML = `
       <div>
