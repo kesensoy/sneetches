@@ -56,10 +56,10 @@ const CAPTURES = [
     out: path.join(ASSETS_DIR, 'social-preview.png'),
   },
   // Popup has its own dedicated capture flow (capturePopup) below: renders
-  // the real extension options.html at chrome-extension://<ID>/ with
-  // state injected, then composites that buffer onto the dark backdrop
-  // in a second page. Avoids hand-captured screenshots (which picked up
-  // Chrome-theme-tinted borders).
+  // the real extension options.html at chrome-extension://<ID>/ with rich
+  // state injected, then crops to the body bbox. No backdrop. Renders in
+  // an extension tab rather than the toolbar popup window so Chrome's
+  // theme-tinted popup border doesn't leak into the shot.
 ];
 
 async function loadEnv() {
@@ -212,7 +212,11 @@ async function capturePopup(browser) {
   const page = await browser.newPage();
   await page.setViewport({ width: 400, height: 900, deviceScaleFactor: 2 });
   await page.goto(popupUrl, { waitUntil: 'networkidle0', timeout: 30000 });
-  await page.waitForSelector('#token-collapsed:not([hidden])', { timeout: 5000 }).catch(() => {});
+  await page
+    .waitForSelector('#token-collapsed:not([hidden])', { timeout: 5000 })
+    .catch(() =>
+      console.warn('[screenshots:popup] #token-collapsed never became visible — proceeding')
+    );
   await new Promise((r) => setTimeout(r, 500));
 
   const bbox = await page.evaluate(() => {
