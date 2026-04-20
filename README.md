@@ -53,7 +53,7 @@ npm run check        # TypeScript type check
 npm run format       # Format with Prettier
 ```
 
-See [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) and [PRIVACY.md](./PRIVACY.md).
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and [PRIVACY.md](./PRIVACY.md).
 
 ## Similar Projects
 

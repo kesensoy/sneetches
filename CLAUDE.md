@@ -32,7 +32,6 @@ npm test              # Jest
 npm run test:dce      # Prod build + grep build/*.js for 'SNEETCHES_PROBE' leak
 npm run probe         # ts-node scripts/probe-run.ts (requires --url --label)
 npm run screenshots   # Regenerate assets/comparison.png + assets/social-preview.png
-
 ```
 
 ## Architecture + Locked-in Decisions
