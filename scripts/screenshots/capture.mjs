@@ -55,20 +55,11 @@ const CAPTURES = [
     dsf: 2,
     out: path.join(ASSETS_DIR, 'social-preview.png'),
   },
-  {
-    // Frames the raw popup screenshot (popup-raw.png, hand-captured by
-    // Kevin when the UX changes) on a #0d1117 backdrop. No chips on this
-    // page, so the archived-chip wait will time out quickly — that's
-    // fine, the image is static. Output matches the pre-1.2.0 popup.png
-    // dimensions at 1040x1020.
-    label: 'popup',
-    html: 'popup.html',
-    width: 1040,
-    height: 1020,
-    dsf: 1,
-    out: path.join(ASSETS_DIR, 'popup.png'),
-    skipArchivedWait: true,
-  },
+  // Popup has its own dedicated capture flow (capturePopup) below: renders
+  // the real extension options.html at chrome-extension://<ID>/ with
+  // state injected, then composites that buffer onto the dark backdrop
+  // in a second page. Avoids hand-captured screenshots (which picked up
+  // Chrome-theme-tinted borders).
 ];
 
 async function loadEnv() {
@@ -164,6 +155,82 @@ async function findSwTarget(browser) {
   );
 }
 
+// Extract the extension ID from the service worker target's URL. Used
+// to construct chrome-extension://<ID>/options.html for the popup shot.
+async function getExtensionId(browser) {
+  const t = await findSwTarget(browser);
+  const m = t.url().match(/^chrome-extension:\/\/([^/]+)\//);
+  if (!m) throw new Error(`[screenshots] unexpected SW URL: ${t.url()}`);
+  return m[1];
+}
+
+// Popup: render the actual extension UI (options.html in a
+// chrome-extension:// context) with rich state injected, then crop
+// to the body's bounding box. No backdrop framing — output is just
+// the popup itself, theme-free since it's rendered in an extension
+// tab instead of the floating popup window (which Chrome decorates
+// with the user's theme accent).
+async function capturePopup(browser) {
+  const extId = await getExtensionId(browser);
+  const popupUrl = `chrome-extension://${extId}/options.html`;
+
+  // Inject state BEFORE navigating so DOMContentLoaded sees it.
+  const target = await findSwTarget(browser);
+  const worker = await target.worker();
+  console.log('[screenshots:popup] injecting rich state for render');
+  await worker.evaluate(async () => {
+    await new Promise((res) =>
+      chrome.storage.sync.set(
+        {
+          access_token: 'ghp_ExampleReadmeScreenshotTokenEndingIn493C',
+          token_validated: true,
+          show: { stars: true, forks: true, update: true },
+          star_style: 'filled',
+          has_starred: true,
+          advanced_open: true,
+        },
+        () => res()
+      )
+    );
+    // rate_limit + 1127 fake cache entries → Advanced tray reads
+    // "4,886 / 5,000 per hour" + "1127 entries".
+    const now = Date.now();
+    const entries = { rate_limit: { limit: 5000, remaining: 4886 } };
+    for (let i = 0; i < 1127; i++) {
+      entries[`demo-org${i}/demo-repo${i}`] = {
+        exp: now + 3600 * 1000,
+        pay: { kind: 'ok', json: {} },
+        ver: 2,
+      };
+    }
+    await new Promise((res) => chrome.storage.local.set(entries, () => res()));
+  });
+  await new Promise((r) => setTimeout(r, 500));
+
+  // Render options.html at popup width (body.is-popup sets 324px).
+  // DSF=2 for retina-sharp text.
+  const page = await browser.newPage();
+  await page.setViewport({ width: 400, height: 900, deviceScaleFactor: 2 });
+  await page.goto(popupUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+  await page.waitForSelector('#token-collapsed:not([hidden])', { timeout: 5000 }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 500));
+
+  const bbox = await page.evaluate(() => {
+    const b = document.body;
+    return { width: b.offsetWidth, height: b.offsetHeight };
+  });
+
+  await page.screenshot({
+    path: path.join(ASSETS_DIR, 'popup.png'),
+    clip: { x: 0, y: 0, width: bbox.width, height: bbox.height },
+  });
+  await page.close();
+
+  console.log(
+    `[screenshots:popup] wrote ${path.relative(REPO_ROOT, path.join(ASSETS_DIR, 'popup.png'))} (${bbox.width * 2}x${bbox.height * 2})`
+  );
+}
+
 async function ensureSettings(browser, pat) {
   const target = await findSwTarget(browser);
   const worker = await target.worker();
@@ -241,17 +308,12 @@ async function main() {
         waitUntil: 'networkidle2',
         timeout: 30000,
       });
-      if (!c.skipArchivedWait) {
-        try {
-          await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
-        } catch {
-          console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
-        }
-        await new Promise((r) => setTimeout(r, 2500));
-      } else {
-        // Static page (no extension chips). Small settle time is enough.
-        await new Promise((r) => setTimeout(r, 500));
+      try {
+        await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
+      } catch {
+        console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
       }
+      await new Promise((r) => setTimeout(r, 2500));
       await page.screenshot({
         path: c.out,
         clip: { x: 0, y: 0, width: c.width, height: c.height },
@@ -259,6 +321,7 @@ async function main() {
       console.log(`[screenshots:${c.label}] wrote ${path.relative(REPO_ROOT, c.out)}`);
       await page.close();
     }
+    await capturePopup(browser);
   } finally {
     await browser.close();
     server.close();
