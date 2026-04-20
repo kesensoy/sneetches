@@ -55,6 +55,20 @@ const CAPTURES = [
     dsf: 2,
     out: path.join(ASSETS_DIR, 'social-preview.png'),
   },
+  {
+    // Frames the raw popup screenshot (popup-raw.png, hand-captured by
+    // Kevin when the UX changes) on a #0d1117 backdrop. No chips on this
+    // page, so the archived-chip wait will time out quickly — that's
+    // fine, the image is static. Output matches the pre-1.2.0 popup.png
+    // dimensions at 1040x1020.
+    label: 'popup',
+    html: 'popup.html',
+    width: 1040,
+    height: 1020,
+    dsf: 1,
+    out: path.join(ASSETS_DIR, 'popup.png'),
+    skipArchivedWait: true,
+  },
 ];
 
 async function loadEnv() {
@@ -227,12 +241,17 @@ async function main() {
         waitUntil: 'networkidle2',
         timeout: 30000,
       });
-      try {
-        await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
-      } catch {
-        console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
+      if (!c.skipArchivedWait) {
+        try {
+          await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
+        } catch {
+          console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
+        }
+        await new Promise((r) => setTimeout(r, 2500));
+      } else {
+        // Static page (no extension chips). Small settle time is enough.
+        await new Promise((r) => setTimeout(r, 500));
       }
-      await new Promise((r) => setTimeout(r, 2500));
       await page.screenshot({
         path: c.out,
         clip: { x: 0, y: 0, width: c.width, height: c.height },
