@@ -124,7 +124,18 @@ function startServer() {
         res.end('not found');
       });
   });
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    server.once('error', (err) => {
+      if (err && err.code === 'EADDRINUSE') {
+        reject(
+          new Error(
+            `[screenshots] port ${PORT} is already in use. Kill the other listener (lsof -iTCP:${PORT} -sTCP:LISTEN) or change PORT.`
+          )
+        );
+      } else {
+        reject(err);
+      }
+    });
     server.listen(PORT, '127.0.0.1', () => resolve(server));
   });
 }
@@ -186,6 +197,11 @@ async function main() {
 
   console.log(`[screenshots] starting HTTP server on 127.0.0.1:${PORT}`);
   const server = await startServer();
+
+  // Ensure probe profile dir exists on a fresh clone. Chrome for Testing
+  // would auto-create it, but being explicit matches scripts/probe-run.ts
+  // and makes the invariant checkable.
+  await fs.mkdir(PROFILE_DIR, { recursive: true });
 
   console.log('[screenshots] launching Chrome for Testing');
   const browser = await puppeteer.launch({
