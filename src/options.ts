@@ -1,5 +1,5 @@
-import { validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
-import { clearCache, getCacheEntryCount } from './cache';
+import { CACHE_VERSION, validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
+import { clearCache, getCacheEntryCount, sweepCache } from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
@@ -75,6 +75,12 @@ async function refreshAdvancedStats() {
 
   let count = 0;
   try {
+    // Sweep before count so the displayed number reflects real live
+    // entries — not expired / wrong-version cruft that readAllCachedRepos
+    // would have filtered out anyway. Options page isn't covered by a
+    // content-script preload (chrome-extension:// is outside our matches),
+    // so this is the only time sweep runs for users who don't browse.
+    await sweepCache(CACHE_VERSION);
     count = await getCacheEntryCount();
   } catch {
     count = 0;

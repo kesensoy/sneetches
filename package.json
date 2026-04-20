@@ -1,6 +1,6 @@
 {
   "name": "sneetches",
-  "version": "1.1.9",
+  "version": "1.2.0",
   "description": "Adds stars next to GitHub repo links",
   "author": "Kevin Esensoy",
   "contributors": [
@@ -24,6 +24,7 @@
     "lint:fix": "eslint src/**/*.ts tests/**/*.ts --fix",
     "prepare": "husky",
     "probe": "ts-node --project scripts/tsconfig.json scripts/probe-run.ts",
+    "screenshots": "node scripts/screenshots/capture.mjs",
     "test": "jest",
     "test:dce": "npm run build && if grep -q 'SNEETCHES_PROBE' build/content.js build/service-worker.js build/options.js; then echo 'FAIL: SNEETCHES_PROBE leaked into prod bundle' && exit 1; else echo 'OK: no probe envelope in prod bundle'; fi",
     "watch": "webpack --mode development --watch"

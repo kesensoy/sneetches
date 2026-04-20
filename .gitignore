@@ -20,6 +20,7 @@ package-lock.json
 
 # Internal planning / design artifacts (never committed)
 docs/plans/
+docs/
 
 # Git worktrees (isolated workspaces)
 .worktrees/

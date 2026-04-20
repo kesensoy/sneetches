@@ -4,6 +4,7 @@ import {
   getCacheEntryCount,
   clearCache,
   readAllCachedRepos,
+  sweepCache,
 } from '../src/cache';
 
 describe('getCacheEntryCount', () => {
@@ -211,5 +212,178 @@ describe('readAllCachedRepos', () => {
     const result = await readAllCachedRepos<string, number>(1);
     expect(result.size).toBe(1);
     expect(result.get('owner/good')).toBe('good');
+  });
+});
+
+describe('bulkReadCache opportunistic eviction', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('removes expired keys encountered in the read set', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/stale': { exp: now - 1000, pay: 'stale', ver: 1 },
+          'owner/fresh': { exp: now + 60_000, pay: 'fresh', ver: 1 },
+        },
+        resolve
+      )
+    );
+    await bulkReadCache<string, number>(['owner/stale', 'owner/fresh'], 1);
+    // Let the fire-and-forget remove settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(after['owner/stale']).toBeUndefined();
+    expect(after['owner/fresh']).toBeDefined();
+  });
+
+  test('removes wrong-version keys encountered in the read set', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set({ 'owner/v1': { exp: now + 60_000, pay: 'v1', ver: 1 } }, resolve)
+    );
+    await bulkReadCache<string, number>(['owner/v1'], 2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(after['owner/v1']).toBeUndefined();
+  });
+
+  test('does not evict absent keys (missing from storage)', async () => {
+    const { missing } = await bulkReadCache<string, number>(['owner/nope'], 1);
+    expect(missing).toEqual(['owner/nope']);
+    // nothing to evict — key was never on disk
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(Object.keys(after)).toEqual([]);
+  });
+});
+
+describe('sweepCache', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('is a no-op when storage is empty', async () => {
+    await sweepCache(1);
+    expect(await getCacheEntryCount()).toBe(0);
+  });
+
+  test('removes expired entries', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/fresh': { exp: now + 60_000, pay: 'fresh', ver: 1 },
+          'owner/stale': { exp: now - 60_000, pay: 'stale', ver: 1 },
+        },
+        resolve
+      )
+    );
+    await sweepCache(1);
+    expect(await getCacheEntryCount()).toBe(1);
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(after['owner/fresh']).toBeDefined();
+    expect(after['owner/stale']).toBeUndefined();
+  });
+
+  test('removes wrong-version entries', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/v1': { exp: now + 60_000, pay: 'v1', ver: 1 },
+          'owner/v2': { exp: now + 60_000, pay: 'v2', ver: 2 },
+        },
+        resolve
+      )
+    );
+    await sweepCache(2);
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(after['owner/v1']).toBeUndefined();
+    expect(after['owner/v2']).toBeDefined();
+  });
+
+  test('removes malformed entries (nwo-shaped keys)', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/good': { exp: now + 60_000, pay: 'good', ver: 1 },
+          'owner/noexp': { pay: 'bad', ver: 1 },
+          'owner/nopay': { exp: now + 60_000, ver: 1 },
+        },
+        resolve
+      )
+    );
+    await sweepCache(1);
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(after['owner/good']).toBeDefined();
+    expect(after['owner/noexp']).toBeUndefined();
+    expect(after['owner/nopay']).toBeUndefined();
+  });
+
+  test('preserves the rate_limit key', async () => {
+    const now = Date.now();
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          'owner/stale': { exp: now - 60_000, pay: 'stale', ver: 1 },
+          rate_limit: { limit: 5000, remaining: 4999, at: 0 },
+        },
+        resolve
+      )
+    );
+    await sweepCache(1);
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect(after.rate_limit).toBeDefined();
+    expect(after['owner/stale']).toBeUndefined();
+  });
+
+  test('preserves valid entries within the cap', async () => {
+    const now = Date.now();
+    const items: Record<string, unknown> = {};
+    for (let i = 0; i < 50; i++) {
+      items[`owner/repo-${i}`] = { exp: now + 60_000 + i, pay: i, ver: 1 };
+    }
+    await new Promise<void>((resolve) => chrome.storage.local.set(items, resolve));
+    await sweepCache(1);
+    expect(await getCacheEntryCount()).toBe(50);
+  });
+
+  test('trims to CACHE_MAX_ENTRIES cap, oldest-by-exp first', async () => {
+    const now = Date.now();
+    const items: Record<string, unknown> = {};
+    // Write 25_050 fresh entries with monotonically increasing exp.
+    // Entries 0..49 have the earliest exp — those should be the ones evicted.
+    const total = 25_050;
+    for (let i = 0; i < total; i++) {
+      items[`owner/repo-${i}`] = { exp: now + 60_000 + i, pay: i, ver: 1 };
+    }
+    await new Promise<void>((resolve) => chrome.storage.local.set(items, resolve));
+    await sweepCache(1);
+    expect(await getCacheEntryCount()).toBe(25_000);
+    const after = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    // Oldest-exp 50 entries evicted; newest 25_000 survive.
+    expect(after['owner/repo-0']).toBeUndefined();
+    expect(after['owner/repo-49']).toBeUndefined();
+    expect(after['owner/repo-50']).toBeDefined();
+    expect(after[`owner/repo-${total - 1}`]).toBeDefined();
   });
 });

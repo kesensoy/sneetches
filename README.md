@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/social-preview.png" alt="Sneetches - GitHub repo stats, inline, on any webpage" width="100%" />
+  <img src="./assets/social-preview.png" alt="Sneetches - GitHub repo stats, inline, on any webpage" width="100%" />
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/sne
 ## Settings
 
 <p align="center">
-  <img src="./docs/popup.png" alt="Sneetches popup" width="320" />
+  <img src="./assets/popup.png" alt="Sneetches popup" width="320" />
 </p>
 
 Click the toolbar icon to open the popup — it's also the settings page. Toggle stars / forks / last push, pick an icon style, and (optionally) paste a [GitHub Personal Access Token](https://github.com/settings/tokens/new) to lift the API rate limit from 60 to 5,000 requests per hour. No scopes are required for public repos; add `repo` only if you want stats for your private ones. Current rate-limit usage and cached entry count are shown in the Advanced tray.
@@ -53,7 +53,7 @@ npm run check        # TypeScript type check
 npm run format       # Format with Prettier
 ```
 
-See [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) and [PRIVACY.md](./PRIVACY.md).
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and [PRIVACY.md](./PRIVACY.md).
 
 ## Similar Projects
 
