@@ -114,7 +114,10 @@ export async function bulkReadCache<T, V>(
   const evict: string[] = [];
   for (const key of keys) {
     const entry = items[key] as Entry<T, V> | undefined;
-    if (entry && entry.exp > now && entry.ver === version) {
+    // Validity predicate must mirror scanEntries (readAllCachedRepos /
+    // sweepCache) — entry.pay !== undefined guards against externally-
+    // corrupted storage where the envelope lost its payload.
+    if (entry && entry.exp > now && entry.ver === version && entry.pay !== undefined) {
       cached.set(key, entry.pay);
     } else {
       missing.push(key);

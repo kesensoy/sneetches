@@ -105,7 +105,11 @@ function startServer() {
     const rel = url === '/' ? '/index.html' : url;
     const filePath = path.join(SCRIPT_DIR, rel);
     // Path-traversal guard — resolved path must stay inside SCRIPT_DIR.
-    if (!filePath.startsWith(SCRIPT_DIR)) {
+    // Anchor to the directory boundary (SCRIPT_DIR + sep) so a sibling
+    // directory whose name shares SCRIPT_DIR's textual prefix (e.g.
+    // /foo/scripts_attack when SCRIPT_DIR is /foo/scripts) can't slip
+    // past startsWith.
+    if (filePath !== SCRIPT_DIR && !filePath.startsWith(SCRIPT_DIR + path.sep)) {
       res.writeHead(403);
       res.end('forbidden');
       return;
