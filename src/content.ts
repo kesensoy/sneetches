@@ -14,6 +14,7 @@ import {
   ACCESS_TOKEN_KEY,
   HAS_STARRED_KEY,
   SHOW_KEY,
+  SKIP_OWNERS_KEY,
   STAR_STYLE_KEY,
   getSettings,
   ShowSettings,
@@ -72,7 +73,12 @@ const LEADING_EDGE_MIN_INTERVAL_MS = 100;
 // `has_starred`, `toolbar_icon`) and must NOT wipe annotations in
 // every open GitHub tab — doing so caused every "Test" click and every
 // Advanced-tray toggle in the popup to flicker every open tab's stars.
-const RESCAN_TRIGGER_KEYS: readonly string[] = [ACCESS_TOKEN_KEY, SHOW_KEY, STAR_STYLE_KEY];
+const RESCAN_TRIGGER_KEYS: readonly string[] = [
+  ACCESS_TOKEN_KEY,
+  SHOW_KEY,
+  SKIP_OWNERS_KEY,
+  STAR_STYLE_KEY,
+];
 
 // ---------------------------------------------------------------------------
 // Pure helpers (no closure state)
@@ -119,8 +125,18 @@ function _createAnnotation(extraCssClasses: string | null = null) {
 export function createErrorAnnotation(
   res: { status?: number },
   accessToken: string,
-  reportError: (_: string, ..._2: unknown[]) => void = console.error
-) {
+  reportError: (_: string, ..._2: unknown[]) => void = console.error,
+  nwo?: string,
+  skipOwners: readonly string[] = []
+): HTMLElement | null {
+  // Skip-owners filter is scoped to 404s only — the "private repo
+  // masquerading as deleted" case. Transport failures (401/403/5xx)
+  // still surface so the user knows the extension tried and failed.
+  if (res.status === 404 && nwo && skipOwners.length > 0) {
+    const owner = nwo.split('/', 1)[0].toLowerCase();
+    if (skipOwners.includes(owner)) return null;
+  }
+
   const elt = _createAnnotation();
 
   if (res.status === 404) {
@@ -337,6 +353,13 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
       ) => void)
     | null = null;
 
+  // ------ cmd-click skip-owner popover ------
+  let activeSkipPopover: HTMLElement | null = null;
+  let skipPopoverClickListener: ((e: MouseEvent) => void) | null = null;
+  let skipPopoverKeyListener: ((e: KeyboardEvent) => void) | null = null;
+  let skipPopoverScrollListener: (() => void) | null = null;
+  let skipClickListener: ((e: MouseEvent) => void) | null = null;
+
   // -------------------------------------------------------------------------
   // stateful functions (close over the above)
   // -------------------------------------------------------------------------
@@ -372,10 +395,12 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
 
   function paintResult(
     elt: HTMLAnchorElement,
+    nwo: string,
     res: RepoResponse,
     show: ShowSettings,
     starStyle: StarStyle,
     accessToken: string,
+    skipOwners: readonly string[],
     epoch: number
   ): void {
     if (inFlightAnchors.get(elt) !== epoch) return;
@@ -387,9 +412,17 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
       case 'ok':
         elt.appendChild(createAnnotation(res.json, show, starStyle));
         return;
-      case 'error':
-        elt.appendChild(createErrorAnnotation({ status: res.status }, accessToken));
+      case 'error': {
+        const errElt = createErrorAnnotation(
+          { status: res.status },
+          accessToken,
+          console.error,
+          nwo,
+          skipOwners
+        );
+        if (errElt) elt.appendChild(errElt);
         return;
+      }
     }
   }
 
@@ -426,7 +459,7 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
       // results in favor of the post-change rescan that
       // applySettingsChange dispatches.
       const epoch = currentEpoch;
-      const { accessToken, show, starStyle } = await getCachedSettings();
+      const { accessToken, show, starStyle, skipOwners } = await getCachedSettings();
       const links = findUnannotatedRepoLinks();
 
       const pending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
@@ -457,7 +490,7 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
         for (const p of pending) {
           const cached = inMemoryRepoCache.get(p.nwo);
           if (cached) {
-            paintResult(p.elt, cached, show, starStyle, accessToken, epoch);
+            paintResult(p.elt, p.nwo, cached, show, starStyle, accessToken, skipOwners, epoch);
           } else {
             uncachedPending.push(p);
           }
@@ -502,7 +535,7 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
           const anchors = byNwo.get(nwo);
           if (!anchors) continue;
           for (const elt of anchors) {
-            paintResult(elt, res, show, starStyle, accessToken, epoch);
+            paintResult(elt, nwo, res, show, starStyle, accessToken, skipOwners, epoch);
           }
         }
       };
@@ -518,10 +551,21 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
         // cleared from inFlightAnchors, so they're untouched here — the
         // `inFlightAnchors.get(elt) !== epoch` guard skips any anchor
         // already drained by the fast path.
-        for (const { elt } of uncachedPending) {
+        for (const { elt, nwo } of uncachedPending) {
           if (inFlightAnchors.get(elt) !== epoch) continue;
           inFlightAnchors.delete(elt);
-          elt.appendChild(createErrorAnnotation({ status: result.status }, accessToken));
+          // Batch failures are 401/5xx/network, never 404 — so the skip
+          // filter in createErrorAnnotation never fires here today. Thread
+          // nwo + skipOwners anyway so this stays correct if the batch
+          // path ever synthesizes a 404.
+          const errElt = createErrorAnnotation(
+            { status: result.status },
+            accessToken,
+            console.error,
+            nwo,
+            skipOwners
+          );
+          if (errElt) elt.appendChild(errElt);
         }
       }
 
@@ -656,6 +700,10 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     silentSkipAnchors = new WeakSet();
     lastLeadingEdgeAt = 0;
     invalidateCachedSettings();
+    // If the popover is open, the chip it was anchored to may be about to
+    // be removed by removeLinkAnnotations — drop the popover so it doesn't
+    // float untethered over empty space.
+    dismissSkipPopover();
     removeLinkAnnotations();
     updateAnnotationsFromSettings();
   }
@@ -687,6 +735,199 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
   function initializeDomDependentFeatures(): void {
     startLinkScanner();
     detectStarredStateOnSneetchesRepo();
+    wireSkipOwnerClickHandler();
+  }
+
+  // ---------------------------------------------------------------------
+  // Cmd/Ctrl-click on a .sneetch-broken chip → prompt to skip the owner.
+  // Uses a capture-phase delegated listener on document so we see the
+  // click before any ancestor link handler can swallow or navigate.
+  // The popover itself is fixed-positioned relative to the viewport
+  // (NOT absolute-to-body) so ancestor transforms on host pages like
+  // Notion/Linear/Confluence don't re-anchor it incorrectly.
+  // ---------------------------------------------------------------------
+  function dismissSkipPopover(): void {
+    if (activeSkipPopover) {
+      activeSkipPopover.remove();
+      activeSkipPopover = null;
+    }
+    if (skipPopoverClickListener) {
+      document.removeEventListener('click', skipPopoverClickListener, true);
+      skipPopoverClickListener = null;
+    }
+    if (skipPopoverKeyListener) {
+      document.removeEventListener('keydown', skipPopoverKeyListener, true);
+      skipPopoverKeyListener = null;
+    }
+    if (skipPopoverScrollListener) {
+      window.removeEventListener('scroll', skipPopoverScrollListener, true);
+      window.removeEventListener('resize', skipPopoverScrollListener, true);
+      skipPopoverScrollListener = null;
+    }
+  }
+
+  function openSkipPopover(chip: HTMLElement, owner: string): void {
+    dismissSkipPopover();
+    const rect = chip.getBoundingClientRect();
+
+    const popover = document.createElement('div');
+    // Inline styles only — content script isolation prevents host
+    // stylesheets from affecting us, but keeps the feature self-contained
+    // without needing an injected <style> per-page.
+    const style = popover.style;
+    style.position = 'fixed';
+    style.top = `${rect.bottom + 6}px`;
+    style.left = `${rect.left}px`;
+    style.zIndex = '2147483647';
+    style.background = '#0a0e1a';
+    style.color = '#e6edf3';
+    style.border = '1px solid #2e3650';
+    style.borderRadius = '8px';
+    style.boxShadow = '0 12px 32px rgba(0,0,0,0.6)';
+    style.padding = '10px 12px';
+    style.width = '260px';
+    style.font = '12px/1.4 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif';
+    style.cursor = 'default';
+
+    const title = document.createElement('div');
+    title.style.fontWeight = '500';
+    title.style.marginBottom = '2px';
+    title.append('Skip ');
+    const ownerSpan = document.createElement('span');
+    ownerSpan.textContent = owner;
+    ownerSpan.style.font = '12px/1 ui-monospace, "SF Mono", Menlo, monospace';
+    ownerSpan.style.color = '#7aa2ff';
+    title.append(ownerSpan, '?');
+
+    const sub = document.createElement('div');
+    sub.style.color = '#5d6678';
+    sub.style.fontSize = '10.5px';
+    sub.style.margin = '4px 0 10px';
+    sub.append('Hides the broken chip for every ');
+    const code = document.createElement('code');
+    code.textContent = `${owner}/*`;
+    code.style.font = '10.5px/1 ui-monospace, Menlo, monospace';
+    sub.append(code, ' link. Undo in Advanced.');
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '6px';
+    actions.style.justifyContent = 'flex-end';
+
+    const mkBtn = (label: string, primary: boolean): HTMLButtonElement => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.style.font = '500 11px/1 -apple-system, sans-serif';
+      btn.style.padding = '6px 10px';
+      btn.style.borderRadius = '5px';
+      btn.style.cursor = 'pointer';
+      btn.style.border = primary ? '1px solid #5b8def' : '1px solid #2e3650';
+      btn.style.background = primary ? '#5b8def' : '#131826';
+      btn.style.color = primary ? 'white' : '#8a96aa';
+      return btn;
+    };
+
+    const cancelBtn = mkBtn('Cancel', false);
+    const skipBtn = mkBtn('Skip owner', true);
+    cancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dismissSkipPopover();
+    });
+    skipBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void confirmSkipOwner(owner);
+    });
+    actions.append(cancelBtn, skipBtn);
+
+    popover.append(title, sub, actions);
+    // Prefer body: on pages where <html> has overflow:hidden + a transform
+    // (some Docusaurus variants), a fixed element inside <html> can still
+    // be clipped by the html-level containing block. Fall back to
+    // documentElement only if body isn't ready (e.g. pre-DOMContentLoaded).
+    (document.body ?? document.documentElement).appendChild(popover);
+    activeSkipPopover = popover;
+
+    // Dismissal wiring. Capture-phase so we win against host-page
+    // click handlers that stopPropagation at bubble.
+    skipPopoverClickListener = (e: MouseEvent): void => {
+      if (!activeSkipPopover) return;
+      if (e.target instanceof Node && activeSkipPopover.contains(e.target)) return;
+      dismissSkipPopover();
+    };
+    skipPopoverKeyListener = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') dismissSkipPopover();
+    };
+    skipPopoverScrollListener = (): void => dismissSkipPopover();
+    document.addEventListener('click', skipPopoverClickListener, true);
+    document.addEventListener('keydown', skipPopoverKeyListener, true);
+    window.addEventListener('scroll', skipPopoverScrollListener, true);
+    window.addEventListener('resize', skipPopoverScrollListener, true);
+  }
+
+  async function confirmSkipOwner(owner: string): Promise<void> {
+    dismissSkipPopover();
+    const current = await new Promise<string[]>((resolve) =>
+      chrome.storage.sync.get([SKIP_OWNERS_KEY], (items) => {
+        const raw = items[SKIP_OWNERS_KEY];
+        resolve(Array.isArray(raw) ? (raw as string[]) : []);
+      })
+    );
+    const lower = owner.toLowerCase();
+    if (current.includes(lower)) return;
+    const next = [...current, lower].sort();
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [SKIP_OWNERS_KEY]: next }, () => resolve())
+    );
+    // The storage onChanged listener bumps currentEpoch via
+    // applySettingsChange, which invalidates cachedSettings and kicks
+    // off a rescan; the 404 cache entry remains but createErrorAnnotation
+    // now returns null for it.
+  }
+
+  function wireSkipOwnerClickHandler(): void {
+    // Defensive cleanup — matches the pattern in initialize() for the
+    // storageChangedListener. A second initialize() call would otherwise
+    // double-register the capture-phase listener.
+    if (skipClickListener) {
+      document.removeEventListener('click', skipClickListener, true);
+      skipClickListener = null;
+    }
+    skipClickListener = (e: MouseEvent): void => {
+      // Platform-aware modifier: Cmd on Mac, Ctrl elsewhere. metaKey also
+      // fires on Windows' "Windows key" but that's a non-issue — no native
+      // browser gesture competes there.
+      if (!e.metaKey && !e.ctrlKey) return;
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const chip = target.closest('.sneetch-broken');
+      if (!chip) return;
+      // Extract the owner from the enclosing anchor. Use URL parsing
+      // instead of a string→regex coerce (which treats unescaped `.` as
+      // "any char" and would match e.g. github-com.evil.tld) — this
+      // handler writes to storage on confirm, so the hostname check has
+      // to be precise. Also require >=2 path segments so profile/settings
+      // links (github.com/settings/profile) don't masquerade as a repo.
+      const anchor = chip.parentElement?.closest('a[href^="https://github.com/"]');
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      let url: URL;
+      try {
+        url = new URL(anchor.href);
+      } catch {
+        return;
+      }
+      if (url.hostname !== 'github.com') return;
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length < 2) return;
+      const owner = parts[0];
+      if (!owner) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      openSkipPopover(chip as HTMLElement, owner);
+    };
+    // Capture phase so ancestor <a> click handlers can't stopPropagation
+    // away our chance to see this event.
+    document.addEventListener('click', skipClickListener, true);
   }
 
   // -------------------------------------------------------------------------
@@ -773,6 +1014,11 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
       chrome.storage.onChanged.removeListener(storageChangedListener);
       storageChangedListener = null;
     }
+    if (skipClickListener) {
+      document.removeEventListener('click', skipClickListener, true);
+      skipClickListener = null;
+    }
+    dismissSkipPopover();
   }
 
   return {

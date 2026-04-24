@@ -251,7 +251,7 @@ describe('createAnnotation', () => {
 describe('createErrorAnnotation', () => {
   describe('404 (broken)', () => {
     test('renders a .sneetch-broken chip with unlink icon and "broken" text', () => {
-      const elt = createErrorAnnotation({ status: 404 }, '');
+      const elt = createErrorAnnotation({ status: 404 }, '')!;
       expect(elt.outerHTML).toMatch('class="data-sneetch-extension"');
       expect(elt.outerHTML).not.toContain('Ⓧ'); // old MISSING_SYMBOL sentinel gone
       const chip = elt.querySelector('.sneetch-broken');
@@ -263,14 +263,52 @@ describe('createErrorAnnotation', () => {
     });
 
     test('has a "Repository not found" tooltip', () => {
-      const elt = createErrorAnnotation({ status: 404 }, '');
+      const elt = createErrorAnnotation({ status: 404 }, '')!;
       expect(elt.getAttribute('title')).toBe('Repository not found');
+    });
+
+    test('returns null when nwo owner is in skipOwners', () => {
+      const elt = createErrorAnnotation(
+        { status: 404 },
+        '',
+        console.error,
+        'acme-corp/pipeline-dash',
+        ['acme-corp']
+      );
+      expect(elt).toBeNull();
+    });
+
+    test('owner match is case-insensitive', () => {
+      const elt = createErrorAnnotation(
+        { status: 404 },
+        '',
+        console.error,
+        'ACME-Corp/pipeline-dash',
+        ['acme-corp']
+      );
+      expect(elt).toBeNull();
+    });
+
+    test('returns a chip when owner is not in skipOwners', () => {
+      const elt = createErrorAnnotation({ status: 404 }, '', console.error, 'other-org/repo', [
+        'acme-corp',
+      ]);
+      expect(elt).not.toBeNull();
+      expect(elt?.querySelector('.sneetch-broken')).not.toBeNull();
+    });
+
+    test('skipOwners does not suppress non-404 statuses for the same owner', () => {
+      const elt = createErrorAnnotation({ status: 500 }, '', () => null, 'acme-corp/repo', [
+        'acme-corp',
+      ]);
+      expect(elt).not.toBeNull();
+      expect(elt?.querySelector('.sneetch-error')).not.toBeNull();
     });
   });
 
   describe('403 (rate limited)', () => {
     test('renders a .sneetch-rate-limited chip with hourglass icon and "wait" text', () => {
-      const elt = createErrorAnnotation({ status: 403 }, '');
+      const elt = createErrorAnnotation({ status: 403 }, '')!;
       const chip = elt.querySelector('.sneetch-rate-limited');
       expect(chip).not.toBeNull();
       expect(chip?.querySelector('svg')).not.toBeNull();
@@ -280,12 +318,12 @@ describe('createErrorAnnotation', () => {
     });
 
     test('with no access token → tooltip asks user to set up a PAT', () => {
-      const elt = createErrorAnnotation({ status: 403 }, '');
+      const elt = createErrorAnnotation({ status: 403 }, '')!;
       expect(elt.getAttribute('title')).toBe('Please set up your GitHub Personal Access Token');
     });
 
     test('with access token → tooltip is the bare rate-limit-exceeded message', () => {
-      const elt = createErrorAnnotation({ status: 403 }, 'ghp_fake_token');
+      const elt = createErrorAnnotation({ status: 403 }, 'ghp_fake_token')!;
       expect(elt.getAttribute('title')).toBe('GitHub API rate limit exceeded.');
     });
   });
@@ -293,7 +331,7 @@ describe('createErrorAnnotation', () => {
   describe('else (unknown error)', () => {
     test('renders a .sneetch-error chip with bug icon and "error" text', () => {
       const reportError = jest.fn();
-      const elt = createErrorAnnotation({ status: 500 }, '', reportError);
+      const elt = createErrorAnnotation({ status: 500 }, '', reportError)!;
       const chip = elt.querySelector('.sneetch-error');
       expect(chip).not.toBeNull();
       expect(chip?.querySelector('svg')).not.toBeNull();
@@ -303,12 +341,12 @@ describe('createErrorAnnotation', () => {
     });
 
     test('tooltip includes the HTTP status code', () => {
-      const elt = createErrorAnnotation({ status: 500 }, '', (..._: unknown[]) => null);
+      const elt = createErrorAnnotation({ status: 500 }, '', (..._: unknown[]) => null)!;
       expect(elt.getAttribute('title')).toBe("Couldn't fetch repository info (status 500)");
     });
 
     test('tooltip falls back to "unknown" when status is missing', () => {
-      const elt = createErrorAnnotation({}, '', (..._: unknown[]) => null);
+      const elt = createErrorAnnotation({}, '', (..._: unknown[]) => null)!;
       expect(elt.getAttribute('title')).toBe("Couldn't fetch repository info (status unknown)");
     });
 
