@@ -3,6 +3,7 @@ import {
   bulkWriteCache,
   getCacheEntryCount,
   clearCache,
+  clearOwnerCache,
   readAllCachedRepos,
   sweepCache,
 } from '../src/cache';
@@ -133,6 +134,59 @@ describe('clearCache', () => {
       chrome.storage.local.get(['rate_limit'], (items) => resolve(items))
     );
     expect(stored.rate_limit).toBeDefined();
+  });
+});
+
+describe('clearOwnerCache', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('removes all entries under the owner', async () => {
+    bulkWriteCache(
+      new Map<string, string>([
+        ['acme-corp/one', 'a'],
+        ['acme-corp/two', 'b'],
+        ['other-org/repo', 'c'],
+      ]),
+      1
+    );
+    await clearOwnerCache('acme-corp');
+    const { cached } = await bulkReadCache<string, number>(
+      ['acme-corp/one', 'acme-corp/two', 'other-org/repo'],
+      1
+    );
+    expect(cached.has('acme-corp/one')).toBe(false);
+    expect(cached.has('acme-corp/two')).toBe(false);
+    expect(cached.get('other-org/repo')).toBe('c');
+  });
+
+  test('is case-insensitive on the owner prefix', async () => {
+    bulkWriteCache(new Map<string, string>([['ACME-Corp/repo', 'a']]), 1);
+    await clearOwnerCache('acme-corp');
+    const { cached } = await bulkReadCache<string, number>(['ACME-Corp/repo'], 1);
+    expect(cached.size).toBe(0);
+  });
+
+  test('preserves the rate_limit key', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set({ rate_limit: { limit: 5000, remaining: 4999, at: 0 } }, () =>
+        resolve()
+      )
+    );
+    bulkWriteCache(new Map<string, string>([['acme-corp/repo', 'a']]), 1);
+    await clearOwnerCache('acme-corp');
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(['rate_limit'], (items) => resolve(items))
+    );
+    expect(stored.rate_limit).toBeDefined();
+  });
+
+  test('does not match a prefix-overlap (acme vs acme-corp)', async () => {
+    bulkWriteCache(new Map<string, string>([['acme-corp/repo', 'a']]), 1);
+    await clearOwnerCache('acme');
+    const { cached } = await bulkReadCache<string, number>(['acme-corp/repo'], 1);
+    expect(cached.get('acme-corp/repo')).toBe('a');
   });
 });
 
