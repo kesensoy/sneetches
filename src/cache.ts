@@ -187,6 +187,28 @@ export function getCacheEntryCount(): Promise<number> {
   );
 }
 
+// Remove every cached entry under a given owner (keys of shape `owner/name`),
+// regardless of kind — broken-404s, valid repos, and silent-FORBIDDENs alike.
+// Called when a user un-skips an owner, so broken chips reappear immediately
+// instead of waiting out the 4h TTL. Case-insensitive match on the owner
+// prefix since GitHub owner names are case-insensitive but storage keys
+// preserve whatever case the link used.
+export function clearOwnerCache(owner: string): Promise<void> {
+  const prefix = owner.toLowerCase() + '/';
+  return new Promise((resolve, reject) =>
+    chrome.storage.local.get(null, (items) => {
+      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+      const keysToRemove = Object.keys(items).filter(
+        (k) => k.includes('/') && k.toLowerCase().startsWith(prefix)
+      );
+      if (keysToRemove.length === 0) return resolve();
+      chrome.storage.local.remove(keysToRemove, () =>
+        chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve()
+      );
+    })
+  );
+}
+
 export function clearCache(): Promise<void> {
   return new Promise((resolve, reject) =>
     chrome.storage.local.get(null, (items) => {
