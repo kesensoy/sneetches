@@ -777,8 +777,13 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     // without needing an injected <style> per-page.
     const style = popover.style;
     style.position = 'fixed';
-    style.top = `${rect.bottom + 6}px`;
-    style.left = `${rect.left}px`;
+    // Position-once-measured: append hidden so we can read the popover's
+    // actual rendered size, then flip above/clamp horizontally if it would
+    // clip the viewport. Avoids a hardcoded height guess and keeps the
+    // popover on-screen for broken chips near the edges.
+    style.visibility = 'hidden';
+    style.top = '0px';
+    style.left = '0px';
     style.zIndex = '2147483647';
     style.background = '#0a0e1a';
     style.color = '#e6edf3';
@@ -847,6 +852,20 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     // be clipped by the html-level containing block. Fall back to
     // documentElement only if body isn't ready (e.g. pre-DOMContentLoaded).
     (document.body ?? document.documentElement).appendChild(popover);
+    // Measure + position now that layout is resolved. Flip above if below
+    // would clip; clamp horizontally to keep it inside the viewport with
+    // an 8px gutter.
+    const popRect = popover.getBoundingClientRect();
+    const GUTTER = 8;
+    const GAP = 6;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const flipAbove = spaceBelow < popRect.height + GAP && rect.top > popRect.height + GAP;
+    const top = flipAbove ? rect.top - popRect.height - GAP : rect.bottom + GAP;
+    const maxLeft = Math.max(GUTTER, window.innerWidth - popRect.width - GUTTER);
+    const left = Math.min(Math.max(rect.left, GUTTER), maxLeft);
+    style.top = `${top}px`;
+    style.left = `${left}px`;
+    style.visibility = '';
     activeSkipPopover = popover;
 
     // Dismissal wiring. Capture-phase so we win against host-page
@@ -874,12 +893,25 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     // pathological URL (percent-encoded spaces, weird unicode) can't leak
     // into sync storage.
     if (!GITHUB_HANDLE_RE.test(owner)) return;
-    const current = await new Promise<string[]>((resolve) =>
-      chrome.storage.sync.get([SKIP_OWNERS_KEY], (items) => {
-        const raw = items[SKIP_OWNERS_KEY];
-        resolve(Array.isArray(raw) ? (raw as string[]) : []);
-      })
-    );
+    // Abort the whole flow on sync-get failure — without this, a transient
+    // runtime.lastError would leave `current` as [] and the subsequent set
+    // would silently overwrite an existing list with just the new owner.
+    let current: string[];
+    try {
+      current = await new Promise<string[]>((resolve, reject) =>
+        chrome.storage.sync.get([SKIP_OWNERS_KEY], (items) => {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+            return;
+          }
+          const raw = items[SKIP_OWNERS_KEY];
+          resolve(Array.isArray(raw) ? (raw as string[]) : []);
+        })
+      );
+    } catch (err) {
+      console.error('sneetches: skip_owners read failed, aborting add', err);
+      return;
+    }
     const lower = owner.toLowerCase();
     if (current.includes(lower)) return;
     const next = [...current, lower].sort();

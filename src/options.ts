@@ -392,19 +392,31 @@ function renderSkipOwnersList(owners: readonly string[]) {
   }
 }
 
+// Rejects on chrome.runtime.lastError so callers don't confuse a transient
+// sync-get failure with "empty list" and overwrite the real list on save.
 function getStoredSkipOwners(): Promise<string[]> {
-  return new Promise((resolve) =>
+  return new Promise((resolve, reject) =>
     chrome.storage.sync.get([SKIP_OWNERS_KEY], (items) => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+        return;
+      }
       const raw = items[SKIP_OWNERS_KEY];
       resolve(Array.isArray(raw) ? (raw as string[]) : DefaultSkipOwners);
     })
   );
 }
 
-async function addSkipOwner(raw: string): Promise<'ok' | 'invalid' | 'duplicate'> {
+async function addSkipOwner(raw: string): Promise<'ok' | 'invalid' | 'duplicate' | 'error'> {
   const trimmed = raw.trim().toLowerCase();
   if (!GITHUB_HANDLE_RE.test(trimmed)) return 'invalid';
-  const current = await getStoredSkipOwners();
+  let current: string[];
+  try {
+    current = await getStoredSkipOwners();
+  } catch (err) {
+    console.error('sneetches: skip_owners read failed, aborting add', err);
+    return 'error';
+  }
   if (current.includes(trimmed)) return 'duplicate';
   const next = [...current, trimmed].sort();
   await new Promise<void>((resolve) =>
@@ -414,7 +426,13 @@ async function addSkipOwner(raw: string): Promise<'ok' | 'invalid' | 'duplicate'
 }
 
 async function removeSkipOwner(owner: string): Promise<void> {
-  const current = await getStoredSkipOwners();
+  let current: string[];
+  try {
+    current = await getStoredSkipOwners();
+  } catch (err) {
+    console.error('sneetches: skip_owners read failed, aborting remove', err);
+    return;
+  }
   const next = current.filter((o) => o !== owner);
   if (next.length === current.length) return;
   await new Promise<void>((resolve) =>
@@ -482,8 +500,11 @@ function wireSkipOwners() {
     renderSkipOwnersList(Array.isArray(next) ? (next as string[]) : []);
   });
 
-  // Initial populate.
-  void getStoredSkipOwners().then(renderSkipOwnersList);
+  // Initial populate — best-effort; if the get fails the onChanged listener
+  // above will still catch any subsequent updates.
+  void getStoredSkipOwners()
+    .then(renderSkipOwnersList)
+    .catch((err) => console.error('sneetches: initial skip_owners load failed', err));
 }
 
 function wireClearCache() {
