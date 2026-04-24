@@ -153,6 +153,29 @@
           <button type="button" class="link-btn link-btn--danger" id="clear-cache">Clear cache</button>
         </span>
       </div>
+      <!-- Skip owners: links under these owners have their "broken" chip
+           suppressed on 404. Used when a PAT can't see private repos under
+           a given org (GitHub returns 404, not 403, so we can't distinguish
+           private-invisible from truly-deleted). The Manage disclosure keeps
+           the Advanced tray calm — most users never touch this. -->
+      <div class="stat-row">
+        <span class="label">Skip owners</span>
+        <span class="actions">
+          <span class="value" id="skip-owners-count">0 owners</span>
+          <button type="button" class="link-btn" id="skip-owners-toggle" aria-expanded="false" aria-controls="skip-owners-panel">Manage</button>
+        </span>
+      </div>
+      <div class="skip-manage" id="skip-owners-panel" hidden>
+        <div class="skip-list" id="skip-owners-list"></div>
+        <div class="skip-mini-input-wrap">
+          <input class="skip-mini-input" id="skip-owner-input" type="text" placeholder="owner (e.g. acme-corp)" autocomplete="off" spellcheck="false">
+          <button type="button" class="skip-mini-add" id="skip-owner-add">Add</button>
+        </div>
+        <p class="skip-mini-help">
+          Hides the broken chip for every <code>owner/*</code> link. Tip:
+          <span class="scope-pill">⌘/Ctrl-click</span> a broken chip to skip that owner in one step.
+        </p>
+      </div>
       <div class="footer">
         <span id="version">Sneetches</span>
         <a href="https://github.com/kesensoy/sneetches" target="_blank" rel="noopener noreferrer">View on GitHub &#8594;</a>

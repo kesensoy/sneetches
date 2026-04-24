@@ -5,10 +5,11 @@ jest.mock('../src/github', () => ({
   getStoredRateLimit: jest.fn(),
 }));
 
-import { getCacheEntryCount, clearCache, sweepCache } from '../src/cache';
+import { getCacheEntryCount, clearCache, clearOwnerCache, sweepCache } from '../src/cache';
 jest.mock('../src/cache', () => ({
   getCacheEntryCount: jest.fn(),
   clearCache: jest.fn(),
+  clearOwnerCache: jest.fn(),
   sweepCache: jest.fn(),
 }));
 
@@ -23,11 +24,13 @@ describe('restoreOptions', () => {
     (getStoredRateLimit as jest.Mock).mockReset();
     (getCacheEntryCount as jest.Mock).mockReset();
     (clearCache as jest.Mock).mockReset();
+    (clearOwnerCache as jest.Mock).mockReset();
     (sweepCache as jest.Mock).mockReset();
     (validateAccessToken as jest.Mock).mockReset();
     (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
     (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
     (clearCache as jest.Mock).mockResolvedValue(undefined);
+    (clearOwnerCache as jest.Mock).mockResolvedValue(undefined);
     (sweepCache as jest.Mock).mockResolvedValue(undefined);
 
     document.body.innerHTML = `
@@ -65,6 +68,13 @@ describe('restoreOptions', () => {
             <div id="rate-limit-bar-fill"></div>
             <span id="cache-count"></span>
             <button id="clear-cache"></button>
+            <span id="skip-owners-count"></span>
+            <button id="skip-owners-toggle" aria-expanded="false"></button>
+            <div id="skip-owners-panel" hidden>
+              <div id="skip-owners-list"></div>
+              <input id="skip-owner-input" type="text">
+              <button id="skip-owner-add"></button>
+            </div>
           </div>
         </div>
         <svg class="star-preview-outline"></svg>
@@ -813,5 +823,94 @@ describe('restoreOptions', () => {
     expect(tokenValidatedWrites).toHaveLength(1);
 
     setSpy.mockRestore();
+  });
+
+  describe('skip owners', () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+
+    test('renders stored owners on load', async () => {
+      await new Promise<void>((resolve) => {
+        chrome.storage.sync.set({ skip_owners: ['acme-corp', 'legacy-co'] }, () => resolve());
+      });
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await flush();
+      expect(document.getElementById('skip-owners-count')?.textContent).toBe('2 owners');
+      const rows = document.querySelectorAll('#skip-owners-list .skip-list-row');
+      expect(rows.length).toBe(2);
+      expect(rows[0].textContent).toContain('acme-corp');
+      expect(rows[1].textContent).toContain('legacy-co');
+    });
+
+    test('add persists a lowercased, sorted entry to sync storage', async () => {
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await flush();
+      const input = inputElement('skip-owner-input');
+      input.value = 'ACME-Corp';
+      document.getElementById('skip-owner-add')!.click();
+      await flush();
+      const stored = await new Promise<Record<string, unknown>>((resolve) =>
+        chrome.storage.sync.get(['skip_owners'], (items) => resolve(items))
+      );
+      expect(stored.skip_owners).toEqual(['acme-corp']);
+      expect(input.value).toBe('');
+    });
+
+    test('add rejects an invalid handle and marks the input invalid', async () => {
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await flush();
+      const input = inputElement('skip-owner-input');
+      input.value = '-leading-dash';
+      document.getElementById('skip-owner-add')!.click();
+      await flush();
+      expect(input.classList.contains('is-invalid')).toBe(true);
+      const stored = await new Promise<Record<string, unknown>>((resolve) =>
+        chrome.storage.sync.get(['skip_owners'], (items) => resolve(items))
+      );
+      expect(stored.skip_owners).toBeUndefined();
+    });
+
+    test('remove pulls entry from storage and calls clearOwnerCache', async () => {
+      await new Promise<void>((resolve) => {
+        chrome.storage.sync.set({ skip_owners: ['acme-corp', 'legacy-co'] }, () => resolve());
+      });
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await flush();
+      const firstRemove = document.querySelector(
+        '#skip-owners-list .skip-list-row button'
+      ) as HTMLButtonElement;
+      firstRemove.click();
+      await flush();
+      const stored = await new Promise<Record<string, unknown>>((resolve) =>
+        chrome.storage.sync.get(['skip_owners'], (items) => resolve(items))
+      );
+      expect(stored.skip_owners).toEqual(['legacy-co']);
+      expect(clearOwnerCache).toHaveBeenCalledWith('acme-corp');
+    });
+
+    test('toggle opens and closes the panel', async () => {
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await flush();
+      const toggle = document.getElementById('skip-owners-toggle') as HTMLButtonElement;
+      const panel = document.getElementById('skip-owners-panel');
+      expect(panel?.hasAttribute('hidden')).toBe(true);
+      toggle.click();
+      expect(panel?.hasAttribute('hidden')).toBe(false);
+      expect(toggle.textContent).toBe('Hide');
+      toggle.click();
+      expect(panel?.hasAttribute('hidden')).toBe(true);
+      expect(toggle.textContent).toBe('Manage');
+    });
+
+    test('re-renders list on storage onChanged', async () => {
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await flush();
+      expect(document.getElementById('skip-owners-count')?.textContent).toBe('0 owners');
+      await new Promise<void>((resolve) => {
+        chrome.storage.sync.set({ skip_owners: ['acme-corp'] }, () => resolve());
+      });
+      await flush();
+      expect(document.getElementById('skip-owners-count')?.textContent).toBe('1 owner');
+      expect(document.querySelectorAll('#skip-owners-list .skip-list-row').length).toBe(1);
+    });
   });
 });

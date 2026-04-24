@@ -1,16 +1,18 @@
 import { CACHE_VERSION, validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
-import { clearCache, getCacheEntryCount, sweepCache } from './cache';
+import { clearCache, clearOwnerCache, getCacheEntryCount, sweepCache } from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
   DefaultAdvancedOpen,
   DefaultHasStarred,
   DefaultShowSettings,
+  DefaultSkipOwners,
   DefaultStarStyle,
   DefaultTokenValidated,
   DefaultToolbarIcon,
   HAS_STARRED_KEY,
   SHOW_KEY,
+  SKIP_OWNERS_KEY,
   STAR_STYLE_KEY,
   TOKEN_VALIDATED_KEY,
   TOOLBAR_ICON_KEY,
@@ -366,6 +368,130 @@ function wireAdvancedToggle() {
   });
 }
 
+// GitHub username/org handle grammar, case-insensitive:
+//   1–39 chars, [a-z0-9], hyphens allowed but not at start/end or doubled.
+// Stored lowercase since GitHub handles are case-insensitive — keeps the
+// skipOwners.includes() check on the paint hot path free of a toLowerCase
+// per anchor.
+const GITHUB_HANDLE_RE = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
+
+function renderSkipOwnersList(owners: readonly string[]) {
+  const listEl = document.getElementById('skip-owners-list');
+  const countEl = document.getElementById('skip-owners-count');
+  if (countEl) countEl.textContent = `${owners.length} owner${owners.length === 1 ? '' : 's'}`;
+  if (!listEl) return;
+  listEl.textContent = '';
+  for (const owner of owners) {
+    const row = document.createElement('div');
+    row.className = 'skip-list-row';
+    const name = document.createElement('span');
+    name.textContent = owner;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'link-btn link-btn--danger';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => {
+      void removeSkipOwner(owner);
+    });
+    row.append(name, remove);
+    listEl.appendChild(row);
+  }
+}
+
+function getStoredSkipOwners(): Promise<string[]> {
+  return new Promise((resolve) =>
+    chrome.storage.sync.get([SKIP_OWNERS_KEY], (items) => {
+      const raw = items[SKIP_OWNERS_KEY];
+      resolve(Array.isArray(raw) ? (raw as string[]) : DefaultSkipOwners);
+    })
+  );
+}
+
+async function addSkipOwner(raw: string): Promise<'ok' | 'invalid' | 'duplicate'> {
+  const trimmed = raw.trim().toLowerCase();
+  if (!GITHUB_HANDLE_RE.test(trimmed)) return 'invalid';
+  const current = await getStoredSkipOwners();
+  if (current.includes(trimmed)) return 'duplicate';
+  const next = [...current, trimmed].sort();
+  await new Promise<void>((resolve) =>
+    chrome.storage.sync.set({ [SKIP_OWNERS_KEY]: next }, () => resolve())
+  );
+  return 'ok';
+}
+
+async function removeSkipOwner(owner: string): Promise<void> {
+  const current = await getStoredSkipOwners();
+  const next = current.filter((o) => o !== owner);
+  if (next.length === current.length) return;
+  await new Promise<void>((resolve) =>
+    chrome.storage.sync.set({ [SKIP_OWNERS_KEY]: next }, () => resolve())
+  );
+  // Proactively drop the owner's cached 404s so broken chips reappear
+  // immediately instead of waiting out the 4h TTL. Best-effort.
+  try {
+    await clearOwnerCache(owner);
+  } catch (err) {
+    console.error('sneetches: clearOwnerCache failed', err);
+  }
+}
+
+function wireSkipOwners() {
+  const toggle = document.getElementById('skip-owners-toggle');
+  const panel = document.getElementById('skip-owners-panel');
+  const input = document.getElementById('skip-owner-input') as HTMLInputElement | null;
+  const addBtn = document.getElementById('skip-owner-add');
+  if (!toggle || !panel || !input || !addBtn) return;
+
+  toggle.addEventListener('click', () => {
+    const open = !panel.hasAttribute('hidden');
+    if (open) {
+      panel.setAttribute('hidden', '');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.textContent = 'Manage';
+    } else {
+      panel.removeAttribute('hidden');
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.textContent = 'Hide';
+      input.focus();
+    }
+  });
+
+  const tryAdd = async () => {
+    const value = input.value;
+    if (!value.trim()) return;
+    const result = await addSkipOwner(value);
+    if (result === 'ok' || result === 'duplicate') {
+      input.value = '';
+      input.classList.remove('is-invalid');
+    } else {
+      input.classList.add('is-invalid');
+    }
+  };
+
+  addBtn.addEventListener('click', () => {
+    void tryAdd();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void tryAdd();
+    }
+  });
+  input.addEventListener('input', () => input.classList.remove('is-invalid'));
+
+  // Re-render on storage changes so cmd-click-driven additions from the
+  // content script show up live, and removes from another popup instance
+  // stay in sync.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync' || !(SKIP_OWNERS_KEY in changes)) return;
+    const next = changes[SKIP_OWNERS_KEY].newValue;
+    renderSkipOwnersList(Array.isArray(next) ? (next as string[]) : []);
+  });
+
+  // Initial populate.
+  void getStoredSkipOwners().then(renderSkipOwnersList);
+}
+
 function wireClearCache() {
   const btn = document.getElementById('clear-cache');
   if (!btn) return;
@@ -472,6 +598,7 @@ document.addEventListener('DOMContentLoaded', () => {
   wireStarStylePreview();
   wireAdvancedToggle();
   wireClearCache();
+  wireSkipOwners();
   wireStarCtaEasterEgg();
   renderVersion();
 });
