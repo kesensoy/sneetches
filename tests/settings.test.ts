@@ -16,6 +16,7 @@ describe('settingsP', () => {
       tokenValidated: false,
       hasStarred: false,
       toolbarIcon: 'gray',
+      skipOwners: [],
     });
   });
 
@@ -40,7 +41,24 @@ describe('settingsP', () => {
       tokenValidated: false,
       hasStarred: false,
       toolbarIcon: 'gray',
+      skipOwners: [],
     });
+  });
+
+  test('round-trips skip_owners array', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ skip_owners: ['acme-corp', 'legacy-co'] }, () => resolve());
+    });
+    const settings = await getSettings();
+    expect(settings.skipOwners).toEqual(['acme-corp', 'legacy-co']);
+  });
+
+  test('defends against non-array skip_owners values', async () => {
+    await new Promise<void>((resolve) => {
+      chrome.storage.sync.set({ skip_owners: 'not-an-array' }, () => resolve());
+    });
+    const settings = await getSettings();
+    expect(settings.skipOwners).toEqual([]);
   });
 
   describe.each([
