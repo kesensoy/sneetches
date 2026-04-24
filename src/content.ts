@@ -12,6 +12,7 @@ import {
 import { isRepoUrl, RepoResponse, CACHE_VERSION } from './github';
 import {
   ACCESS_TOKEN_KEY,
+  GITHUB_HANDLE_RE,
   HAS_STARRED_KEY,
   SHOW_KEY,
   SKIP_OWNERS_KEY,
@@ -867,6 +868,12 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
 
   async function confirmSkipOwner(owner: string): Promise<void> {
     dismissSkipPopover();
+    // Symmetric with the options-UI Add path. The click path already
+    // requires an https://github.com/ anchor with ≥2 path segments, so a
+    // failing handle here is near-unreachable — but we gate anyway so a
+    // pathological URL (percent-encoded spaces, weird unicode) can't leak
+    // into sync storage.
+    if (!GITHUB_HANDLE_RE.test(owner)) return;
     const current = await new Promise<string[]>((resolve) =>
       chrome.storage.sync.get([SKIP_OWNERS_KEY], (items) => {
         const raw = items[SKIP_OWNERS_KEY];

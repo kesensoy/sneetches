@@ -10,6 +10,7 @@ import {
   DefaultStarStyle,
   DefaultTokenValidated,
   DefaultToolbarIcon,
+  GITHUB_HANDLE_RE,
   HAS_STARRED_KEY,
   SHOW_KEY,
   SKIP_OWNERS_KEY,
@@ -367,13 +368,6 @@ function wireAdvancedToggle() {
     chrome.storage.sync.set({ [ADVANCED_OPEN_KEY]: !isOpen });
   });
 }
-
-// GitHub username/org handle grammar, case-insensitive:
-//   1–39 chars, [a-z0-9], hyphens allowed but not at start/end or doubled.
-// Stored lowercase since GitHub handles are case-insensitive — keeps the
-// skipOwners.includes() check on the paint hot path free of a toLowerCase
-// per anchor.
-const GITHUB_HANDLE_RE = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
 
 function renderSkipOwnersList(owners: readonly string[]) {
   const listEl = document.getElementById('skip-owners-list');

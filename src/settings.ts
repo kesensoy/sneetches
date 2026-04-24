@@ -40,6 +40,13 @@ export const DefaultHasStarred: boolean = false;
 export const DefaultToolbarIcon: ToolbarIconMode = 'gray';
 export const DefaultSkipOwners: string[] = [];
 
+// GitHub username/org handle grammar, case-insensitive:
+//   1–39 chars, [a-z0-9], hyphens allowed but not at start/end or doubled.
+// Gates every write into `skip_owners` — both the options-UI Add flow and
+// the cmd-click confirm flow — so malformed URL segments can't leak into
+// sync storage.
+export const GITHUB_HANDLE_RE = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
+
 export function getSettings(): Promise<Settings> {
   return new Promise((resolve, reject) =>
     chrome.storage.sync.get(

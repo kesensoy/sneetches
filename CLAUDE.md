@@ -4,8 +4,8 @@
 Chrome/Firefox browser extension that adds GitHub repo stats (stars, forks, last pushed date) inline next to GitHub repo links on any webpage. Manifest V3, TypeScript, Webpack-bundled.
 
 ## Current state
-- Version 1.2.0 in `package.json` / `src/manifest.json`. 1.1.9 is live in both stores; 1.2.0 adds cache eviction (`sweepCache` removes expired/wrong-version/malformed entries on demand) and a 25k hard cap (oldest-by-exp trimmed first). Fixes pre-1.2.0 cache bloat — expired entries previously accrued on disk forever, since both readers only filtered them out without removing them.
-- Full Jest suite: 235 tests passing across 8 suites.
+- Version 1.3.0 in `package.json` / `src/manifest.json`. 1.1.9 is live in both stores; 1.2.0 added cache eviction (`sweepCache` removes expired/wrong-version/malformed entries on demand) and a 25k hard cap (oldest-by-exp trimmed first); 1.2.1 re-syncs the toolbar icon preference on install/update/startup (fixes the colorful easter-egg icon reverting to gray after every extension update). 1.3.0 adds skip-owners: a sync-stored list of GitHub owner handles whose 404 broken-chips are suppressed, driven by an Advanced-tray Manage panel and a cmd/ctrl-click popover on any broken chip. Removal also drops the owner's cached 404 entries via `clearOwnerCache(owner)` so the chips reappear immediately instead of waiting out the 4h TTL.
+- Full Jest suite: 251 tests passing across 8 suites.
 
 ## Technology Stack
 - **Node.js** 20+ (fnm recommended), **TypeScript** 5.7.2, **Webpack** 5.97.1
