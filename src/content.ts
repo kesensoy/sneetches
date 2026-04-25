@@ -9,7 +9,7 @@ import {
   starIcon,
   unlinkIcon,
 } from './icons';
-import { isRepoUrl, RepoResponse, CACHE_VERSION } from './github';
+import { isRepoUrl, parseRepoNwo, RepoResponse, CACHE_VERSION } from './github';
 import {
   ACCESS_TOKEN_KEY,
   GITHUB_HANDLE_RE,
@@ -465,10 +465,10 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
 
       const pending: Array<{ elt: HTMLAnchorElement; nwo: string }> = [];
       for (const elt of links) {
-        const m = elt.href.match('^https?://github.com/(.+?)(?:.git)?/?$');
-        if (!m) continue;
+        const nwo = parseRepoNwo(elt.href);
+        if (!nwo) continue;
         inFlightAnchors.set(elt, epoch);
-        pending.push({ elt, nwo: m[1] });
+        pending.push({ elt, nwo });
       }
 
       if (pending.length === 0) return;
