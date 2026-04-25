@@ -42,7 +42,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/sne
 
 Click the toolbar icon to open the popup — it's also the settings page. Toggle stars / forks / last push, pick an icon style, and (optionally) paste a [GitHub Personal Access Token](https://github.com/settings/tokens/new) to lift the API rate limit from 60 to 5,000 requests per hour. No scopes are required for public repos; add `repo` only if you want stats for your private ones.
 
-The **Advanced** tray shows current rate-limit usage and cache size, and lets you **skip owners** — useful when an org has private repos your PAT can't read, since GitHub 404s those the same way it 404s deleted ones, painting every link to that org red. Click **Manage** to add or remove an owner, or ⌘/Ctrl-click any broken chip for a one-step skip.
+The **Advanced** tray shows current rate-limit usage and cached entry count, and lets you **skip owners** — useful when an org has private repos your PAT can't read, since GitHub returns 404 for those (same as a deleted repo), so every link to that org gets the red "broken" chip. Click **Manage** to add or remove an owner, or ⌘/Ctrl-click any broken chip for a one-step skip.
 
 ## Development
 
