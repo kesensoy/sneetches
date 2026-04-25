@@ -438,7 +438,42 @@ const gitHubSpecialPages = new Set([
   'topics',
 ]);
 
+// Parse a GitHub repo URL into its `owner/name` nwo, or null if the URL
+// isn't a plain repo link. Used as the single source of truth for both
+// `isRepoUrl` (gate) and the content script's nwo extraction (consumer)
+// — they used to be two independent regexes and drifted: the extractor's
+// `(?:.git)?` had an unescaped dot that truncated names containing `git`
+// (jotgit → jdleesmiller/jo), and `isRepoUrl`'s `[^/]+` swallowed `#`/`?`
+// into the repo segment so `#anchor` and `?tab=` URLs from awesome-list
+// READMEs got cached as fake 404s. URL parsing handles both cleanly.
+export function parseRepoNwo(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  // Hostname comparison is effectively case-insensitive: URL spec
+  // lowercases the hostname during parsing, so `Github.com` becomes
+  // `github.com`. The old regex was case-sensitive and would have
+  // rejected mixed-case hosts; the live `findUnannotatedRepoLinks`
+  // selector (`a[href^="https://github.com/"]`) is also case-sensitive
+  // so this only matters for direct callers of `parseRepoNwo`.
+  if (url.hostname !== 'github.com') return null;
+  // Reject README-internal anchor links (e.g. `…/ralph#live-demo`) and
+  // tab/query variants (`…/repo?tab=readme`) — they're not plain repo
+  // URLs and shouldn't be cached as repo lookups.
+  if (url.hash !== '' || url.search !== '') return null;
+  const segs = url.pathname.split('/').filter(Boolean);
+  if (segs.length !== 2) return null;
+  const [owner, rawRepo] = segs;
+  if (gitHubSpecialPages.has(owner)) return null;
+  const repo = rawRepo.endsWith('.git') ? rawRepo.slice(0, -4) : rawRepo;
+  if (!repo) return null;
+  return `${owner}/${repo}`;
+}
+
 export function isRepoUrl(href: string): boolean {
-  const match = href && href.match('^https?://github.com/([^/]+)/[^/]+/?$');
-  return Boolean(match && !gitHubSpecialPages.has(match[1]));
+  return parseRepoNwo(href) !== null;
 }

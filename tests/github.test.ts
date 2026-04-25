@@ -4,6 +4,7 @@ import {
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
   isRepoUrl,
+  parseRepoNwo,
   RATE_LIMIT_KEY,
   RepoResponse,
   validateAccessToken,
@@ -166,6 +167,68 @@ describe('isRepoUrl', () => {
     expect(isRepoUrl('https://github.com/security/something')).toBe(false);
     expect(isRepoUrl('https://github.com/sponsors/someone')).toBe(false);
     expect(isRepoUrl('https://github.com/features/actions')).toBe(false);
+  });
+
+  // Pre-fix the regex was `[^/]+` which accepts `#`, `?`, `&` etc. — so
+  // README anchor links like `…/ralph#live-demo` and `…/repo?tab=readme`
+  // matched as repo URLs and got cached as bogus 404s.
+  test('rejects URLs with a fragment or query string', () => {
+    expect(isRepoUrl('https://github.com/allegro/ralph#live-demo')).toBe(false);
+    expect(isRepoUrl('https://github.com/owner/name?tab=readme')).toBe(false);
+    expect(isRepoUrl('https://github.com/owner/name?foo=bar#section')).toBe(false);
+    expect(isRepoUrl('https://github.com/owner/name/?tab=readme')).toBe(false);
+  });
+
+  test('rejects URLs with extra path segments', () => {
+    expect(isRepoUrl('https://github.com/owner/name/issues')).toBe(false);
+    expect(isRepoUrl('https://github.com/owner/name/blob/main/README.md')).toBe(false);
+  });
+});
+
+describe('parseRepoNwo', () => {
+  test('extracts owner/name from plain repo URLs', () => {
+    expect(parseRepoNwo('https://github.com/owner/name')).toBe('owner/name');
+    expect(parseRepoNwo('http://github.com/owner/name')).toBe('owner/name');
+    expect(parseRepoNwo('https://github.com/owner/name/')).toBe('owner/name');
+  });
+
+  test('strips trailing .git suffix', () => {
+    expect(parseRepoNwo('https://github.com/torvalds/linux.git')).toBe('torvalds/linux');
+    expect(parseRepoNwo('https://github.com/torvalds/linux.git/')).toBe('torvalds/linux');
+  });
+
+  // Regression tests for the unescaped-dot bug in the old extraction
+  // regex `(?:.git)?` — any repo whose name has at least one character
+  // before a final `git` got truncated. jotgit → jdleesmiller/jo, megit
+  // → megit/m, even git/git → git (owner only).
+  test('preserves repo names containing or ending in "git"', () => {
+    expect(parseRepoNwo('https://github.com/jdleesmiller/jotgit')).toBe('jdleesmiller/jotgit');
+    expect(parseRepoNwo('https://github.com/git/git')).toBe('git/git');
+    expect(parseRepoNwo('https://github.com/megit/megit')).toBe('megit/megit');
+    expect(parseRepoNwo('https://github.com/foo/digit')).toBe('foo/digit');
+    expect(parseRepoNwo('https://github.com/owner/magit')).toBe('owner/magit');
+  });
+
+  // Repo names with dots (e.g. ipfire/ipfire-2.x) must round-trip
+  // unchanged; the only `.git` suffix should be stripped, never an
+  // interior dot. Also pins the case-insensitive hostname behavior
+  // documented in the comment in parseRepoNwo.
+  test('preserves dots in repo names and accepts mixed-case hostnames', () => {
+    expect(parseRepoNwo('https://github.com/ipfire/ipfire-2.x')).toBe('ipfire/ipfire-2.x');
+    expect(parseRepoNwo('https://Github.com/owner/name')).toBe('owner/name');
+    expect(parseRepoNwo('HTTPS://github.com/owner/name')).toBe('owner/name');
+  });
+
+  test('returns null for non-repo URLs', () => {
+    expect(parseRepoNwo('https://example.com/owner/name')).toBe(null);
+    expect(parseRepoNwo('https://github.com/')).toBe(null);
+    expect(parseRepoNwo('https://github.com/owner')).toBe(null);
+    expect(parseRepoNwo('https://github.com/owner/name/issues')).toBe(null);
+    expect(parseRepoNwo('https://github.com/owner/name/blob/main/README.md')).toBe(null);
+    expect(parseRepoNwo('https://github.com/owner/name#frag')).toBe(null);
+    expect(parseRepoNwo('https://github.com/owner/name?q=1')).toBe(null);
+    expect(parseRepoNwo('https://github.com/sponsors/someone')).toBe(null);
+    expect(parseRepoNwo('not a url')).toBe(null);
   });
 });
 
