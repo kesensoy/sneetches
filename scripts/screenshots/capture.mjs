@@ -227,6 +227,9 @@ async function capturePopup(browser) {
           star_style: 'filled',
           has_starred: true,
           advanced_open: true,
+          // Sample owners so the Skip-owners row + Manage panel render
+          // with realistic content in the README screenshot.
+          skip_owners: ['acme-corp', 'legacy-co'],
         },
         () => res()
       )
@@ -247,14 +250,27 @@ async function capturePopup(browser) {
   await new Promise((r) => setTimeout(r, 500));
 
   // Render options.html at popup width (body.is-popup sets 324px).
-  // DSF=2 for retina-sharp text.
+  // DSF=2 for retina-sharp text. Viewport extra-tall so the Manage
+  // panel doesn't push the body past the visible region.
   const page = await browser.newPage();
-  await page.setViewport({ width: 400, height: 900, deviceScaleFactor: 2 });
+  await page.setViewport({ width: 400, height: 1100, deviceScaleFactor: 2 });
   await page.goto(popupUrl, { waitUntil: 'networkidle0', timeout: 30000 });
   await page
     .waitForSelector('#token-collapsed:not([hidden])', { timeout: 5000 })
     .catch(() =>
       console.warn('[screenshots:popup] #token-collapsed never became visible — proceeding')
+    );
+  // Open the Skip-owners Manage panel so the screenshot shows the
+  // feature's actual surface (list + input + tip), not just a row.
+  await page
+    .evaluate(() => {
+      const btn = document.getElementById('skip-owners-toggle');
+      if (btn instanceof HTMLElement) btn.click();
+    })
+    .catch(() =>
+      console.warn(
+        '[screenshots:popup] #skip-owners-toggle click failed — Manage panel may be closed'
+      )
     );
   await new Promise((r) => setTimeout(r, 500));
 
