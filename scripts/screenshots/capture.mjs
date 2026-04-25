@@ -267,7 +267,11 @@ async function capturePopup(browser) {
       const btn = document.getElementById('skip-owners-toggle');
       if (btn instanceof HTMLElement) btn.click();
     })
-    .catch(() => {});
+    .catch(() =>
+      console.warn(
+        '[screenshots:popup] #skip-owners-toggle click failed — Manage panel may be closed'
+      )
+    );
   await new Promise((r) => setTimeout(r, 500));
 
   const bbox = await page.evaluate(() => {
