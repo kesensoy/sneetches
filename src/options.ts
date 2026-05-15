@@ -47,6 +47,7 @@ function saveOptions() {
       forks: inputElement('show-forks').checked,
       stars: inputElement('show-stars').checked,
       update: inputElement('show-update').checked,
+      contributors: inputElement('show-contributors').checked,
     },
     [STAR_STYLE_KEY]: inputElement('ss-outline').checked ? 'outline' : 'filled',
   });
@@ -219,6 +220,7 @@ function restoreOptions() {
       inputElement('show-forks').checked = show.forks;
       inputElement('show-stars').checked = show.stars;
       inputElement('show-update').checked = show.update;
+      inputElement('show-contributors').checked = show.contributors;
       inputElement('ss-outline').checked = starStyle === 'outline';
       inputElement('ss-fill').checked = starStyle === 'filled';
 
