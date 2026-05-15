@@ -1,4 +1,4 @@
-import { bulkReadCache, bulkWriteCache } from './cache';
+import { bulkReadCache, bulkWriteCache, CONTRIB_KEY_MARKER } from './cache';
 import { TOKEN_VALIDATED_KEY } from './settings';
 
 export const CACHE_VERSION = 2;
@@ -6,6 +6,30 @@ const GITHUB_API_URL = 'https://api.github.com/repos/';
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
 
 export const RATE_LIMIT_KEY = 'rate_limit';
+
+// Contributor-count cache namespace. Separate version from CACHE_VERSION
+// so the two namespaces evolve independently — see the design doc at
+// docs/plans/2026-05-14-contributor-count-design.md.
+export const CONTRIB_CACHE_VERSION = 1;
+// 24h — 6x the 4h repo-data TTL. Contributor counts move slowly and the
+// per-repo REST fetch is expensive and unbatchable, so a long TTL is
+// both more correct and far cheaper on rate limit.
+export const CONTRIB_TTL_SECONDS = 24 * 3600;
+
+export function contribCacheKey(nwo: string): string {
+  return nwo + CONTRIB_KEY_MARKER;
+}
+
+// The three terminal states of a contributor-count lookup:
+//   count  — an exact number (from the Link header or the body fallback)
+//   many   — GitHub refused to enumerate (HTTP 403 "too large"); the repo
+//            is a linux-scale giant. Rendered as a qualitative "many" chip.
+//   silent — transient failure (network / 5xx / rate-limit). Not painted,
+//            not cached; retried on the next scan.
+export type ContribResponse =
+  | { readonly kind: 'count'; readonly count: number }
+  | { readonly kind: 'many' }
+  | { readonly kind: 'silent' };
 
 export interface RateLimitInfo {
   limit: number;

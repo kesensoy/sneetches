@@ -1,6 +1,9 @@
 import {
   BATCH_SIZE,
   buildBatchQuery,
+  CONTRIB_CACHE_VERSION,
+  CONTRIB_TTL_SECONDS,
+  contribCacheKey,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
   isRepoUrl,
@@ -891,5 +894,17 @@ describe('fetchRepoDataStreaming', () => {
     }) as unknown as typeof fetch;
     const second = await fetchReposMap(['private/repo']);
     expect(second.get('private/repo')).toEqual({ kind: 'silent' });
+  });
+});
+
+describe('contrib constants', () => {
+  test('CONTRIB_CACHE_VERSION is a number', () => {
+    expect(typeof CONTRIB_CACHE_VERSION).toBe('number');
+  });
+  test('CONTRIB_TTL_SECONDS is 24h', () => {
+    expect(CONTRIB_TTL_SECONDS).toBe(24 * 3600);
+  });
+  test('contribCacheKey appends the NUL-delimited contrib marker', () => {
+    expect(contribCacheKey('facebook/react')).toBe('facebook/react\x00contrib');
   });
 });
