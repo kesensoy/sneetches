@@ -4,6 +4,7 @@ import {
   CONTRIB_CACHE_VERSION,
   CONTRIB_TTL_SECONDS,
   contribCacheKey,
+  fetchContributorCount,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
   isRepoUrl,
@@ -907,6 +908,49 @@ describe('contrib constants', () => {
   });
   test('contribCacheKey appends the NUL-delimited contrib marker', () => {
     expect(contribCacheKey('facebook/react')).toBe('facebook/react\x00contrib');
+  });
+});
+
+describe('fetchContributorCount', () => {
+  test('200 with Link header → exact count', async () => {
+    mockFetch({
+      json: [{}],
+      headers: { link: '<...&page=411>; rel="last"' },
+    });
+    expect(await fetchContributorCount('facebook/react', undefined)).toEqual({
+      kind: 'count',
+      count: 411,
+    });
+  });
+
+  test('200 without Link header → body-length count', async () => {
+    mockFetch({ json: [{}] }); // single contributor, no Link
+    expect(await fetchContributorCount('solo/repo', undefined)).toEqual({
+      kind: 'count',
+      count: 1,
+    });
+  });
+
+  test('403 "too large" → many (quota remaining)', async () => {
+    mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '57' } });
+    expect(await fetchContributorCount('torvalds/linux', undefined)).toEqual({ kind: 'many' });
+  });
+
+  test('403 rate-limited → silent (no quota)', async () => {
+    mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '0' } });
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
+  test('network error → silent', async () => {
+    global.fetch = jest.fn(async () => {
+      throw new Error('network');
+    }) as unknown as typeof fetch;
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
+  test('5xx → silent', async () => {
+    mockFetch({ ok: false, status: 502 });
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
   });
 });
 

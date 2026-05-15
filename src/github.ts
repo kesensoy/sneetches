@@ -33,6 +33,43 @@ export function parseContributorCount(linkHeader: string | null, bodyLength: num
   return bodyLength;
 }
 
+// Fetch one repo's contributor count. Uses the cheap
+// /contributors?per_page=1 + Link-header trick. Distinguishes the
+// 403 "too large" (linux-scale giant → 'many') from a 403 rate-limit
+// (x-ratelimit-remaining: 0 → 'silent'). Any transport hiccup
+// (network / 5xx) is 'silent' — not painted, not cached, retried next
+// scan. Passes the PAT through when present (5000/h bucket vs 60/h).
+// @internal — exported for unit tests; production callers reach it
+// through fetchContributorsStreaming.
+export async function fetchContributorCount(
+  nwo: string,
+  accessToken: string | undefined
+): Promise<ContribResponse> {
+  const headers: Record<string, string> = { 'User-Agent': 'kesensoy/sneetches' };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  try {
+    const res = await fetch(`${GITHUB_API_URL}${nwo}/contributors?per_page=1`, { headers });
+    if (res.ok) {
+      const body = await res.json();
+      const bodyLength = Array.isArray(body) ? body.length : 0;
+      return {
+        kind: 'count',
+        count: parseContributorCount(res.headers.get('Link'), bodyLength),
+      };
+    }
+    if (res.status === 403) {
+      // A 403 with quota remaining is the "contributor list too large"
+      // refusal — the repo is a giant. A 403 with no quota is a plain
+      // rate-limit and should retry next scan.
+      const remaining = res.headers.get('x-ratelimit-remaining');
+      return remaining !== '0' ? { kind: 'many' } : { kind: 'silent' };
+    }
+    return { kind: 'silent' };
+  } catch {
+    return { kind: 'silent' };
+  }
+}
+
 // The three terminal states of a contributor-count lookup:
 //   count  — an exact number (from the Link header or the body fallback)
 //   many   — GitHub refused to enumerate (HTTP 403 "too large"); the repo
