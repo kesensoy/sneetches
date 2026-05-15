@@ -223,7 +223,7 @@ async function capturePopup(browser) {
         {
           access_token: 'ghp_ExampleReadmeScreenshotTokenEndingIn493C',
           token_validated: true,
-          show: { stars: true, forks: true, update: true },
+          show: { stars: true, forks: true, update: true, contributors: true },
           star_style: 'filled',
           has_starred: true,
           advanced_open: true,
@@ -314,7 +314,7 @@ async function ensureSettings(browser, pat) {
         {
           access_token: token,
           token_validated: true,
-          show: { stars: true, forks: true, update: true },
+          show: { stars: true, forks: true, update: true, contributors: true },
           star_style: 'filled',
         },
         () => res()
@@ -372,6 +372,15 @@ async function main() {
           await page.waitForSelector('.sneetch-archived', { timeout: 15000 });
         } catch {
           console.warn(`[screenshots:${c.label}] no archived chip within 15s — proceeding`);
+        }
+        // Contributors lives on a separate port + per-repo REST pipeline
+        // that lands AFTER the GraphQL repo chunks. Wait for at least one
+        // contributor chip too so the demo shots include the 4-chip
+        // variant rather than racing the screenshot ahead of paint.
+        try {
+          await page.waitForSelector('.sneetch-contributors', { timeout: 15000 });
+        } catch {
+          console.warn(`[screenshots:${c.label}] no contributor chip within 15s — proceeding`);
         }
         await new Promise((r) => setTimeout(r, 2500));
       } else {
