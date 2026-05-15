@@ -91,20 +91,28 @@ describe('createAnnotation', () => {
   };
 
   test('stars annotation uses SVG icon', () => {
-    const elt = createAnnotation(data, { forks: false, stars: true, update: false }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: true, update: false, contributors: false },
+      'outline'
+    );
     expect(elt.outerHTML).toMatch('class="data-sneetch-extension"');
     expect(elt.outerHTML).toMatch('<svg');
     expect(elt.textContent?.trim()).toBe('10');
   });
 
   test('stars annotation uses filled SVG when starStyle=filled', () => {
-    const elt = createAnnotation(data, { forks: false, stars: true, update: false }, 'filled');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: true, update: false, contributors: false },
+      'filled'
+    );
     expect(elt.outerHTML).toMatch(/<svg/);
     // Starfill path data starts differently from star-outline; simplest check is
     // that the outputs for 'outline' vs 'filled' differ:
     const outlineElt = createAnnotation(
       data,
-      { forks: false, stars: true, update: false },
+      { forks: false, stars: true, update: false, contributors: false },
       'outline'
     );
     expect(elt.outerHTML).not.toBe(outlineElt.outerHTML);
@@ -118,7 +126,11 @@ describe('createAnnotation', () => {
       archived: false,
       committed_date: '2018-09-23T00:00:00Z',
     };
-    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: false, update: true, contributors: false },
+      'outline'
+    );
     // Tooltip should reflect the committed_date (2018), not pushed_at (2025)
     expect(elt.title).toContain('2018');
     expect(elt.title).not.toContain('2025');
@@ -131,7 +143,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: false, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).toContain('2024');
   });
 
@@ -142,7 +158,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).toContain('last updated');
     expect(elt.title).not.toContain('pushed');
   });
@@ -154,7 +174,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     const archiveChip = elt.querySelector('.sneetch-archived');
     expect(archiveChip).not.toBeNull();
     expect(archiveChip?.querySelector('svg')).not.toBeNull();
@@ -168,7 +192,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.querySelector('.sneetch-archived')).toBeNull();
   });
 
@@ -179,7 +207,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     const children = elt.children;
     expect(children[children.length - 1].classList.contains('sneetch-archived')).toBe(true);
   });
@@ -191,7 +223,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.classList.contains('is-archived')).toBe(true);
   });
 
@@ -202,7 +238,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.classList.contains('is-archived')).toBe(false);
   });
 
@@ -213,7 +253,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).toContain('; archived');
   });
 
@@ -224,7 +268,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).not.toContain('archived');
   });
 
@@ -235,7 +283,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
 
     const starsChip = elt.querySelector('.sneetch-stars');
     expect(starsChip?.getAttribute('aria-label')).toBe('612 stars');

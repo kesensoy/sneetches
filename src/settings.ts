@@ -25,12 +25,14 @@ export interface ShowSettings {
   forks: boolean;
   stars: boolean;
   update: boolean;
+  contributors: boolean;
 }
 
 export const DefaultShowSettings: ShowSettings = {
   forks: false,
   stars: true,
   update: false,
+  contributors: false,
 };
 
 export const DefaultStarStyle: StarStyle = 'outline';
