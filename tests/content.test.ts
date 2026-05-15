@@ -1,6 +1,7 @@
-import { RepoResponse } from '../src/github';
+import { ContribResponse, RepoResponse } from '../src/github';
 import {
   ContentScriptController,
+  ContribFetcher,
   createAnnotation,
   createContentScript,
   createContributorChip,
@@ -1751,6 +1752,161 @@ describe('in-memory cache invalidation on local storage clear', () => {
     await removeLocal('a/b\x00contrib');
     await flushStorageEvents();
     expect(instance.getInMemoryRepoCache()).toBe(seeded);
+  });
+});
+
+describe('contributor chip integration', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    document.body.innerHTML = '';
+    portFetcherMock.mockReset();
+  });
+
+  // Helper: build a content script with both fetchers stubbed and a single
+  // repo anchor in the DOM, then wait long enough for the leading-edge
+  // scan + microtask paint chain to settle.
+  const setupWithFetchers = async (opts: {
+    show: Record<string, boolean>;
+    contribFetcher?: ContribFetcher;
+    repoResponse?: RepoResponse;
+  }): Promise<{
+    instance: ContentScriptController;
+    anchor: HTMLAnchorElement;
+  }> => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ show: opts.show, star_style: 'outline' }, resolve)
+    );
+    const anchor = document.createElement('a');
+    anchor.href = 'https://github.com/owner/repo';
+    document.body.appendChild(anchor);
+    portFetcherMock.mockImplementation(async (nwos, onChunk) => {
+      const entries: Array<readonly [string, RepoResponse]> = nwos.map((nwo) => [
+        nwo,
+        opts.repoResponse ?? {
+          kind: 'ok',
+          json: {
+            forks_count: 0,
+            stargazers_count: 7,
+            pushed_at: '2024-01-01',
+            archived: false,
+          },
+        },
+      ]);
+      onChunk(entries);
+      return { ok: true };
+    });
+    const instance = createContentScript({
+      portFetcher: portFetcherMock,
+      contribFetcher: opts.contribFetcher,
+    });
+    instance.initialize();
+    await waitForScanner();
+    return { instance, anchor };
+  };
+
+  test('paints a contributor chip onto the annotation when show.contributors is on', async () => {
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 7 } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      const chip = annotation?.querySelector('.sneetch-contributors');
+      expect(chip).not.toBeNull();
+      expect(chip!.textContent).toContain('7');
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('no contributor chip when show.contributors is off', async () => {
+    const contribFetcher = jest.fn() as unknown as ContribFetcher;
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: false },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+      // Pipeline must not even be dispatched when the feature is off.
+      expect(contribFetcher).not.toHaveBeenCalled();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('contrib result arriving BEFORE the repo annotation still paints', async () => {
+    // Hold the repo fetcher's resolution open until a flush gate, then
+    // resolve it AFTER the contrib fetcher has already delivered.
+    // paintContribResult should stash the result; the later repo paint's
+    // createAnnotation must include the chip.
+    let releaseRepo: (() => void) | null = null;
+    const repoGate = new Promise<void>((r) => {
+      releaseRepo = r;
+    });
+    portFetcherMock.mockReset();
+    portFetcherMock.mockImplementation(async (nwos, onChunk) => {
+      await repoGate;
+      onChunk(
+        nwos.map((nwo) => [
+          nwo,
+          {
+            kind: 'ok' as const,
+            json: {
+              forks_count: 0,
+              stargazers_count: 1,
+              pushed_at: '2024-01-01',
+              archived: false,
+            },
+          },
+        ])
+      );
+      return { ok: true };
+    });
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 42 } as ContribResponse]));
+      return { ok: true };
+    };
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        {
+          show: { stars: true, forks: false, update: false, contributors: true },
+          star_style: 'outline',
+        },
+        resolve
+      )
+    );
+    const anchor = document.createElement('a');
+    anchor.href = 'https://github.com/owner/repo';
+    document.body.appendChild(anchor);
+    const instance = createContentScript({
+      portFetcher: portFetcherMock,
+      contribFetcher,
+    });
+    try {
+      instance.initialize();
+      // Let the contrib pipeline resolve while the repo path is still
+      // blocked on repoGate.
+      await waitForScanner();
+      // No annotation yet (repo path is gated) — but the contrib result
+      // has been stored in the WeakMap.
+      expect(anchor.querySelector('.data-sneetch-extension')).toBeNull();
+      // Now release the repo path and let it paint.
+      releaseRepo!();
+      await waitForScanner();
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      const chip = annotation?.querySelector('.sneetch-contributors');
+      expect(chip).not.toBeNull();
+      expect(chip!.textContent).toContain('42');
+    } finally {
+      instance.teardown();
+    }
   });
 });
 

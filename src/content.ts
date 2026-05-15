@@ -22,7 +22,12 @@ import {
   ShowSettings,
   StarStyle,
 } from './settings';
-import { SNEETCHES_PORT_NAME, SneetchesRpcMsg } from './rpc';
+import {
+  SNEETCHES_CONTRIB_PORT_NAME,
+  SNEETCHES_PORT_NAME,
+  SneetchesContribRpcMsg,
+  SneetchesRpcMsg,
+} from './rpc';
 import { commafy, humanize, humanizeDate } from './utils';
 
 // ---------------------------------------------------------------------------
@@ -178,7 +183,8 @@ export function createAnnotation(
     committed_date?: string;
   },
   show: ShowSettings,
-  starStyle: StarStyle
+  starStyle: StarStyle,
+  contrib?: ContribResponse
 ) {
   const displayDate = new Date(data.committed_date ?? data.pushed_at);
   const elt = _createAnnotation(data.archived ? 'is-archived' : null);
@@ -209,6 +215,15 @@ export function createAnnotation(
       undefined,
       ' ' + humanizeDate(displayDate)
     );
+  }
+  // Contributor chip slots between date and archive — keeps the
+  // archive chip as the last child (load-bearing for the existing
+  // "archive chip is the LAST child" invariant). show.contributors
+  // gates the fetch in updateLinks; here we just render whatever
+  // contrib result was joined to this anchor.
+  if (show.contributors && contrib) {
+    const chip = createContributorChip(contrib);
+    if (chip) elt.appendChild(chip);
   }
   // Archive chip is icon-only (the word "archived" lives only in the
   // tooltip + aria-label). Error chips in createErrorAnnotation deliberately
@@ -332,6 +347,48 @@ const defaultPortFetcher: PortFetcher = (nwos, onChunk) =>
   });
 
 // ---------------------------------------------------------------------------
+// ContribFetcher — same shape as PortFetcher but routes through the contrib
+// port. Kept structurally separate (rather than overloading PortFetcher with
+// a kind discriminator) so the type system can't conflate the two payload
+// shapes and so tests can inject each pipeline independently.
+// ---------------------------------------------------------------------------
+
+export type ContribFetcher = (
+  nwos: string[],
+  onChunk: (entries: ReadonlyArray<readonly [string, ContribResponse]>) => void
+) => Promise<{ ok: true } | { ok: false; status?: number }>;
+
+const defaultContribFetcher: ContribFetcher = (nwos, onChunk) =>
+  new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: SNEETCHES_CONTRIB_PORT_NAME });
+    let settled = false;
+    const finish = (result: { ok: true } | { ok: false; status?: number }): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        port.disconnect();
+      } catch {
+        // already disconnected
+      }
+      resolve(result);
+    };
+
+    port.onMessage.addListener((rawMsg: unknown) => {
+      const msg = rawMsg as SneetchesContribRpcMsg;
+      if (msg.type === 'chunk') {
+        onChunk(msg.entries);
+      } else if (msg.type === 'error') {
+        finish({ ok: false, status: msg.status });
+      } else if (msg.type === 'done') {
+        finish({ ok: true });
+      }
+    });
+    port.onDisconnect.addListener(() => finish({ ok: false, status: undefined }));
+
+    port.postMessage({ nwos });
+  });
+
+// ---------------------------------------------------------------------------
 // Factory — all mutable state lives in this closure
 // ---------------------------------------------------------------------------
 
@@ -339,6 +396,7 @@ type CachedSettings = Awaited<ReturnType<typeof getSettings>>;
 
 export interface ContentScriptDeps {
   portFetcher?: PortFetcher;
+  contribFetcher?: ContribFetcher;
 }
 
 export interface ContentScriptController {
@@ -352,6 +410,7 @@ export interface ContentScriptController {
 
 export function createContentScript(deps: ContentScriptDeps = {}): ContentScriptController {
   const portFetcher: PortFetcher = deps.portFetcher ?? defaultPortFetcher;
+  const contribFetcher: ContribFetcher = deps.contribFetcher ?? defaultContribFetcher;
 
   // ------ stateful DOM observers / timers ------
   let starredObserver: MutationObserver | null = null;
@@ -371,6 +430,15 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
 
   // ------ in-memory repo-cache mirror (see 1.1.4 docs) ------
   let inMemoryRepoCache: Map<string, RepoResponse> | null = null;
+
+  // ------ contributor results, addressed by anchor ----------
+  // The repo-data and contrib pipelines resolve independently and in
+  // either order. This WeakMap is the join point: each contrib result
+  // is stored under its anchor, and either (a) appended immediately if
+  // the repo annotation already exists, or (b) picked up by
+  // createAnnotation when the repo paint arrives. Reset per scan epoch
+  // via applySettingsChange and teardown.
+  let contribResults: WeakMap<HTMLAnchorElement, ContribResponse> = new WeakMap();
 
   // ------ storage onChanged listener reference (for teardown) ------
   let storageChangedListener:
@@ -437,7 +505,7 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
         silentSkipAnchors.add(elt);
         return;
       case 'ok':
-        elt.appendChild(createAnnotation(res.json, show, starStyle));
+        elt.appendChild(createAnnotation(res.json, show, starStyle, contribResults.get(elt)));
         return;
       case 'error': {
         const errElt = createErrorAnnotation(
@@ -451,6 +519,34 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
         return;
       }
     }
+  }
+
+  // Join the contrib result with the anchor's existing repo annotation.
+  // Two arrival orders are possible: (1) repo paint already happened —
+  // we append the chip in place; (2) repo paint hasn't run yet — we
+  // only record the result, and createAnnotation will pick it up. The
+  // epoch guard drops chunks that landed after an in-flight settings
+  // change bumped the scan generation.
+  function paintContribResult(
+    elt: HTMLAnchorElement,
+    res: ContribResponse,
+    epoch: number,
+    show: ShowSettings
+  ): void {
+    if (epoch !== currentEpoch) return;
+    if (!show.contributors) return;
+    contribResults.set(elt, res);
+    const annotation = elt.querySelector<HTMLElement>('.' + ANNOTATION_CLASS);
+    if (!annotation) return; // repo paint hasn't happened yet — createAnnotation will pick it up
+    if (annotation.querySelector('.sneetch-contributors')) return; // already painted
+    const chip = createContributorChip(res);
+    if (!chip) return;
+    // Match the in-fresh-paint chip order: stars, forks, date,
+    // contributors, archive. If an archive chip exists, insert before
+    // it so the "archive chip is the LAST child" invariant survives.
+    const archiveChip = annotation.querySelector('.sneetch-archived');
+    if (archiveChip) annotation.insertBefore(chip, archiveChip);
+    else annotation.appendChild(chip);
   }
 
   async function runPreload(): Promise<void> {
@@ -498,6 +594,33 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
       }
 
       if (pending.length === 0) return;
+
+      // Kick off the contrib pipeline in parallel with the repo path.
+      // Runs against ALL pending anchors (not just uncached ones) —
+      // contrib data lives in its own namespace and is fetched
+      // independently of the repo-data cache mirror. Fire-and-forget:
+      // results land via paintContribResult, which joins them onto the
+      // anchor's repo annotation in either arrival order. Disabled
+      // entirely when show.contributors is off, so users who haven't
+      // opted in pay zero extra cost.
+      if (show.contributors) {
+        const contribByNwo = new Map<string, HTMLAnchorElement[]>();
+        for (const { elt, nwo } of pending) {
+          const list = contribByNwo.get(nwo);
+          if (list) list.push(elt);
+          else contribByNwo.set(nwo, [elt]);
+        }
+        const contribNwos = Array.from(contribByNwo.keys());
+        void contribFetcher(contribNwos, (entries) => {
+          for (const [nwo, res] of entries) {
+            const anchors = contribByNwo.get(nwo);
+            if (!anchors) continue;
+            for (const elt of anchors) {
+              paintContribResult(elt, res, epoch, show);
+            }
+          }
+        });
+      }
 
       // 1.1.4 fast path: check the in-memory cache preloaded at
       // document_start. Anchors whose nwo is in the Map are painted
@@ -725,6 +848,7 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     currentEpoch++;
     inFlightAnchors = new WeakMap();
     silentSkipAnchors = new WeakSet();
+    contribResults = new WeakMap();
     lastLeadingEdgeAt = 0;
     invalidateCachedSettings();
     // If the popover is open, the chip it was anchored to may be about to
@@ -1074,6 +1198,7 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     lastLeadingEdgeAt = 0;
     inFlightAnchors = new WeakMap();
     silentSkipAnchors = new WeakSet();
+    contribResults = new WeakMap();
     invalidateCachedSettings();
     inMemoryRepoCache = null;
     // Bump rather than reset so any lingering .then/.catch from a prior
