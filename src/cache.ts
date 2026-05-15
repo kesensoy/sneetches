@@ -46,23 +46,41 @@ function storageRemove(keys: string[]): Promise<void> {
 // so importing back would create cache.ts ← github.ts ← cache.ts.
 const RATE_LIMIT_KEY = 'rate_limit';
 
+// Contributor-count entries share chrome.storage.local with repo entries
+// but live in their own namespace, keyed `owner/name\x00contrib`. NUL
+// cannot occur in a GitHub nwo, so it cleanly separates the two
+// "/"-containing namespaces. See docs/plans/2026-05-14-contributor-count-design.md.
+export const CONTRIB_KEY_MARKER = '\x00contrib';
+export function isContribKey(key: string): boolean {
+  return key.endsWith(CONTRIB_KEY_MARKER);
+}
+// True repo-nwo keys: owner/name shape, NOT contrib-namespaced. Used by
+// the repo scan path (readAllCachedRepos / sweepCache) to ignore contrib
+// keys, and by content.ts's handleLocalStorageChange to avoid spurious
+// preload-invalidation on contrib-key eviction.
+export function isRepoNwoKey(key: string): boolean {
+  return key.includes('/') && !isContribKey(key);
+}
+
 // Pure classification pass over a storage snapshot. Decides which keys
 // are valid (fresh + right-version + well-shaped), which should be
 // evicted (expired, wrong version, malformed), and which overflow the
 // CACHE_MAX_ENTRIES cap (oldest-by-exp trimmed first). Shared between
-// readAllCachedRepos (preload path, fire-and-forget evict) and
-// sweepCache (options path, await evict for an honest UI count).
+// readAllCachedRepos / sweepCache (repo namespace) and sweepContribCache
+// (contrib namespace) — each caller passes a keyFilter so the scan stays
+// confined to the namespace it owns.
 function scanEntries<T, V>(
   items: Record<string, unknown>,
   version: V,
-  now: number
+  now: number,
+  keyFilter: (key: string) => boolean
 ): { live: Map<string, T>; evict: string[] } {
   const live = new Map<string, T>();
   const evict: string[] = [];
   const liveExp: Array<{ key: string; exp: number }> = [];
   for (const [key, value] of Object.entries(items)) {
-    // Non-nwo keys (rate_limit, future non-cache keys) are out of scope.
-    if (!key.includes('/')) continue;
+    // Each scan owns one namespace; keys outside it are out of scope.
+    if (!keyFilter(key)) continue;
     const entry = value as Entry<T, V> | undefined;
     const valid =
       entry != null &&
@@ -168,7 +186,7 @@ export function bulkWriteCache<T, V>(
 // everything we'd need to re-read.
 export async function readAllCachedRepos<T, V>(version: V): Promise<Map<string, T>> {
   const items = await storageGetAll();
-  const { live, evict } = scanEntries<T, V>(items, version, Date.now());
+  const { live, evict } = scanEntries<T, V>(items, version, Date.now(), isRepoNwoKey);
   void storageRemove(evict);
   return live;
 }
@@ -180,7 +198,7 @@ export async function readAllCachedRepos<T, V>(version: V): Promise<Map<string, 
 // getCacheEntryCount call sees the post-sweep state.
 export async function sweepCache<V>(version: V): Promise<void> {
   const items = await storageGetAll();
-  const { evict } = scanEntries<unknown, V>(items, version, Date.now());
+  const { evict } = scanEntries<unknown, V>(items, version, Date.now(), isRepoNwoKey);
   await storageRemove(evict);
 }
 

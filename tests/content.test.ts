@@ -1731,4 +1731,24 @@ describe('in-memory cache invalidation on local storage clear', () => {
     await flushStorageEvents();
     expect(instance.getInMemoryRepoCache()).toBe(seeded);
   });
+
+  test('contrib (owner/name\\x00contrib) removal does NOT clear inMemoryRepoCache', async () => {
+    // Contrib keys live in their own namespace; their eviction must not
+    // null the repo-data mirror. Without this carve-out, every contrib
+    // sweep would spuriously re-trigger the preload — defeating the
+    // namespace-isolation that makes the contrib pipeline cheap.
+    await setLocal({
+      ['a/b\x00contrib']: {
+        exp: Date.now() + 60_000,
+        pay: { kind: 'count', count: 5 },
+        ver: 1,
+      },
+    });
+    await flushStorageEvents();
+    const seeded = new Map([['a/b', freshResponse()]]);
+    instance.setInMemoryRepoCache(seeded);
+    await removeLocal('a/b\x00contrib');
+    await flushStorageEvents();
+    expect(instance.getInMemoryRepoCache()).toBe(seeded);
+  });
 });

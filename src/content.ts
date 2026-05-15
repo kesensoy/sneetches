@@ -1,4 +1,4 @@
-import { readAllCachedRepos } from './cache';
+import { isRepoNwoKey, readAllCachedRepos } from './cache';
 import * as probe from './probe';
 import {
   archiveIcon,
@@ -725,7 +725,11 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     [key: string]: chrome.storage.StorageChange;
   }): void {
     for (const [key, change] of Object.entries(changes)) {
-      if (!key.includes('/')) continue;
+      // Only true repo-nwo keys invalidate the mirror. Contrib-namespace
+      // removals (owner/name\x00contrib) live in their own cache layer
+      // and must not re-trigger the preload — otherwise every contrib
+      // sweep would spuriously wipe the repo-data mirror.
+      if (!isRepoNwoKey(key)) continue;
       if (change.oldValue !== undefined && change.newValue === undefined) {
         inMemoryRepoCache = null;
         return;
