@@ -132,9 +132,16 @@ export async function bulkReadCache<T, V>(
 // chrome.storage.local.set call, wrapping each payload in the
 // { exp, pay, ver } envelope. No-op for an empty map. Fire-and-forget:
 // on storage error, clear the cache area (persistent settings live in sync).
-export function bulkWriteCache<T, V>(fresh: Map<string, T>, version: V): void {
+// `ttlSeconds` defaults to the 4h repo-data TTL; the contributor-count
+// path passes a longer TTL since counts move slowly and the per-repo
+// REST fetch is expensive and unbatchable.
+export function bulkWriteCache<T, V>(
+  fresh: Map<string, T>,
+  version: V,
+  ttlSeconds: number = CACHE_DUR_SECONDS
+): void {
   if (fresh.size === 0) return;
-  const exp = Date.now() + CACHE_DUR_SECONDS * 1000;
+  const exp = Date.now() + ttlSeconds * 1000;
   const toStore: Record<string, Entry<T, V>> = {};
   for (const [key, pay] of fresh) {
     toStore[key] = { exp, pay, ver: version };

@@ -109,6 +109,25 @@ describe('bulkReadCache / bulkWriteCache', () => {
     );
     expect(await getCacheEntryCount()).toBe(2);
   });
+
+  test('bulkWriteCache honors a custom ttlSeconds', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 1]]), 1, 10); // 10s TTL
+    // 10s TTL: at +11s the entry must be gone. The default 4h TTL would
+    // have outlived this — only the custom shorter TTL fails this check.
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000);
+    const { cached, missing } = await bulkReadCache<number, number>(['a'], 1);
+    expect(cached.size).toBe(0);
+    expect(missing).toEqual(['a']);
+    jest.restoreAllMocks();
+  });
+
+  test('bulkWriteCache defaults to the 4h TTL when ttlSeconds is omitted', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 1]]), 1);
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 3 * 3600 * 1000); // +3h
+    const { cached } = await bulkReadCache<number, number>(['a'], 1);
+    expect(cached.get('a')).toBe(1); // still alive at +3h
+    jest.restoreAllMocks();
+  });
 });
 
 describe('clearCache', () => {
