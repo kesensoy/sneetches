@@ -1024,6 +1024,30 @@ describe('fetchContributorCount', () => {
     expect(await fetchContributorCount('ghost/repo', undefined)).toEqual({ kind: 'notfound' });
   });
 
+  test('403 rate-limited does NOT flip TOKEN_VALIDATED_KEY for a PAT user', async () => {
+    // A PAT user being rate-limited still sees auth-tier headers
+    // (limit=5000). captureRateLimit only invalidates the token when
+    // the observed limit looks unauthenticated (<1000), so this 403
+    // must NOT spuriously clear the validated flag.
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(() => resolve()));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true }, () => resolve())
+    );
+    mockFetch({
+      ok: false,
+      status: 403,
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '0',
+      },
+    });
+    await fetchContributorCount('owner/repo', 'tok');
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(true);
+  });
+
   test('captures rate-limit headers on a successful fetch', async () => {
     mockFetch({
       json: [{}],

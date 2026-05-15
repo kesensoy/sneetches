@@ -1,5 +1,17 @@
-import { CACHE_VERSION, validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
-import { clearCache, clearOwnerCache, getCacheEntryCount, sweepCache } from './cache';
+import {
+  CACHE_VERSION,
+  CONTRIB_CACHE_VERSION,
+  validateAccessToken,
+  getStoredRateLimit,
+  RateLimitInfo,
+} from './github';
+import {
+  clearCache,
+  clearOwnerCache,
+  getCacheEntryCount,
+  sweepCache,
+  sweepContribCache,
+} from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
@@ -84,7 +96,10 @@ async function refreshAdvancedStats() {
     // would have filtered out anyway. Options page isn't covered by a
     // content-script preload (chrome-extension:// is outside our matches),
     // so this is the only time sweep runs for users who don't browse.
+    // Both namespaces (repo + contrib) sweep here so the count covers
+    // every live cache entry the user might think of as "cached repos."
     await sweepCache(CACHE_VERSION);
+    await sweepContribCache(CONTRIB_CACHE_VERSION);
     count = await getCacheEntryCount();
   } catch {
     count = 0;

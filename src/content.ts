@@ -540,6 +540,12 @@ export function createContentScript(deps: ContentScriptDeps = {}): ContentScript
     const annotation = elt.querySelector<HTMLElement>('.' + ANNOTATION_CLASS);
     if (!annotation) return; // repo paint hasn't happened yet — createAnnotation will pick it up
     if (annotation.querySelector('.sneetch-contributors')) return; // already painted
+    // Don't stack a contributor chip on an error annotation. The two
+    // pipelines resolve independently and can race: a transient 5xx
+    // on the repo path can land as an error annotation while the
+    // contrib path returns a real count, which would otherwise read
+    // as "repository is broken AND has 411 contributors".
+    if (annotation.querySelector('.sneetch-broken, .sneetch-rate-limited, .sneetch-error')) return;
     const chip = createContributorChip(res);
     if (!chip) return;
     // Match the in-fresh-paint chip order: stars, forks, date,

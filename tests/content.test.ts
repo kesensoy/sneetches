@@ -1876,6 +1876,95 @@ describe('contributor chip integration', () => {
     }
   });
 
+  test('does NOT stack a contrib chip on an error (non-404) annotation', async () => {
+    // Repo path returns 500; contrib path returns a real count. Two
+    // pipelines resolve independently, so this race is reachable.
+    // The error annotation must NOT also grow a contributor chip —
+    // would read as "repo is broken AND has 99 contributors."
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      // Slight delay to let the repo error paint land first.
+      await new Promise((r) => setTimeout(r, 5));
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 99 } as ContribResponse]));
+      return { ok: true };
+    };
+    portFetcherMock.mockReset();
+    portFetcherMock.mockImplementation(async () => ({ ok: false, status: 500 }));
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        {
+          show: { stars: true, forks: false, update: false, contributors: true },
+          star_style: 'outline',
+        },
+        resolve
+      )
+    );
+    const anchor = document.createElement('a');
+    anchor.href = 'https://github.com/owner/repo';
+    document.body.appendChild(anchor);
+    const instance = createContentScript({
+      portFetcher: portFetcherMock,
+      contribFetcher,
+    });
+    try {
+      instance.initialize();
+      await waitForScanner();
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation).not.toBeNull();
+      expect(annotation?.querySelector('.sneetch-error')).not.toBeNull();
+      // Real bug check: error annotation must NOT have grown a contrib chip.
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('contrib arriving AFTER repo paint on an archived repo inserts BEFORE archive chip', async () => {
+    // Exercises paintContribResult's archive-aware insertBefore branch.
+    // Without it, the "archive chip is the LAST child" invariant breaks
+    // when contrib lands on the second pipeline.
+    let releaseContrib: (() => void) | null = null;
+    const contribGate = new Promise<void>((r) => {
+      releaseContrib = r;
+    });
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      await contribGate;
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 12 } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+      repoResponse: {
+        kind: 'ok',
+        json: {
+          forks_count: 0,
+          stargazers_count: 5,
+          pushed_at: '2022-01-01',
+          archived: true,
+        },
+      },
+    });
+    try {
+      // Repo annotation should have painted with an archive chip but
+      // no contrib chip yet (contrib is gated).
+      const annotation = anchor.querySelector('.data-sneetch-extension')!;
+      expect(annotation.querySelector('.sneetch-archived')).not.toBeNull();
+      expect(annotation.querySelector('.sneetch-contributors')).toBeNull();
+      // Now release contrib and let paintContribResult run.
+      releaseContrib!();
+      await waitForScanner();
+      const children = Array.from(annotation.children);
+      const archiveIdx = children.findIndex((c) => c.classList.contains('sneetch-archived'));
+      const contribIdx = children.findIndex((c) => c.classList.contains('sneetch-contributors'));
+      expect(contribIdx).toBeGreaterThanOrEqual(0);
+      expect(archiveIdx).toBe(children.length - 1); // archive must remain LAST
+      expect(contribIdx).toBeLessThan(archiveIdx);
+    } finally {
+      instance.teardown();
+    }
+  });
+
   test('contrib result arriving BEFORE the repo annotation still paints', async () => {
     // Hold the repo fetcher's resolution open until a flush gate, then
     // resolve it AFTER the contrib fetcher has already delivered.
