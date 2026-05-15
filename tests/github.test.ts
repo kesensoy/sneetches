@@ -1,10 +1,12 @@
 import {
   BATCH_SIZE,
   buildBatchQuery,
+  ContribResponse,
   CONTRIB_CACHE_VERSION,
   CONTRIB_TTL_SECONDS,
   contribCacheKey,
   fetchContributorCount,
+  fetchContributorsStreaming,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
   isRepoUrl,
@@ -14,6 +16,7 @@ import {
   RepoResponse,
   validateAccessToken,
 } from '../src/github';
+import { bulkReadCache } from '../src/cache';
 import { mockFetch } from './fetch.mock';
 import { ACCESS_TOKEN_KEY, getAccessToken, TOKEN_VALIDATED_KEY } from '../src/settings';
 
@@ -908,6 +911,62 @@ describe('contrib constants', () => {
   });
   test('contribCacheKey appends the NUL-delimited contrib marker', () => {
     expect(contribCacheKey('facebook/react')).toBe('facebook/react\x00contrib');
+  });
+});
+
+const collectContrib = async (nwos: string[]): Promise<Map<string, ContribResponse>> => {
+  const out = new Map<string, ContribResponse>();
+  await fetchContributorsStreaming(nwos, undefined, (chunk) => {
+    for (const [nwo, res] of chunk) out.set(nwo, res);
+  });
+  return out;
+};
+
+describe('fetchContributorsStreaming', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('fetches, fires callback, and caches a count', async () => {
+    mockFetch({ json: [{}], headers: { link: '<...&page=82>; rel="last"' } });
+    const out = await collectContrib(['owner/repo']);
+    expect(out.get('owner/repo')).toEqual({ kind: 'count', count: 82 });
+    // Cached under the contrib key + contrib version.
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('owner/repo')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.get(contribCacheKey('owner/repo'))).toEqual({ kind: 'count', count: 82 });
+  });
+
+  test('caches a "many" result', async () => {
+    mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '57' } });
+    await collectContrib(['torvalds/linux']);
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('torvalds/linux')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.get(contribCacheKey('torvalds/linux'))).toEqual({ kind: 'many' });
+  });
+
+  test('does NOT cache a silent result', async () => {
+    mockFetch({ ok: false, status: 502 });
+    await collectContrib(['owner/repo']);
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('owner/repo')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.size).toBe(0);
+  });
+
+  test('serves a cached count without re-fetching', async () => {
+    mockFetch({ json: [{}], headers: { link: '<...&page=10>; rel="last"' } });
+    await collectContrib(['owner/repo']);
+    // Second call would resolve as 999 if it hit the wire — assert it's
+    // still 10 because the cached entry shortcuts the fetch.
+    mockFetch({ json: [{}], headers: { link: '<...&page=999>; rel="last"' } });
+    const out = await collectContrib(['owner/repo']);
+    expect(out.get('owner/repo')).toEqual({ kind: 'count', count: 10 });
   });
 });
 

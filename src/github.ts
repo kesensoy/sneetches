@@ -33,6 +33,53 @@ export function parseContributorCount(linkHeader: string | null, bodyLength: num
   return bodyLength;
 }
 
+// Streaming contributor-count fetcher. Parallel to fetchRepoDataStreaming
+// but simpler: /contributors is one unbatchable REST call per repo.
+// One bulkReadCache up front fires the cached subset; misses are fetched
+// in parallel, and each 'count' / 'many' result is cached (with the long
+// contrib TTL) and streamed via onResults. 'silent' results are streamed
+// but NOT cached — they represent transient failures to retry next scan.
+export async function fetchContributorsStreaming(
+  nwos: readonly string[],
+  accessToken: string | undefined,
+  onResults: (chunk: Map<string, ContribResponse>) => void
+): Promise<void> {
+  if (nwos.length === 0) return;
+
+  const keyByNwo = new Map(nwos.map((nwo) => [nwo, contribCacheKey(nwo)] as const));
+  const { cached, missing } = await bulkReadCache<ContribResponse, number>(
+    Array.from(keyByNwo.values()),
+    CONTRIB_CACHE_VERSION
+  );
+
+  if (cached.size > 0) {
+    // Re-key from contrib-key back to plain nwo for the caller.
+    const byNwo = new Map<string, ContribResponse>();
+    for (const [nwo, key] of keyByNwo) {
+      const hit = cached.get(key);
+      if (hit) byNwo.set(nwo, hit);
+    }
+    if (byNwo.size > 0) onResults(byNwo);
+  }
+  if (missing.length === 0) return;
+
+  const missingKeys = new Set(missing);
+  const missingNwos = nwos.filter((nwo) => missingKeys.has(keyByNwo.get(nwo)!));
+  await Promise.all(
+    missingNwos.map(async (nwo) => {
+      const res = await fetchContributorCount(nwo, accessToken);
+      if (res.kind !== 'silent') {
+        bulkWriteCache(
+          new Map([[contribCacheKey(nwo), res]]),
+          CONTRIB_CACHE_VERSION,
+          CONTRIB_TTL_SECONDS
+        );
+      }
+      onResults(new Map([[nwo, res]]));
+    })
+  );
+}
+
 // Fetch one repo's contributor count. Uses the cheap
 // /contributors?per_page=1 + Link-header trick. Distinguishes the
 // 403 "too large" (linux-scale giant → 'many') from a 403 rate-limit
