@@ -120,9 +120,14 @@ export async function fetchContributorCount(
     if (res.status === 403) {
       // A 403 with quota remaining is the "contributor list too large"
       // refusal — the repo is a giant. A 403 with no quota is a plain
-      // rate-limit and should retry next scan.
+      // primary rate-limit and should retry next scan. A 403 with NO
+      // x-ratelimit-remaining header at all is a secondary rate-limit
+      // (abuse detection — uses Retry-After instead) and should also
+      // retry: the absence of the header means we cannot prove the
+      // budget is non-zero, and falsely caching "many" for 24h would
+      // mask a transient throttle as a permanent giant-repo signal.
       const remaining = res.headers.get('x-ratelimit-remaining');
-      return remaining !== '0' ? { kind: 'many' } : { kind: 'silent' };
+      return remaining !== null && remaining !== '0' ? { kind: 'many' } : { kind: 'silent' };
     }
     return { kind: 'silent' };
   } catch {

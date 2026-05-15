@@ -1019,6 +1019,15 @@ describe('fetchContributorCount', () => {
     expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
   });
 
+  test('403 with NO x-ratelimit-remaining header → silent (secondary rate-limit)', async () => {
+    // GitHub secondary rate-limits (abuse detection) return 403 with
+    // Retry-After and omit x-ratelimit-remaining. Must NOT be classified
+    // as 'many' and cached for 24h — that would mask a transient throttle
+    // as a permanent giant-repo signal.
+    mockFetch({ ok: false, status: 403, headers: { 'retry-after': '60' } });
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
   test('404 → notfound (persistent, cacheable)', async () => {
     mockFetch({ ok: false, status: 404 });
     expect(await fetchContributorCount('ghost/repo', undefined)).toEqual({ kind: 'notfound' });
