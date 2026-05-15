@@ -1,9 +1,13 @@
 const CACHE_DUR_SECONDS = 4 * 3600;
 
-// Hard cap on live cache entries after sweep. Each entry is ~215B on disk
-// (probe measured 705 entries ≈ 150KB on awesome-homelab), so 25k ≈ 5.4MB
-// — safely under chrome.storage.local's 10MB default quota, and ~5x the
-// PAT'd hourly GitHub rate limit (5000 req/h) so the cap never starves
+// Hard cap on live cache entries after sweep. Each repo entry is ~215B
+// on disk (probe measured 705 entries ≈ 150KB on awesome-homelab), so
+// 25k repo entries ≈ 5.4MB. Each contrib entry is much smaller — the
+// {kind:'count', count:n} payload + envelope is ~70B — so 25k contrib
+// entries ≈ 1.75MB. The cap is applied per-namespace (repo + contrib
+// sweep independently), so worst-case combined storage ≈ 7.2MB — still
+// safely under chrome.storage.local's 10MB default quota. Keep below
+// the 5000/h PAT rate limit by a few-x so the cap never starves
 // BATCH_SIZE=10 fetches from fresh-data headroom.
 const CACHE_MAX_ENTRIES = 25_000;
 
@@ -46,23 +50,41 @@ function storageRemove(keys: string[]): Promise<void> {
 // so importing back would create cache.ts ← github.ts ← cache.ts.
 const RATE_LIMIT_KEY = 'rate_limit';
 
+// Contributor-count entries share chrome.storage.local with repo entries
+// but live in their own namespace, keyed `owner/name\x00contrib`. NUL
+// cannot occur in a GitHub nwo, so it cleanly separates the two
+// "/"-containing namespaces. See docs/plans/2026-05-14-contributor-count-design.md.
+export const CONTRIB_KEY_MARKER = '\x00contrib';
+export function isContribKey(key: string): boolean {
+  return key.endsWith(CONTRIB_KEY_MARKER);
+}
+// True repo-nwo keys: owner/name shape, NOT contrib-namespaced. Used by
+// the repo scan path (readAllCachedRepos / sweepCache) to ignore contrib
+// keys, and by content.ts's handleLocalStorageChange to avoid spurious
+// preload-invalidation on contrib-key eviction.
+export function isRepoNwoKey(key: string): boolean {
+  return key.includes('/') && !isContribKey(key);
+}
+
 // Pure classification pass over a storage snapshot. Decides which keys
 // are valid (fresh + right-version + well-shaped), which should be
 // evicted (expired, wrong version, malformed), and which overflow the
 // CACHE_MAX_ENTRIES cap (oldest-by-exp trimmed first). Shared between
-// readAllCachedRepos (preload path, fire-and-forget evict) and
-// sweepCache (options path, await evict for an honest UI count).
+// readAllCachedRepos / sweepCache (repo namespace) and sweepContribCache
+// (contrib namespace) — each caller passes a keyFilter so the scan stays
+// confined to the namespace it owns.
 function scanEntries<T, V>(
   items: Record<string, unknown>,
   version: V,
-  now: number
+  now: number,
+  keyFilter: (key: string) => boolean
 ): { live: Map<string, T>; evict: string[] } {
   const live = new Map<string, T>();
   const evict: string[] = [];
   const liveExp: Array<{ key: string; exp: number }> = [];
   for (const [key, value] of Object.entries(items)) {
-    // Non-nwo keys (rate_limit, future non-cache keys) are out of scope.
-    if (!key.includes('/')) continue;
+    // Each scan owns one namespace; keys outside it are out of scope.
+    if (!keyFilter(key)) continue;
     const entry = value as Entry<T, V> | undefined;
     const valid =
       entry != null &&
@@ -132,9 +154,16 @@ export async function bulkReadCache<T, V>(
 // chrome.storage.local.set call, wrapping each payload in the
 // { exp, pay, ver } envelope. No-op for an empty map. Fire-and-forget:
 // on storage error, clear the cache area (persistent settings live in sync).
-export function bulkWriteCache<T, V>(fresh: Map<string, T>, version: V): void {
+// `ttlSeconds` defaults to the 4h repo-data TTL; the contributor-count
+// path passes a longer TTL since counts move slowly and the per-repo
+// REST fetch is expensive and unbatchable.
+export function bulkWriteCache<T, V>(
+  fresh: Map<string, T>,
+  version: V,
+  ttlSeconds: number = CACHE_DUR_SECONDS
+): void {
   if (fresh.size === 0) return;
-  const exp = Date.now() + CACHE_DUR_SECONDS * 1000;
+  const exp = Date.now() + ttlSeconds * 1000;
   const toStore: Record<string, Entry<T, V>> = {};
   for (const [key, pay] of fresh) {
     toStore[key] = { exp, pay, ver: version };
@@ -161,7 +190,7 @@ export function bulkWriteCache<T, V>(fresh: Map<string, T>, version: V): void {
 // everything we'd need to re-read.
 export async function readAllCachedRepos<T, V>(version: V): Promise<Map<string, T>> {
   const items = await storageGetAll();
-  const { live, evict } = scanEntries<T, V>(items, version, Date.now());
+  const { live, evict } = scanEntries<T, V>(items, version, Date.now(), isRepoNwoKey);
   void storageRemove(evict);
   return live;
 }
@@ -173,7 +202,19 @@ export async function readAllCachedRepos<T, V>(version: V): Promise<Map<string, 
 // getCacheEntryCount call sees the post-sweep state.
 export async function sweepCache<V>(version: V): Promise<void> {
   const items = await storageGetAll();
-  const { evict } = scanEntries<unknown, V>(items, version, Date.now());
+  const { evict } = scanEntries<unknown, V>(items, version, Date.now(), isRepoNwoKey);
+  await storageRemove(evict);
+}
+
+// Contrib-namespace counterpart to sweepCache. Evicts expired /
+// wrong-version / malformed / over-cap contributor entries. The repo
+// sweep (sweepCache) deliberately skips contrib keys, so this is the
+// only GC path for the contrib namespace besides bulkReadCache's
+// opportunistic eviction. Caps the contrib namespace at
+// CACHE_MAX_ENTRIES independently of the repo namespace.
+export async function sweepContribCache<V>(contribVersion: V): Promise<void> {
+  const items = await storageGetAll();
+  const { evict } = scanEntries<unknown, V>(items, contribVersion, Date.now(), isContribKey);
   await storageRemove(evict);
 }
 

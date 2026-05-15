@@ -12,7 +12,7 @@
 // with an 'error' message; a clean run ends with 'done'. Both sides
 // disconnect the port after 'done' or 'error'.
 
-import type { RepoResponse } from './github';
+import type { ContribResponse, RepoResponse } from './github';
 
 export const SNEETCHES_PORT_NAME = 'sneetches:fetchRepos';
 
@@ -62,3 +62,25 @@ export interface ErrorMsg {
 }
 
 export type SneetchesRpcMsg = ChunkMsg | DoneMsg | ErrorMsg;
+
+// ---------------------------------------------------------------------------
+// Contributor-count protocol — runs on a separate port from the repo-data
+// pipeline so the unbatchable contrib REST fan-out never shares a
+// connection with, or blocks, the load-bearing GraphQL path.
+// ---------------------------------------------------------------------------
+
+export const SNEETCHES_CONTRIB_PORT_NAME = 'sneetches:fetchContributors';
+
+/** Client → server. Sent once per contrib-port connection. */
+export interface FetchContributorsRequest {
+  readonly nwos: readonly string[];
+}
+
+/** Server → client. One chunk per resolved contrib fetch (or the cached subset). */
+export interface ContribChunkMsg {
+  readonly type: 'chunk';
+  readonly entries: ReadonlyArray<readonly [string, ContribResponse]>;
+}
+
+// Terminal messages reuse the existing DoneMsg / ErrorMsg shapes.
+export type SneetchesContribRpcMsg = ContribChunkMsg | DoneMsg | ErrorMsg;

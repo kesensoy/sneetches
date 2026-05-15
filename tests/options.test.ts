@@ -5,12 +5,19 @@ jest.mock('../src/github', () => ({
   getStoredRateLimit: jest.fn(),
 }));
 
-import { getCacheEntryCount, clearCache, clearOwnerCache, sweepCache } from '../src/cache';
+import {
+  getCacheEntryCount,
+  clearCache,
+  clearOwnerCache,
+  sweepCache,
+  sweepContribCache,
+} from '../src/cache';
 jest.mock('../src/cache', () => ({
   getCacheEntryCount: jest.fn(),
   clearCache: jest.fn(),
   clearOwnerCache: jest.fn(),
   sweepCache: jest.fn(),
+  sweepContribCache: jest.fn(),
 }));
 
 describe('restoreOptions', () => {
@@ -26,18 +33,21 @@ describe('restoreOptions', () => {
     (clearCache as jest.Mock).mockReset();
     (clearOwnerCache as jest.Mock).mockReset();
     (sweepCache as jest.Mock).mockReset();
+    (sweepContribCache as jest.Mock).mockReset();
     (validateAccessToken as jest.Mock).mockReset();
     (getStoredRateLimit as jest.Mock).mockResolvedValue(null);
     (getCacheEntryCount as jest.Mock).mockResolvedValue(0);
     (clearCache as jest.Mock).mockResolvedValue(undefined);
     (clearOwnerCache as jest.Mock).mockResolvedValue(undefined);
     (sweepCache as jest.Mock).mockResolvedValue(undefined);
+    (sweepContribCache as jest.Mock).mockResolvedValue(undefined);
 
     document.body.innerHTML = `
       <div>
         <input id="show-stars" type="checkbox">
         <input id="show-forks" type="checkbox">
         <input id="show-update" type="checkbox">
+        <input id="show-contributors" type="checkbox">
         <div id="token-section-title">GitHub Access Token</div>
         <div id="token-collapsed" hidden>
           <span id="token-collapsed-token"></span>
@@ -823,6 +833,36 @@ describe('restoreOptions', () => {
     expect(tokenValidatedWrites).toHaveLength(1);
 
     setSpy.mockRestore();
+  });
+
+  describe('show-contributors persistence', () => {
+    test('restoreOptions reflects a stored contributors flag', async () => {
+      await new Promise<void>((resolve) => {
+        chrome.storage.sync.set({ show: { stars: true, contributors: true } }, () => resolve());
+      });
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(inputElement('show-contributors').checked).toBe(true);
+    });
+
+    test('restoreOptions leaves contributors unchecked when not stored', async () => {
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(inputElement('show-contributors').checked).toBe(false);
+    });
+
+    test('saveOptions writes the contributors flag on toggle', async () => {
+      document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 0));
+      inputElement('show-contributors').checked = true;
+      // addInputEventListeners wires `change` → saveOptions on every input.
+      inputElement('show-contributors').dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 0));
+      const stored = await new Promise<Record<string, unknown>>((resolve) =>
+        chrome.storage.sync.get(['show'], (items) => resolve(items))
+      );
+      expect((stored.show as { contributors?: boolean }).contributors).toBe(true);
+    });
   });
 
   describe('skip owners', () => {

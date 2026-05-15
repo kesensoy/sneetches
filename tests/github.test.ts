@@ -1,14 +1,22 @@
 import {
   BATCH_SIZE,
   buildBatchQuery,
+  ContribResponse,
+  CONTRIB_CACHE_VERSION,
+  CONTRIB_TTL_SECONDS,
+  contribCacheKey,
+  fetchContributorCount,
+  fetchContributorsStreaming,
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
   isRepoUrl,
+  parseContributorCount,
   parseRepoNwo,
   RATE_LIMIT_KEY,
   RepoResponse,
   validateAccessToken,
 } from '../src/github';
+import { bulkReadCache } from '../src/cache';
 import { mockFetch } from './fetch.mock';
 import { ACCESS_TOKEN_KEY, getAccessToken, TOKEN_VALIDATED_KEY } from '../src/settings';
 
@@ -891,5 +899,209 @@ describe('fetchRepoDataStreaming', () => {
     }) as unknown as typeof fetch;
     const second = await fetchReposMap(['private/repo']);
     expect(second.get('private/repo')).toEqual({ kind: 'silent' });
+  });
+});
+
+describe('contrib constants', () => {
+  test('CONTRIB_CACHE_VERSION is a number', () => {
+    expect(typeof CONTRIB_CACHE_VERSION).toBe('number');
+  });
+  test('CONTRIB_TTL_SECONDS is 24h', () => {
+    expect(CONTRIB_TTL_SECONDS).toBe(24 * 3600);
+  });
+  test('contribCacheKey appends the NUL-delimited contrib marker', () => {
+    expect(contribCacheKey('facebook/react')).toBe('facebook/react\x00contrib');
+  });
+});
+
+const collectContrib = async (nwos: string[]): Promise<Map<string, ContribResponse>> => {
+  const out = new Map<string, ContribResponse>();
+  await fetchContributorsStreaming(nwos, undefined, (chunk) => {
+    for (const [nwo, res] of chunk) out.set(nwo, res);
+  });
+  return out;
+};
+
+describe('fetchContributorsStreaming', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('fetches, fires callback, and caches a count', async () => {
+    mockFetch({ json: [{}], headers: { link: '<...&page=82>; rel="last"' } });
+    const out = await collectContrib(['owner/repo']);
+    expect(out.get('owner/repo')).toEqual({ kind: 'count', count: 82 });
+    // Cached under the contrib key + contrib version.
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('owner/repo')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.get(contribCacheKey('owner/repo'))).toEqual({ kind: 'count', count: 82 });
+  });
+
+  test('caches a "many" result', async () => {
+    mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '57' } });
+    await collectContrib(['torvalds/linux']);
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('torvalds/linux')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.get(contribCacheKey('torvalds/linux'))).toEqual({ kind: 'many' });
+  });
+
+  test('does NOT cache a silent result', async () => {
+    mockFetch({ ok: false, status: 502 });
+    await collectContrib(['owner/repo']);
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('owner/repo')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.size).toBe(0);
+  });
+
+  test('caches a "notfound" result and short-circuits the next scan', async () => {
+    // 404 is a persistent miss. The contrib path must cache it so a
+    // page full of broken/private-via-PAT links does not burn one
+    // core-bucket REST call per scan. See review MUST #1.
+    mockFetch({ ok: false, status: 404 });
+    await collectContrib(['ghost/repo']);
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('ghost/repo')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.get(contribCacheKey('ghost/repo'))).toEqual({ kind: 'notfound' });
+
+    // Second call: even if fetch is rigged to a different result, the
+    // cached notfound short-circuits the wire.
+    mockFetch({ json: [{}], headers: { link: '<...&page=999>; rel="last"' } });
+    const out = await collectContrib(['ghost/repo']);
+    expect(out.get('ghost/repo')).toEqual({ kind: 'notfound' });
+  });
+
+  test('serves a cached count without re-fetching', async () => {
+    mockFetch({ json: [{}], headers: { link: '<...&page=10>; rel="last"' } });
+    await collectContrib(['owner/repo']);
+    // Second call would resolve as 999 if it hit the wire — assert it's
+    // still 10 because the cached entry shortcuts the fetch.
+    mockFetch({ json: [{}], headers: { link: '<...&page=999>; rel="last"' } });
+    const out = await collectContrib(['owner/repo']);
+    expect(out.get('owner/repo')).toEqual({ kind: 'count', count: 10 });
+  });
+});
+
+describe('fetchContributorCount', () => {
+  test('200 with Link header → exact count', async () => {
+    mockFetch({
+      json: [{}],
+      headers: { link: '<...&page=411>; rel="last"' },
+    });
+    expect(await fetchContributorCount('facebook/react', undefined)).toEqual({
+      kind: 'count',
+      count: 411,
+    });
+  });
+
+  test('200 without Link header → body-length count', async () => {
+    mockFetch({ json: [{}] }); // single contributor, no Link
+    expect(await fetchContributorCount('solo/repo', undefined)).toEqual({
+      kind: 'count',
+      count: 1,
+    });
+  });
+
+  test('403 "too large" → many (quota remaining)', async () => {
+    mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '57' } });
+    expect(await fetchContributorCount('torvalds/linux', undefined)).toEqual({ kind: 'many' });
+  });
+
+  test('403 rate-limited → silent (no quota)', async () => {
+    mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '0' } });
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
+  test('403 with NO x-ratelimit-remaining header → silent (secondary rate-limit)', async () => {
+    // GitHub secondary rate-limits (abuse detection) return 403 with
+    // Retry-After and omit x-ratelimit-remaining. Must NOT be classified
+    // as 'many' and cached for 24h — that would mask a transient throttle
+    // as a permanent giant-repo signal.
+    mockFetch({ ok: false, status: 403, headers: { 'retry-after': '60' } });
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
+  test('404 → notfound (persistent, cacheable)', async () => {
+    mockFetch({ ok: false, status: 404 });
+    expect(await fetchContributorCount('ghost/repo', undefined)).toEqual({ kind: 'notfound' });
+  });
+
+  test('403 rate-limited does NOT flip TOKEN_VALIDATED_KEY for a PAT user', async () => {
+    // A PAT user being rate-limited still sees auth-tier headers
+    // (limit=5000). captureRateLimit only invalidates the token when
+    // the observed limit looks unauthenticated (<1000), so this 403
+    // must NOT spuriously clear the validated flag.
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(() => resolve()));
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [TOKEN_VALIDATED_KEY]: true }, () => resolve())
+    );
+    mockFetch({
+      ok: false,
+      status: 403,
+      headers: {
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '0',
+      },
+    });
+    await fetchContributorCount('owner/repo', 'tok');
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.sync.get([TOKEN_VALIDATED_KEY], (items) => resolve(items))
+    );
+    expect(stored[TOKEN_VALIDATED_KEY]).toBe(true);
+  });
+
+  test('captures rate-limit headers on a successful fetch', async () => {
+    mockFetch({
+      json: [{}],
+      headers: {
+        link: '<...&page=5>; rel="last"',
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '4321',
+      },
+    });
+    await new Promise<void>((resolve) => chrome.storage.local.clear(() => resolve()));
+    await fetchContributorCount('owner/repo', 'tok');
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toEqual({ limit: 5000, remaining: 4321 });
+  });
+
+  test('network error → silent', async () => {
+    global.fetch = jest.fn(async () => {
+      throw new Error('network');
+    }) as unknown as typeof fetch;
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
+  test('5xx → silent', async () => {
+    mockFetch({ ok: false, status: 502 });
+    expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+});
+
+describe('parseContributorCount', () => {
+  test('reads the rel="last" page number from a Link header', () => {
+    const link =
+      '<https://api.github.com/repositories/1/contributors?per_page=1&page=2>; rel="next", ' +
+      '<https://api.github.com/repositories/1/contributors?per_page=1&page=411>; rel="last"';
+    expect(parseContributorCount(link, 1)).toBe(411);
+  });
+
+  test('falls back to the body length when there is no Link header', () => {
+    expect(parseContributorCount(null, 1)).toBe(1);
+    expect(parseContributorCount('', 3)).toBe(3);
+  });
+
+  test('falls back to the body length when Link has no rel="last"', () => {
+    const link = '<https://api.github.com/...?page=2>; rel="next"';
+    expect(parseContributorCount(link, 2)).toBe(2);
   });
 });

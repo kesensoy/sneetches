@@ -1,4 +1,4 @@
-import { bulkReadCache, bulkWriteCache } from './cache';
+import { bulkReadCache, bulkWriteCache, CONTRIB_KEY_MARKER } from './cache';
 import { TOKEN_VALIDATED_KEY } from './settings';
 
 export const CACHE_VERSION = 2;
@@ -6,6 +6,151 @@ const GITHUB_API_URL = 'https://api.github.com/repos/';
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
 
 export const RATE_LIMIT_KEY = 'rate_limit';
+
+// Contributor-count cache namespace. Separate version from CACHE_VERSION
+// so the two namespaces evolve independently — see the design doc at
+// docs/plans/2026-05-14-contributor-count-design.md.
+export const CONTRIB_CACHE_VERSION = 1;
+// 24h — 6x the 4h repo-data TTL. Contributor counts move slowly and the
+// per-repo REST fetch is expensive and unbatchable, so a long TTL is
+// both more correct and far cheaper on rate limit.
+export const CONTRIB_TTL_SECONDS = 24 * 3600;
+
+export function contribCacheKey(nwo: string): string {
+  return nwo + CONTRIB_KEY_MARKER;
+}
+
+// Extract the exact contributor count from a /contributors?per_page=1
+// response. With per_page=1 the rel="last" page number IS the count.
+// When the Link header is absent (single-page repos), GitHub returned
+// every contributor in the body, so the body length is the count.
+// @internal — exported for unit tests.
+export function parseContributorCount(linkHeader: string | null, bodyLength: number): number {
+  if (linkHeader) {
+    const match = linkHeader.match(/[?&]page=(\d+)>;\s*rel="last"/);
+    if (match) return Number(match[1]);
+  }
+  return bodyLength;
+}
+
+// Streaming contributor-count fetcher. Parallel to fetchRepoDataStreaming
+// but simpler: /contributors is one unbatchable REST call per repo.
+// One bulkReadCache up front fires the cached subset; misses are fetched
+// in parallel, and each 'count' / 'many' result is cached (with the long
+// contrib TTL) and streamed via onResults. 'silent' results are streamed
+// but NOT cached — they represent transient failures to retry next scan.
+export async function fetchContributorsStreaming(
+  nwos: readonly string[],
+  accessToken: string | undefined,
+  onResults: (chunk: Map<string, ContribResponse>) => void
+): Promise<void> {
+  if (nwos.length === 0) return;
+
+  const keyByNwo = new Map(nwos.map((nwo) => [nwo, contribCacheKey(nwo)] as const));
+  const { cached, missing } = await bulkReadCache<ContribResponse, number>(
+    Array.from(keyByNwo.values()),
+    CONTRIB_CACHE_VERSION
+  );
+
+  if (cached.size > 0) {
+    // Re-key from contrib-key back to plain nwo for the caller. Every
+    // key in `cached` came from keyByNwo.values(), so we always emit a
+    // non-empty chunk in this branch.
+    const byNwo = new Map<string, ContribResponse>();
+    for (const [nwo, key] of keyByNwo) {
+      const hit = cached.get(key);
+      if (hit) byNwo.set(nwo, hit);
+    }
+    onResults(byNwo);
+  }
+  if (missing.length === 0) return;
+
+  const missingKeys = new Set(missing);
+  const missingNwos = nwos.filter((nwo) => missingKeys.has(keyByNwo.get(nwo)!));
+  await Promise.all(
+    missingNwos.map(async (nwo) => {
+      const res = await fetchContributorCount(nwo, accessToken);
+      if (res.kind !== 'silent') {
+        bulkWriteCache(
+          new Map([[contribCacheKey(nwo), res]]),
+          CONTRIB_CACHE_VERSION,
+          CONTRIB_TTL_SECONDS
+        );
+      }
+      onResults(new Map([[nwo, res]]));
+    })
+  );
+}
+
+// Fetch one repo's contributor count. Uses the cheap
+// /contributors?per_page=1 + Link-header trick. Distinguishes the
+// 403 "too large" (linux-scale giant → 'many') from a 403 rate-limit
+// (x-ratelimit-remaining: 0 → 'silent'). Any transport hiccup
+// (network / 5xx) is 'silent' — not painted, not cached, retried next
+// scan. Passes the PAT through when present (5000/h bucket vs 60/h).
+// @internal — exported for unit tests; production callers reach it
+// through fetchContributorsStreaming.
+export async function fetchContributorCount(
+  nwo: string,
+  accessToken: string | undefined
+): Promise<ContribResponse> {
+  const headers: Record<string, string> = { 'User-Agent': 'kesensoy/sneetches' };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  try {
+    const res = await fetch(`${GITHUB_API_URL}${nwo}/contributors?per_page=1`, { headers });
+    // Share rate-limit headers with the repo-data path so the Advanced-tray
+    // gauge reflects total core-bucket spend — contrib calls draw from the
+    // same 5000/h (PAT) or 60/h (unauth) bucket.
+    captureRateLimit(res);
+    if (res.ok) {
+      const body = await res.json();
+      const bodyLength = Array.isArray(body) ? body.length : 0;
+      return {
+        kind: 'count',
+        count: parseContributorCount(res.headers.get('Link'), bodyLength),
+      };
+    }
+    if (res.status === 404) {
+      // Persistent miss — the repo doesn't exist (or is private to a PAT
+      // that can't see it). Cached so a broken-link-heavy page doesn't
+      // re-fetch every scan. The repo-data pipeline paints its own
+      // broken chip; we render nothing here.
+      return { kind: 'notfound' };
+    }
+    if (res.status === 403) {
+      // A 403 with quota remaining is the "contributor list too large"
+      // refusal — the repo is a giant. A 403 with no quota is a plain
+      // primary rate-limit and should retry next scan. A 403 with NO
+      // x-ratelimit-remaining header at all is a secondary rate-limit
+      // (abuse detection — uses Retry-After instead) and should also
+      // retry: the absence of the header means we cannot prove the
+      // budget is non-zero, and falsely caching "many" for 24h would
+      // mask a transient throttle as a permanent giant-repo signal.
+      const remaining = res.headers.get('x-ratelimit-remaining');
+      return remaining !== null && remaining !== '0' ? { kind: 'many' } : { kind: 'silent' };
+    }
+    return { kind: 'silent' };
+  } catch {
+    return { kind: 'silent' };
+  }
+}
+
+// The four terminal states of a contributor-count lookup:
+//   count    — an exact number (from the Link header or the body fallback)
+//   many     — GitHub refused to enumerate (HTTP 403 "too large"); the repo
+//              is a linux-scale giant. Rendered as a qualitative "many" chip.
+//   notfound — the repo 404'd on the contributor endpoint. Persistent miss;
+//              cached so an awesome-list page of broken/private-via-PAT
+//              links doesn't burn one core-bucket call per repo per scan.
+//              No chip is painted (the repo-data pipeline already renders
+//              its own broken chip).
+//   silent   — transient failure (network / 5xx / rate-limit). Not painted,
+//              not cached; retried on the next scan.
+export type ContribResponse =
+  | { readonly kind: 'count'; readonly count: number }
+  | { readonly kind: 'many' }
+  | { readonly kind: 'notfound' }
+  | { readonly kind: 'silent' };
 
 export interface RateLimitInfo {
   limit: number;

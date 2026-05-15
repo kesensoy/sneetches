@@ -1,8 +1,10 @@
-import { RepoResponse } from '../src/github';
+import { ContribResponse, RepoResponse } from '../src/github';
 import {
   ContentScriptController,
+  ContribFetcher,
   createAnnotation,
   createContentScript,
+  createContributorChip,
   createErrorAnnotation,
 } from '../src/content';
 
@@ -91,20 +93,28 @@ describe('createAnnotation', () => {
   };
 
   test('stars annotation uses SVG icon', () => {
-    const elt = createAnnotation(data, { forks: false, stars: true, update: false }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: true, update: false, contributors: false },
+      'outline'
+    );
     expect(elt.outerHTML).toMatch('class="data-sneetch-extension"');
     expect(elt.outerHTML).toMatch('<svg');
     expect(elt.textContent?.trim()).toBe('10');
   });
 
   test('stars annotation uses filled SVG when starStyle=filled', () => {
-    const elt = createAnnotation(data, { forks: false, stars: true, update: false }, 'filled');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: true, update: false, contributors: false },
+      'filled'
+    );
     expect(elt.outerHTML).toMatch(/<svg/);
     // Starfill path data starts differently from star-outline; simplest check is
     // that the outputs for 'outline' vs 'filled' differ:
     const outlineElt = createAnnotation(
       data,
-      { forks: false, stars: true, update: false },
+      { forks: false, stars: true, update: false, contributors: false },
       'outline'
     );
     expect(elt.outerHTML).not.toBe(outlineElt.outerHTML);
@@ -118,7 +128,11 @@ describe('createAnnotation', () => {
       archived: false,
       committed_date: '2018-09-23T00:00:00Z',
     };
-    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: false, update: true, contributors: false },
+      'outline'
+    );
     // Tooltip should reflect the committed_date (2018), not pushed_at (2025)
     expect(elt.title).toContain('2018');
     expect(elt.title).not.toContain('2025');
@@ -131,7 +145,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: false, stars: false, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: false, stars: false, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).toContain('2024');
   });
 
@@ -142,7 +160,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).toContain('last updated');
     expect(elt.title).not.toContain('pushed');
   });
@@ -154,7 +176,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     const archiveChip = elt.querySelector('.sneetch-archived');
     expect(archiveChip).not.toBeNull();
     expect(archiveChip?.querySelector('svg')).not.toBeNull();
@@ -168,7 +194,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.querySelector('.sneetch-archived')).toBeNull();
   });
 
@@ -179,7 +209,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     const children = elt.children;
     expect(children[children.length - 1].classList.contains('sneetch-archived')).toBe(true);
   });
@@ -191,7 +225,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.classList.contains('is-archived')).toBe(true);
   });
 
@@ -202,7 +240,11 @@ describe('createAnnotation', () => {
       stargazers_count: 10,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.classList.contains('is-archived')).toBe(false);
   });
 
@@ -213,7 +255,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: true,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).toContain('; archived');
   });
 
@@ -224,7 +270,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
     expect(elt.title).not.toContain('archived');
   });
 
@@ -235,7 +285,11 @@ describe('createAnnotation', () => {
       stargazers_count: 612,
       archived: false,
     };
-    const elt = createAnnotation(data, { forks: true, stars: true, update: true }, 'outline');
+    const elt = createAnnotation(
+      data,
+      { forks: true, stars: true, update: true, contributors: false },
+      'outline'
+    );
 
     const starsChip = elt.querySelector('.sneetch-stars');
     expect(starsChip?.getAttribute('aria-label')).toBe('612 stars');
@@ -1678,5 +1732,345 @@ describe('in-memory cache invalidation on local storage clear', () => {
     await removeLocal('rate_limit');
     await flushStorageEvents();
     expect(instance.getInMemoryRepoCache()).toBe(seeded);
+  });
+
+  test('contrib (owner/name\\x00contrib) removal does NOT clear inMemoryRepoCache', async () => {
+    // Contrib keys live in their own namespace; their eviction must not
+    // null the repo-data mirror. Without this carve-out, every contrib
+    // sweep would spuriously re-trigger the preload — defeating the
+    // namespace-isolation that makes the contrib pipeline cheap.
+    await setLocal({
+      ['a/b\x00contrib']: {
+        exp: Date.now() + 60_000,
+        pay: { kind: 'count', count: 5 },
+        ver: 1,
+      },
+    });
+    await flushStorageEvents();
+    const seeded = new Map([['a/b', freshResponse()]]);
+    instance.setInMemoryRepoCache(seeded);
+    await removeLocal('a/b\x00contrib');
+    await flushStorageEvents();
+    expect(instance.getInMemoryRepoCache()).toBe(seeded);
+  });
+});
+
+describe('contributor chip integration', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    document.body.innerHTML = '';
+    portFetcherMock.mockReset();
+  });
+
+  // Helper: build a content script with both fetchers stubbed and a single
+  // repo anchor in the DOM, then wait long enough for the leading-edge
+  // scan + microtask paint chain to settle.
+  const setupWithFetchers = async (opts: {
+    show: Record<string, boolean>;
+    contribFetcher?: ContribFetcher;
+    repoResponse?: RepoResponse;
+  }): Promise<{
+    instance: ContentScriptController;
+    anchor: HTMLAnchorElement;
+  }> => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ show: opts.show, star_style: 'outline' }, resolve)
+    );
+    const anchor = document.createElement('a');
+    anchor.href = 'https://github.com/owner/repo';
+    document.body.appendChild(anchor);
+    portFetcherMock.mockImplementation(async (nwos, onChunk) => {
+      const entries: Array<readonly [string, RepoResponse]> = nwos.map((nwo) => [
+        nwo,
+        opts.repoResponse ?? {
+          kind: 'ok',
+          json: {
+            forks_count: 0,
+            stargazers_count: 7,
+            pushed_at: '2024-01-01',
+            archived: false,
+          },
+        },
+      ]);
+      onChunk(entries);
+      return { ok: true };
+    });
+    const instance = createContentScript({
+      portFetcher: portFetcherMock,
+      contribFetcher: opts.contribFetcher,
+    });
+    instance.initialize();
+    await waitForScanner();
+    return { instance, anchor };
+  };
+
+  test('paints a contributor chip onto the annotation when show.contributors is on', async () => {
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 7 } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      const chip = annotation?.querySelector('.sneetch-contributors');
+      expect(chip).not.toBeNull();
+      expect(chip!.textContent).toContain('7');
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('silent contrib result paints no chip', async () => {
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'silent' } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation).not.toBeNull(); // repo annotation still painted
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('notfound contrib result paints no chip', async () => {
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'notfound' } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation).not.toBeNull();
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('no contributor chip when show.contributors is off', async () => {
+    const contribFetcher = jest.fn() as unknown as ContribFetcher;
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: false },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+      // Pipeline must not even be dispatched when the feature is off.
+      expect(contribFetcher).not.toHaveBeenCalled();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('does NOT stack a contrib chip on an error (non-404) annotation', async () => {
+    // Repo path returns 500; contrib path returns a real count. Two
+    // pipelines resolve independently, so this race is reachable.
+    // The error annotation must NOT also grow a contributor chip —
+    // would read as "repo is broken AND has 99 contributors."
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      // Slight delay to let the repo error paint land first.
+      await new Promise((r) => setTimeout(r, 5));
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 99 } as ContribResponse]));
+      return { ok: true };
+    };
+    portFetcherMock.mockReset();
+    portFetcherMock.mockImplementation(async () => ({ ok: false, status: 500 }));
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        {
+          show: { stars: true, forks: false, update: false, contributors: true },
+          star_style: 'outline',
+        },
+        resolve
+      )
+    );
+    const anchor = document.createElement('a');
+    anchor.href = 'https://github.com/owner/repo';
+    document.body.appendChild(anchor);
+    const instance = createContentScript({
+      portFetcher: portFetcherMock,
+      contribFetcher,
+    });
+    try {
+      instance.initialize();
+      await waitForScanner();
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation).not.toBeNull();
+      expect(annotation?.querySelector('.sneetch-error')).not.toBeNull();
+      // Real bug check: error annotation must NOT have grown a contrib chip.
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('contrib arriving AFTER repo paint on an archived repo inserts BEFORE archive chip', async () => {
+    // Exercises paintContribResult's archive-aware insertBefore branch.
+    // Without it, the "archive chip is the LAST child" invariant breaks
+    // when contrib lands on the second pipeline.
+    let releaseContrib: (() => void) | null = null;
+    const contribGate = new Promise<void>((r) => {
+      releaseContrib = r;
+    });
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      await contribGate;
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 12 } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+      repoResponse: {
+        kind: 'ok',
+        json: {
+          forks_count: 0,
+          stargazers_count: 5,
+          pushed_at: '2022-01-01',
+          archived: true,
+        },
+      },
+    });
+    try {
+      // Repo annotation should have painted with an archive chip but
+      // no contrib chip yet (contrib is gated).
+      const annotation = anchor.querySelector('.data-sneetch-extension')!;
+      expect(annotation.querySelector('.sneetch-archived')).not.toBeNull();
+      expect(annotation.querySelector('.sneetch-contributors')).toBeNull();
+      // Now release contrib and let paintContribResult run.
+      releaseContrib!();
+      await waitForScanner();
+      const children = Array.from(annotation.children);
+      const archiveIdx = children.findIndex((c) => c.classList.contains('sneetch-archived'));
+      const contribIdx = children.findIndex((c) => c.classList.contains('sneetch-contributors'));
+      expect(contribIdx).toBeGreaterThanOrEqual(0);
+      expect(archiveIdx).toBe(children.length - 1); // archive must remain LAST
+      expect(contribIdx).toBeLessThan(archiveIdx);
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('contrib result arriving BEFORE the repo annotation still paints', async () => {
+    // Hold the repo fetcher's resolution open until a flush gate, then
+    // resolve it AFTER the contrib fetcher has already delivered.
+    // paintContribResult should stash the result; the later repo paint's
+    // createAnnotation must include the chip.
+    let releaseRepo: (() => void) | null = null;
+    const repoGate = new Promise<void>((r) => {
+      releaseRepo = r;
+    });
+    portFetcherMock.mockReset();
+    portFetcherMock.mockImplementation(async (nwos, onChunk) => {
+      await repoGate;
+      onChunk(
+        nwos.map((nwo) => [
+          nwo,
+          {
+            kind: 'ok' as const,
+            json: {
+              forks_count: 0,
+              stargazers_count: 1,
+              pushed_at: '2024-01-01',
+              archived: false,
+            },
+          },
+        ])
+      );
+      return { ok: true };
+    });
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'count', count: 42 } as ContribResponse]));
+      return { ok: true };
+    };
+
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set(
+        {
+          show: { stars: true, forks: false, update: false, contributors: true },
+          star_style: 'outline',
+        },
+        resolve
+      )
+    );
+    const anchor = document.createElement('a');
+    anchor.href = 'https://github.com/owner/repo';
+    document.body.appendChild(anchor);
+    const instance = createContentScript({
+      portFetcher: portFetcherMock,
+      contribFetcher,
+    });
+    try {
+      instance.initialize();
+      // Let the contrib pipeline resolve while the repo path is still
+      // blocked on repoGate.
+      await waitForScanner();
+      // No annotation yet (repo path is gated) — but the contrib result
+      // has been stored in the WeakMap.
+      expect(anchor.querySelector('.data-sneetch-extension')).toBeNull();
+      // Now release the repo path and let it paint.
+      releaseRepo!();
+      await waitForScanner();
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      const chip = annotation?.querySelector('.sneetch-contributors');
+      expect(chip).not.toBeNull();
+      expect(chip!.textContent).toContain('42');
+    } finally {
+      instance.teardown();
+    }
+  });
+});
+
+describe('createContributorChip', () => {
+  test('count → people icon + number, with tooltip + aria-label', () => {
+    const chip = createContributorChip({ kind: 'count', count: 82 });
+    expect(chip).not.toBeNull();
+    expect(chip!.classList.contains('sneetch-contributors')).toBe(true);
+    expect(chip!.textContent).toContain('82');
+    expect(chip!.getAttribute('aria-label')).toBe('82 contributors');
+    expect(chip!.querySelector('svg')).not.toBeNull();
+  });
+
+  test('count of 1 uses the singular aria-label', () => {
+    const chip = createContributorChip({ kind: 'count', count: 1 });
+    expect(chip!.getAttribute('aria-label')).toBe('1 contributor');
+    expect(chip!.textContent).toContain('1');
+  });
+
+  test('humanize formats large counts (e.g. 1600 → 1.6K)', () => {
+    const chip = createContributorChip({ kind: 'count', count: 1600 });
+    expect(chip!.textContent).toContain('1.6K');
+    // commafy in the tooltip; humanize on screen — both worth asserting.
+    expect(chip!.getAttribute('aria-label')).toBe('1,600 contributors');
+  });
+
+  test('many → "many" text + explaining aria-label', () => {
+    const chip = createContributorChip({ kind: 'many' });
+    expect(chip!.textContent).toContain('many');
+    expect(chip!.getAttribute('aria-label')).toBe(
+      "GitHub doesn't expose an exact count for repos this large"
+    );
+  });
+
+  test('silent → null (paints nothing)', () => {
+    expect(createContributorChip({ kind: 'silent' })).toBeNull();
+  });
+
+  test('notfound → null (paints nothing)', () => {
+    expect(createContributorChip({ kind: 'notfound' })).toBeNull();
   });
 });

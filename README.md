@@ -44,6 +44,8 @@ Click the toolbar icon to open the popup — it's also the settings page. Toggle
 
 The **Advanced** tray shows current rate-limit usage and cached entry count, and lets you **skip owners** — useful when an org has private repos your PAT can't read, since GitHub returns 404 for those (same as a deleted repo), so every link to that org gets the red "broken" chip. Click **Manage** to add or remove an owner, or ⌘/Ctrl-click any broken chip for a one-step skip.
 
+It also hosts the opt-in **Contributors** annotation — a people icon + rough head-count next to the other chips. Lives in Advanced because each repo's count is a separate REST call, so it's off by default; hover the toggle for the cost hint.
+
 ## Development
 
 ```bash

@@ -6,6 +6,7 @@ import {
   clearOwnerCache,
   readAllCachedRepos,
   sweepCache,
+  sweepContribCache,
 } from '../src/cache';
 
 describe('getCacheEntryCount', () => {
@@ -109,6 +110,25 @@ describe('bulkReadCache / bulkWriteCache', () => {
     );
     expect(await getCacheEntryCount()).toBe(2);
   });
+
+  test('bulkWriteCache honors a custom ttlSeconds', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 1]]), 1, 10); // 10s TTL
+    // 10s TTL: at +11s the entry must be gone. The default 4h TTL would
+    // have outlived this — only the custom shorter TTL fails this check.
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000);
+    const { cached, missing } = await bulkReadCache<number, number>(['a'], 1);
+    expect(cached.size).toBe(0);
+    expect(missing).toEqual(['a']);
+    jest.restoreAllMocks();
+  });
+
+  test('bulkWriteCache defaults to the 4h TTL when ttlSeconds is omitted', async () => {
+    bulkWriteCache(new Map<string, number>([['a', 1]]), 1);
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 3 * 3600 * 1000); // +3h
+    const { cached } = await bulkReadCache<number, number>(['a'], 1);
+    expect(cached.get('a')).toBe(1); // still alive at +3h
+    jest.restoreAllMocks();
+  });
 });
 
 describe('clearCache', () => {
@@ -187,6 +207,86 @@ describe('clearOwnerCache', () => {
     await clearOwnerCache('acme');
     const { cached } = await bulkReadCache<string, number>(['acme-corp/repo'], 1);
     expect(cached.get('acme-corp/repo')).toBe('a');
+  });
+
+  // Documents the design-doc decision: un-skipping an owner clears their
+  // contrib entries too. The startsWith(owner + '/') match naturally
+  // covers both `owner/name` and `owner/name\x00contrib`.
+  test('also removes contrib (owner/name\\x00contrib) entries under the owner', async () => {
+    bulkWriteCache(new Map<string, string>([['acme-corp/repo', 'a']]), 1);
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          ['acme-corp/repo\x00contrib']: {
+            exp: Date.now() + 1e9,
+            pay: { kind: 'count', count: 5 },
+            ver: 1,
+          },
+          ['other-org/repo\x00contrib']: {
+            exp: Date.now() + 1e9,
+            pay: { kind: 'count', count: 7 },
+            ver: 1,
+          },
+        },
+        () => resolve()
+      )
+    );
+    await clearOwnerCache('acme-corp');
+    const items = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect('acme-corp/repo' in items).toBe(false);
+    expect('acme-corp/repo\x00contrib' in items).toBe(false);
+    expect('other-org/repo\x00contrib' in items).toBe(true);
+  });
+});
+
+describe('contrib keys are invisible to the repo scan', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  test('readAllCachedRepos ignores \\x00contrib keys', async () => {
+    bulkWriteCache(new Map([['owner/repo', { kind: 'ok' }]]), 2);
+    // Hand-write a contrib entry directly (different version, contrib key).
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          ['owner/repo\x00contrib']: {
+            exp: Date.now() + 1e9,
+            pay: { kind: 'count', count: 5 },
+            ver: 1,
+          },
+        },
+        () => resolve()
+      )
+    );
+    const live = await readAllCachedRepos<unknown, number>(2);
+    expect(live.has('owner/repo')).toBe(true);
+    expect(live.has('owner/repo\x00contrib')).toBe(false);
+  });
+
+  test('readAllCachedRepos does NOT evict a fresh contrib key', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.local.set(
+        {
+          ['owner/repo\x00contrib']: {
+            exp: Date.now() + 1e9,
+            pay: { kind: 'count', count: 5 },
+            ver: 1,
+          },
+        },
+        () => resolve()
+      )
+    );
+    await readAllCachedRepos<unknown, number>(2);
+    // Let the (would-be) fire-and-forget remove settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Contrib key must survive a repo-scan even though its ver (1) != repo ver (2).
+    const items = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get(null, resolve)
+    );
+    expect('owner/repo\x00contrib' in items).toBe(true);
   });
 });
 
@@ -439,5 +539,48 @@ describe('sweepCache', () => {
     expect(after['owner/repo-49']).toBeUndefined();
     expect(after['owner/repo-50']).toBeDefined();
     expect(after[`owner/repo-${total - 1}`]).toBeDefined();
+  });
+});
+
+describe('sweepContribCache', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  const writeContrib = (key: string, entry: unknown): Promise<void> =>
+    new Promise<void>((resolve) => chrome.storage.local.set({ [key]: entry }, () => resolve()));
+
+  test('evicts expired and wrong-version contrib entries, keeps fresh ones', async () => {
+    await writeContrib('a/x\x00contrib', {
+      exp: Date.now() + 1e9,
+      pay: { kind: 'count', count: 1 },
+      ver: 1,
+    });
+    await writeContrib('a/y\x00contrib', {
+      exp: Date.now() - 1,
+      pay: { kind: 'count', count: 2 },
+      ver: 1,
+    });
+    await writeContrib('a/z\x00contrib', {
+      exp: Date.now() + 1e9,
+      pay: { kind: 'count', count: 3 },
+      ver: 99,
+    });
+    await sweepContribCache(1);
+    const items = await new Promise<Record<string, unknown>>((r) =>
+      chrome.storage.local.get(null, r)
+    );
+    expect('a/x\x00contrib' in items).toBe(true);
+    expect('a/y\x00contrib' in items).toBe(false);
+    expect('a/z\x00contrib' in items).toBe(false);
+  });
+
+  test('leaves repo (non-contrib) keys untouched', async () => {
+    bulkWriteCache(new Map([['a/x', { kind: 'ok' }]]), 2);
+    await sweepContribCache(1);
+    const items = await new Promise<Record<string, unknown>>((r) =>
+      chrome.storage.local.get(null, r)
+    );
+    expect('a/x' in items).toBe(true);
   });
 });

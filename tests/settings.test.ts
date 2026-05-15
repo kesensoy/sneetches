@@ -1,4 +1,4 @@
-import { getSettings } from '../src/settings';
+import { DefaultShowSettings, getSettings, SHOW_KEY } from '../src/settings';
 
 describe('settingsP', () => {
   beforeEach(() => {
@@ -10,7 +10,7 @@ describe('settingsP', () => {
     const settings = await getSettings();
     expect(settings).toEqual({
       accessToken: undefined,
-      show: { stars: true, forks: false, update: false },
+      show: { stars: true, forks: false, update: false, contributors: false },
       starStyle: 'outline',
       advancedOpen: false,
       tokenValidated: false,
@@ -35,7 +35,7 @@ describe('settingsP', () => {
     const settings = await getSettings();
     expect(settings).toEqual({
       accessToken: '<<token value>>',
-      show: { stars: false, forks: true, update: false },
+      show: { stars: false, forks: true, update: false, contributors: false },
       starStyle: 'outline',
       advancedOpen: false,
       tokenValidated: false,
@@ -105,5 +105,28 @@ describe('settingsP', () => {
       const settings = await getSettings();
       expect(settings[settingKey]).toBe(overrideValue);
     });
+  });
+});
+
+describe('ShowSettings.contributors', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('DefaultShowSettings.contributors is false', () => {
+    expect(DefaultShowSettings.contributors).toBe(false);
+  });
+
+  test('getSettings fills contributors from the default when absent', async () => {
+    const { show } = await getSettings();
+    expect(show.contributors).toBe(false);
+  });
+
+  test('getSettings reads a stored contributors flag', async () => {
+    await new Promise<void>((resolve) =>
+      chrome.storage.sync.set({ [SHOW_KEY]: { stars: true, contributors: true } }, () => resolve())
+    );
+    const { show } = await getSettings();
+    expect(show.contributors).toBe(true);
   });
 });

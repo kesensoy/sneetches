@@ -10,6 +10,7 @@
 .data-sneetch-extension .sneetch-stars,
 .data-sneetch-extension .sneetch-forks,
 .data-sneetch-extension .sneetch-date,
+.data-sneetch-extension .sneetch-contributors,
 .data-sneetch-extension .sneetch-archived,
 .data-sneetch-extension .sneetch-broken,
 .data-sneetch-extension .sneetch-rate-limited,
@@ -23,7 +24,8 @@
 
 .data-sneetch-extension .sneetch-stars,
 .data-sneetch-extension .sneetch-forks,
-.data-sneetch-extension .sneetch-date {
+.data-sneetch-extension .sneetch-date,
+.data-sneetch-extension .sneetch-contributors {
   background: rgba(128, 128, 128, 0.1);
 }
 
@@ -44,6 +46,14 @@
 }
 
 .data-sneetch-extension .sneetch-date {
+  opacity: 0.7;
+}
+
+/* Contributor-count chip — plain neutral info chip, same treatment as
+   forks/date. Stars earns its gold by being the headline metric; the
+   contributor count is a secondary "how many hands" signal and stays
+   visually quiet. */
+.data-sneetch-extension .sneetch-contributors {
   opacity: 0.7;
 }
 
@@ -93,7 +103,8 @@
    chip legible. */
 .data-sneetch-extension.is-archived .sneetch-stars,
 .data-sneetch-extension.is-archived .sneetch-forks,
-.data-sneetch-extension.is-archived .sneetch-date {
+.data-sneetch-extension.is-archived .sneetch-date,
+.data-sneetch-extension.is-archived .sneetch-contributors {
   color: #8a96aa;
   background: rgba(138, 150, 170, 0.04);
   opacity: 0.55;

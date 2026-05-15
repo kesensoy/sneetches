@@ -1,5 +1,17 @@
-import { CACHE_VERSION, validateAccessToken, getStoredRateLimit, RateLimitInfo } from './github';
-import { clearCache, clearOwnerCache, getCacheEntryCount, sweepCache } from './cache';
+import {
+  CACHE_VERSION,
+  CONTRIB_CACHE_VERSION,
+  validateAccessToken,
+  getStoredRateLimit,
+  RateLimitInfo,
+} from './github';
+import {
+  clearCache,
+  clearOwnerCache,
+  getCacheEntryCount,
+  sweepCache,
+  sweepContribCache,
+} from './cache';
 import {
   ACCESS_TOKEN_KEY,
   ADVANCED_OPEN_KEY,
@@ -47,6 +59,7 @@ function saveOptions() {
       forks: inputElement('show-forks').checked,
       stars: inputElement('show-stars').checked,
       update: inputElement('show-update').checked,
+      contributors: inputElement('show-contributors').checked,
     },
     [STAR_STYLE_KEY]: inputElement('ss-outline').checked ? 'outline' : 'filled',
   });
@@ -83,7 +96,10 @@ async function refreshAdvancedStats() {
     // would have filtered out anyway. Options page isn't covered by a
     // content-script preload (chrome-extension:// is outside our matches),
     // so this is the only time sweep runs for users who don't browse.
+    // Both namespaces (repo + contrib) sweep here so the count covers
+    // every live cache entry the user might think of as "cached repos."
     await sweepCache(CACHE_VERSION);
+    await sweepContribCache(CONTRIB_CACHE_VERSION);
     count = await getCacheEntryCount();
   } catch {
     count = 0;
@@ -219,6 +235,7 @@ function restoreOptions() {
       inputElement('show-forks').checked = show.forks;
       inputElement('show-stars').checked = show.stars;
       inputElement('show-update').checked = show.update;
+      inputElement('show-contributors').checked = show.contributors;
       inputElement('ss-outline').checked = starStyle === 'outline';
       inputElement('ss-fill').checked = starStyle === 'filled';
 
