@@ -5,11 +5,12 @@ import {
   bugIcon,
   clockIcon,
   hourglassIcon,
+  peopleIcon,
   repoForkedIcon,
   starIcon,
   unlinkIcon,
 } from './icons';
-import { isRepoUrl, parseRepoNwo, RepoResponse, CACHE_VERSION } from './github';
+import { CACHE_VERSION, ContribResponse, isRepoUrl, parseRepoNwo, RepoResponse } from './github';
 import {
   ACCESS_TOKEN_KEY,
   GITHUB_HANDLE_RE,
@@ -226,6 +227,31 @@ export function createAnnotation(
   }
   elt.title = segments.join('; ') + ' — Sneetches';
   return elt;
+}
+
+// Build the contributor-count chip, or null if there's nothing to show.
+// 'count' → people icon + humanize(n) text; 'many' → people icon + the
+// word "many" for the linux-scale giants GitHub won't enumerate;
+// 'silent' → null (transient failure, retried next scan).
+export function createContributorChip(res: ContribResponse): HTMLSpanElement | null {
+  if (res.kind === 'silent') return null;
+  const span = document.createElement('span');
+  span.className = 'sneetch-contributors';
+  if (res.kind === 'count') {
+    const label = `${commafy(res.count)} contributor${res.count === 1 ? '' : 's'}`;
+    span.setAttribute('aria-label', label);
+    span.title = label;
+    span.appendChild(peopleIcon());
+    span.append(' ' + humanize(res.count));
+  } else {
+    // kind === 'many'
+    const label = "GitHub doesn't expose an exact count for repos this large";
+    span.setAttribute('aria-label', label);
+    span.title = label;
+    span.appendChild(peopleIcon());
+    span.append(' many');
+  }
+  return span;
 }
 
 const removeLinkAnnotations = () =>

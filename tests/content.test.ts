@@ -3,6 +3,7 @@ import {
   ContentScriptController,
   createAnnotation,
   createContentScript,
+  createContributorChip,
   createErrorAnnotation,
 } from '../src/content';
 
@@ -1750,5 +1751,41 @@ describe('in-memory cache invalidation on local storage clear', () => {
     await removeLocal('a/b\x00contrib');
     await flushStorageEvents();
     expect(instance.getInMemoryRepoCache()).toBe(seeded);
+  });
+});
+
+describe('createContributorChip', () => {
+  test('count → people icon + number, with tooltip + aria-label', () => {
+    const chip = createContributorChip({ kind: 'count', count: 82 });
+    expect(chip).not.toBeNull();
+    expect(chip!.classList.contains('sneetch-contributors')).toBe(true);
+    expect(chip!.textContent).toContain('82');
+    expect(chip!.getAttribute('aria-label')).toBe('82 contributors');
+    expect(chip!.querySelector('svg')).not.toBeNull();
+  });
+
+  test('count of 1 uses the singular aria-label', () => {
+    const chip = createContributorChip({ kind: 'count', count: 1 });
+    expect(chip!.getAttribute('aria-label')).toBe('1 contributor');
+    expect(chip!.textContent).toContain('1');
+  });
+
+  test('humanize formats large counts (e.g. 1600 → 1.6K)', () => {
+    const chip = createContributorChip({ kind: 'count', count: 1600 });
+    expect(chip!.textContent).toContain('1.6K');
+    // commafy in the tooltip; humanize on screen — both worth asserting.
+    expect(chip!.getAttribute('aria-label')).toBe('1,600 contributors');
+  });
+
+  test('many → "many" text + explaining aria-label', () => {
+    const chip = createContributorChip({ kind: 'many' });
+    expect(chip!.textContent).toContain('many');
+    expect(chip!.getAttribute('aria-label')).toBe(
+      "GitHub doesn't expose an exact count for repos this large"
+    );
+  });
+
+  test('silent → null (paints nothing)', () => {
+    expect(createContributorChip({ kind: 'silent' })).toBeNull();
   });
 });
