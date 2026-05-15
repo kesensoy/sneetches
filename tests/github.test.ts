@@ -7,6 +7,7 @@ import {
   fetchGraphQLBatch,
   fetchRepoDataStreaming,
   isRepoUrl,
+  parseContributorCount,
   parseRepoNwo,
   RATE_LIMIT_KEY,
   RepoResponse,
@@ -906,5 +907,24 @@ describe('contrib constants', () => {
   });
   test('contribCacheKey appends the NUL-delimited contrib marker', () => {
     expect(contribCacheKey('facebook/react')).toBe('facebook/react\x00contrib');
+  });
+});
+
+describe('parseContributorCount', () => {
+  test('reads the rel="last" page number from a Link header', () => {
+    const link =
+      '<https://api.github.com/repositories/1/contributors?per_page=1&page=2>; rel="next", ' +
+      '<https://api.github.com/repositories/1/contributors?per_page=1&page=411>; rel="last"';
+    expect(parseContributorCount(link, 1)).toBe(411);
+  });
+
+  test('falls back to the body length when there is no Link header', () => {
+    expect(parseContributorCount(null, 1)).toBe(1);
+    expect(parseContributorCount('', 3)).toBe(3);
+  });
+
+  test('falls back to the body length when Link has no rel="last"', () => {
+    const link = '<https://api.github.com/...?page=2>; rel="next"';
+    expect(parseContributorCount(link, 2)).toBe(2);
   });
 });

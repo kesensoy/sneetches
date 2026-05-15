@@ -20,6 +20,19 @@ export function contribCacheKey(nwo: string): string {
   return nwo + CONTRIB_KEY_MARKER;
 }
 
+// Extract the exact contributor count from a /contributors?per_page=1
+// response. With per_page=1 the rel="last" page number IS the count.
+// When the Link header is absent (single-page repos), GitHub returned
+// every contributor in the body, so the body length is the count.
+// @internal — exported for unit tests.
+export function parseContributorCount(linkHeader: string | null, bodyLength: number): number {
+  if (linkHeader) {
+    const match = linkHeader.match(/[?&]page=(\d+)>;\s*rel="last"/);
+    if (match) return Number(match[1]);
+  }
+  return bodyLength;
+}
+
 // The three terminal states of a contributor-count lookup:
 //   count  — an exact number (from the Link header or the body fallback)
 //   many   — GitHub refused to enumerate (HTTP 403 "too large"); the repo
