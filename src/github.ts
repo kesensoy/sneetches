@@ -53,13 +53,15 @@ export async function fetchContributorsStreaming(
   );
 
   if (cached.size > 0) {
-    // Re-key from contrib-key back to plain nwo for the caller.
+    // Re-key from contrib-key back to plain nwo for the caller. Every
+    // key in `cached` came from keyByNwo.values(), so we always emit a
+    // non-empty chunk in this branch.
     const byNwo = new Map<string, ContribResponse>();
     for (const [nwo, key] of keyByNwo) {
       const hit = cached.get(key);
       if (hit) byNwo.set(nwo, hit);
     }
-    if (byNwo.size > 0) onResults(byNwo);
+    onResults(byNwo);
   }
   if (missing.length === 0) return;
 
@@ -96,6 +98,10 @@ export async function fetchContributorCount(
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   try {
     const res = await fetch(`${GITHUB_API_URL}${nwo}/contributors?per_page=1`, { headers });
+    // Share rate-limit headers with the repo-data path so the Advanced-tray
+    // gauge reflects total core-bucket spend — contrib calls draw from the
+    // same 5000/h (PAT) or 60/h (unauth) bucket.
+    captureRateLimit(res);
     if (res.ok) {
       const body = await res.json();
       const bodyLength = Array.isArray(body) ? body.length : 0;
@@ -103,6 +109,13 @@ export async function fetchContributorCount(
         kind: 'count',
         count: parseContributorCount(res.headers.get('Link'), bodyLength),
       };
+    }
+    if (res.status === 404) {
+      // Persistent miss — the repo doesn't exist (or is private to a PAT
+      // that can't see it). Cached so a broken-link-heavy page doesn't
+      // re-fetch every scan. The repo-data pipeline paints its own
+      // broken chip; we render nothing here.
+      return { kind: 'notfound' };
     }
     if (res.status === 403) {
       // A 403 with quota remaining is the "contributor list too large"
@@ -117,15 +130,21 @@ export async function fetchContributorCount(
   }
 }
 
-// The three terminal states of a contributor-count lookup:
-//   count  — an exact number (from the Link header or the body fallback)
-//   many   — GitHub refused to enumerate (HTTP 403 "too large"); the repo
-//            is a linux-scale giant. Rendered as a qualitative "many" chip.
-//   silent — transient failure (network / 5xx / rate-limit). Not painted,
-//            not cached; retried on the next scan.
+// The four terminal states of a contributor-count lookup:
+//   count    — an exact number (from the Link header or the body fallback)
+//   many     — GitHub refused to enumerate (HTTP 403 "too large"); the repo
+//              is a linux-scale giant. Rendered as a qualitative "many" chip.
+//   notfound — the repo 404'd on the contributor endpoint. Persistent miss;
+//              cached so an awesome-list page of broken/private-via-PAT
+//              links doesn't burn one core-bucket call per repo per scan.
+//              No chip is painted (the repo-data pipeline already renders
+//              its own broken chip).
+//   silent   — transient failure (network / 5xx / rate-limit). Not painted,
+//              not cached; retried on the next scan.
 export type ContribResponse =
   | { readonly kind: 'count'; readonly count: number }
   | { readonly kind: 'many' }
+  | { readonly kind: 'notfound' }
   | { readonly kind: 'silent' };
 
 export interface RateLimitInfo {

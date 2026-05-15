@@ -247,9 +247,10 @@ export function createAnnotation(
 // Build the contributor-count chip, or null if there's nothing to show.
 // 'count' → people icon + humanize(n) text; 'many' → people icon + the
 // word "many" for the linux-scale giants GitHub won't enumerate;
-// 'silent' → null (transient failure, retried next scan).
+// 'silent' / 'notfound' → null (no chip; the repo-data path paints its
+// own broken chip for 404s, and silent is a transient skip).
 export function createContributorChip(res: ContribResponse): HTMLSpanElement | null {
-  if (res.kind === 'silent') return null;
+  if (res.kind === 'silent' || res.kind === 'notfound') return null;
   const span = document.createElement('span');
   span.className = 'sneetch-contributors';
   if (res.kind === 'count') {

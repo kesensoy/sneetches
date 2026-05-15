@@ -1,9 +1,13 @@
 const CACHE_DUR_SECONDS = 4 * 3600;
 
-// Hard cap on live cache entries after sweep. Each entry is ~215B on disk
-// (probe measured 705 entries ≈ 150KB on awesome-homelab), so 25k ≈ 5.4MB
-// — safely under chrome.storage.local's 10MB default quota, and ~5x the
-// PAT'd hourly GitHub rate limit (5000 req/h) so the cap never starves
+// Hard cap on live cache entries after sweep. Each repo entry is ~215B
+// on disk (probe measured 705 entries ≈ 150KB on awesome-homelab), so
+// 25k repo entries ≈ 5.4MB. Each contrib entry is much smaller — the
+// {kind:'count', count:n} payload + envelope is ~70B — so 25k contrib
+// entries ≈ 1.75MB. The cap is applied per-namespace (repo + contrib
+// sweep independently), so worst-case combined storage ≈ 7.2MB — still
+// safely under chrome.storage.local's 10MB default quota. Keep below
+// the 5000/h PAT rate limit by a few-x so the cap never starves
 // BATCH_SIZE=10 fetches from fresh-data headroom.
 const CACHE_MAX_ENTRIES = 25_000;
 

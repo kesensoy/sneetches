@@ -1824,6 +1824,42 @@ describe('contributor chip integration', () => {
     }
   });
 
+  test('silent contrib result paints no chip', async () => {
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'silent' } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation).not.toBeNull(); // repo annotation still painted
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+    } finally {
+      instance.teardown();
+    }
+  });
+
+  test('notfound contrib result paints no chip', async () => {
+    const contribFetcher: ContribFetcher = async (nwos, onChunk) => {
+      onChunk(nwos.map((nwo) => [nwo, { kind: 'notfound' } as ContribResponse]));
+      return { ok: true };
+    };
+    const { instance, anchor } = await setupWithFetchers({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      contribFetcher,
+    });
+    try {
+      const annotation = anchor.querySelector('.data-sneetch-extension');
+      expect(annotation).not.toBeNull();
+      expect(annotation?.querySelector('.sneetch-contributors')).toBeNull();
+    } finally {
+      instance.teardown();
+    }
+  });
+
   test('no contributor chip when show.contributors is off', async () => {
     const contribFetcher = jest.fn() as unknown as ContribFetcher;
     const { instance, anchor } = await setupWithFetchers({
@@ -1943,5 +1979,9 @@ describe('createContributorChip', () => {
 
   test('silent → null (paints nothing)', () => {
     expect(createContributorChip({ kind: 'silent' })).toBeNull();
+  });
+
+  test('notfound → null (paints nothing)', () => {
+    expect(createContributorChip({ kind: 'notfound' })).toBeNull();
   });
 });

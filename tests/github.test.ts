@@ -959,6 +959,25 @@ describe('fetchContributorsStreaming', () => {
     expect(cached.size).toBe(0);
   });
 
+  test('caches a "notfound" result and short-circuits the next scan', async () => {
+    // 404 is a persistent miss. The contrib path must cache it so a
+    // page full of broken/private-via-PAT links does not burn one
+    // core-bucket REST call per scan. See review MUST #1.
+    mockFetch({ ok: false, status: 404 });
+    await collectContrib(['ghost/repo']);
+    const { cached } = await bulkReadCache<ContribResponse, number>(
+      [contribCacheKey('ghost/repo')],
+      CONTRIB_CACHE_VERSION
+    );
+    expect(cached.get(contribCacheKey('ghost/repo'))).toEqual({ kind: 'notfound' });
+
+    // Second call: even if fetch is rigged to a different result, the
+    // cached notfound short-circuits the wire.
+    mockFetch({ json: [{}], headers: { link: '<...&page=999>; rel="last"' } });
+    const out = await collectContrib(['ghost/repo']);
+    expect(out.get('ghost/repo')).toEqual({ kind: 'notfound' });
+  });
+
   test('serves a cached count without re-fetching', async () => {
     mockFetch({ json: [{}], headers: { link: '<...&page=10>; rel="last"' } });
     await collectContrib(['owner/repo']);
@@ -998,6 +1017,28 @@ describe('fetchContributorCount', () => {
   test('403 rate-limited → silent (no quota)', async () => {
     mockFetch({ ok: false, status: 403, headers: { 'x-ratelimit-remaining': '0' } });
     expect(await fetchContributorCount('owner/repo', undefined)).toEqual({ kind: 'silent' });
+  });
+
+  test('404 → notfound (persistent, cacheable)', async () => {
+    mockFetch({ ok: false, status: 404 });
+    expect(await fetchContributorCount('ghost/repo', undefined)).toEqual({ kind: 'notfound' });
+  });
+
+  test('captures rate-limit headers on a successful fetch', async () => {
+    mockFetch({
+      json: [{}],
+      headers: {
+        link: '<...&page=5>; rel="last"',
+        'x-ratelimit-limit': '5000',
+        'x-ratelimit-remaining': '4321',
+      },
+    });
+    await new Promise<void>((resolve) => chrome.storage.local.clear(() => resolve()));
+    await fetchContributorCount('owner/repo', 'tok');
+    const stored = await new Promise<Record<string, unknown>>((resolve) =>
+      chrome.storage.local.get([RATE_LIMIT_KEY], (items) => resolve(items))
+    );
+    expect(stored[RATE_LIMIT_KEY]).toEqual({ limit: 5000, remaining: 4321 });
   });
 
   test('network error → silent', async () => {
