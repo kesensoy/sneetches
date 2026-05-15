@@ -16,7 +16,14 @@
 import '../src/service-worker';
 import { FakePort } from './port.mock';
 import { mockFetch } from './fetch.mock';
-import { ChunkMsg, SNEETCHES_PORT_NAME, SneetchesRpcMsg } from '../src/rpc';
+import {
+  ChunkMsg,
+  ContribChunkMsg,
+  SNEETCHES_CONTRIB_PORT_NAME,
+  SNEETCHES_PORT_NAME,
+  SneetchesContribRpcMsg,
+  SneetchesRpcMsg,
+} from '../src/rpc';
 import { ACCESS_TOKEN_KEY, TOKEN_VALIDATED_KEY } from '../src/settings';
 import { BATCH_SIZE } from '../src/github';
 
@@ -353,6 +360,75 @@ describe('service worker: port lifecycle', () => {
     port.postMessage({ nwos: ['owner/repo'] });
     await flush();
 
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contributor-count port — runs through the same single-shot lifecycle but
+// on its own port name, so the contrib REST fan-out never shares a
+// connection with (or blocks) the GraphQL path.
+// ---------------------------------------------------------------------------
+
+const openContribPort = (): FakePort =>
+  chrome.runtime.connect({ name: SNEETCHES_CONTRIB_PORT_NAME }) as unknown as FakePort;
+
+const asContribChunk = (msg: SneetchesContribRpcMsg): ContribChunkMsg => {
+  if (msg.type !== 'chunk') {
+    throw new Error(`expected contrib chunk, got ${JSON.stringify(msg)}`);
+  }
+  return msg;
+};
+
+describe('service worker: contributor port', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+    await new Promise<void>((resolve) => chrome.storage.sync.clear(resolve));
+  });
+
+  test('streams a chunk then done on a successful 200 + Link', async () => {
+    mockFetch({ json: [{}], headers: { link: '<...&page=42>; rel="last"' } });
+    const port = openContribPort();
+    port.postMessage({ nwos: ['owner/repo'] });
+    await flush();
+
+    const msgs = port.received as SneetchesContribRpcMsg[];
+    expect(msgs[0].type).toBe('chunk');
+    expect(asContribChunk(msgs[0]).entries).toEqual([['owner/repo', { kind: 'count', count: 42 }]]);
+    expect(msgs[msgs.length - 1]).toEqual({ type: 'done' });
+  });
+
+  test('streams "silent" results and still resolves to done', async () => {
+    mockFetch({ ok: false, status: 502 });
+    const port = openContribPort();
+    port.postMessage({ nwos: ['owner/repo'] });
+    await flush();
+
+    const msgs = port.received as SneetchesContribRpcMsg[];
+    expect(msgs[msgs.length - 1]).toEqual({ type: 'done' });
+    // The 'silent' chunk is still emitted so the content-script paint
+    // path knows the fetch completed (the chip just won't render).
+    const chunks = msgs.filter((m): m is ContribChunkMsg => m.type === 'chunk');
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].entries).toEqual([['owner/repo', { kind: 'silent' }]]);
+  });
+
+  test('empty nwos resolves to done with no chunk', async () => {
+    const port = openContribPort();
+    port.postMessage({ nwos: [] });
+    await flush();
+
+    const msgs = port.received as SneetchesContribRpcMsg[];
+    expect(msgs).toEqual([{ type: 'done' }]);
+  });
+
+  test('port is disconnected after done', async () => {
+    mockFetch({ json: [{}], headers: { link: '<...&page=1>; rel="last"' } });
+    const disconnectSpy = jest.fn();
+    const port = openContribPort();
+    port.onDisconnect.addListener(disconnectSpy);
+    port.postMessage({ nwos: ['owner/repo'] });
+    await flush();
     expect(disconnectSpy).toHaveBeenCalledTimes(1);
   });
 });
