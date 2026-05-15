@@ -6,6 +6,7 @@ import {
   clearOwnerCache,
   readAllCachedRepos,
   sweepCache,
+  sweepContribCache,
 } from '../src/cache';
 
 describe('getCacheEntryCount', () => {
@@ -538,5 +539,48 @@ describe('sweepCache', () => {
     expect(after['owner/repo-49']).toBeUndefined();
     expect(after['owner/repo-50']).toBeDefined();
     expect(after[`owner/repo-${total - 1}`]).toBeDefined();
+  });
+});
+
+describe('sweepContribCache', () => {
+  beforeEach(async () => {
+    await new Promise<void>((resolve) => chrome.storage.local.clear(resolve));
+  });
+
+  const writeContrib = (key: string, entry: unknown): Promise<void> =>
+    new Promise<void>((resolve) => chrome.storage.local.set({ [key]: entry }, () => resolve()));
+
+  test('evicts expired and wrong-version contrib entries, keeps fresh ones', async () => {
+    await writeContrib('a/x\x00contrib', {
+      exp: Date.now() + 1e9,
+      pay: { kind: 'count', count: 1 },
+      ver: 1,
+    });
+    await writeContrib('a/y\x00contrib', {
+      exp: Date.now() - 1,
+      pay: { kind: 'count', count: 2 },
+      ver: 1,
+    });
+    await writeContrib('a/z\x00contrib', {
+      exp: Date.now() + 1e9,
+      pay: { kind: 'count', count: 3 },
+      ver: 99,
+    });
+    await sweepContribCache(1);
+    const items = await new Promise<Record<string, unknown>>((r) =>
+      chrome.storage.local.get(null, r)
+    );
+    expect('a/x\x00contrib' in items).toBe(true);
+    expect('a/y\x00contrib' in items).toBe(false);
+    expect('a/z\x00contrib' in items).toBe(false);
+  });
+
+  test('leaves repo (non-contrib) keys untouched', async () => {
+    bulkWriteCache(new Map([['a/x', { kind: 'ok' }]]), 2);
+    await sweepContribCache(1);
+    const items = await new Promise<Record<string, unknown>>((r) =>
+      chrome.storage.local.get(null, r)
+    );
+    expect('a/x' in items).toBe(true);
   });
 });

@@ -202,6 +202,18 @@ export async function sweepCache<V>(version: V): Promise<void> {
   await storageRemove(evict);
 }
 
+// Contrib-namespace counterpart to sweepCache. Evicts expired /
+// wrong-version / malformed / over-cap contributor entries. The repo
+// sweep (sweepCache) deliberately skips contrib keys, so this is the
+// only GC path for the contrib namespace besides bulkReadCache's
+// opportunistic eviction. Caps the contrib namespace at
+// CACHE_MAX_ENTRIES independently of the repo namespace.
+export async function sweepContribCache<V>(contribVersion: V): Promise<void> {
+  const items = await storageGetAll();
+  const { evict } = scanEntries<unknown, V>(items, contribVersion, Date.now(), isContribKey);
+  await storageRemove(evict);
+}
+
 export function getCacheEntryCount(): Promise<number> {
   return new Promise((resolve, reject) =>
     chrome.storage.local.get(null, (items) =>
