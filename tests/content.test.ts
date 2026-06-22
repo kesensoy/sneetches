@@ -709,14 +709,44 @@ describe('startLinkScanner', () => {
     expect(contribFetcher).not.toHaveBeenCalled();
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
 
-    // Drive a follow-up mutation inside the editor (mimicking the editor's
-    // own reconciliation churn). Still no scan-driven annotation/fetch on
-    // either pipeline.
-    a.appendChild(document.createTextNode('typing'));
+    // Drive a REAL re-scan to prove the guard survives churn: append an
+    // ELEMENT node into the observed subtree. (A text node wouldn't — the
+    // MutationObserver `continue`s past non-element added nodes, so
+    // scheduleScan never fires and the assertion would pass trivially.) The
+    // span is a SIBLING of the anchor inside the editor, NOT a child of `a`,
+    // so the anchor's childElementCount stays 0 and it's the editable-context
+    // guard — not the already-annotated guard — that keeps it un-annotated.
+    // The 500ms wait clears the 300ms scan debounce so fireScan runs.
+    editor.appendChild(document.createElement('span'));
     await new Promise((r) => setTimeout(r, 500));
     expect(portFetcherMock).not.toHaveBeenCalled();
     expect(contribFetcher).not.toHaveBeenCalled();
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+
+  test('DOES annotate a repo link in a contenteditable="false" island inside an editor', async () => {
+    // A contenteditable="false" subtree opts OUT of editing: in a real browser
+    // the anchor is non-editable (isContentEditable === false), the editor
+    // won't reconcile an injected chip, and it's safe to annotate. The
+    // nearest-ancestor-wins fallback must agree with that — the closest
+    // contenteditable to the anchor is the "false" island, so it is NOT
+    // blocked. (The old selector-only guard matched the outer "true" ancestor
+    // and wrongly skipped this anchor; this test pins the corrected behavior.)
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    const island = document.createElement('span');
+    island.setAttribute('contenteditable', 'false');
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    island.appendChild(a);
+    editor.appendChild(island);
+    document.body.appendChild(editor);
+
+    startScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledWith(['ollama/ollama'], expect.any(Function));
+    expect(a.querySelector('.data-sneetch-extension')).not.toBeNull();
   });
 
   test('does not double-fetch when a second scan fires while the first is still in flight', async () => {
