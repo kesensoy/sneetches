@@ -677,6 +677,78 @@ describe('startLinkScanner', () => {
     expect(portFetcherMock).toHaveBeenCalledTimes(1);
   });
 
+  test('does not annotate repo links inside a contenteditable editor (rich-text loop guard)', async () => {
+    // Confluence/Notion/ProseMirror-style rich-text editors are
+    // contenteditable and own their own DOM. Injecting a chip child into
+    // an anchor there makes the editor reconcile against its model —
+    // stripping the chip (resetting childElementCount to 0) and serializing
+    // its text into the document — which re-fires our observer, re-annotates,
+    // and loops forever, corrupting the user's document (the 2026-06 Confluence
+    // report). Anchors inside an editable host must be skipped entirely: no
+    // annotation, and NEITHER the repo-data NOR the contributor pipeline may
+    // fire (the anchor never enters `pending`). Contributors is turned ON
+    // here so the contrib fetcher would dispatch if the guard leaked.
+    await setSync({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      star_style: 'outline',
+    });
+    const contribFetcher = jest.fn() as unknown as ContribFetcher;
+
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    editor.appendChild(a);
+    document.body.appendChild(editor);
+
+    instance = createContentScript({ portFetcher: portFetcherMock, contribFetcher });
+    instance.initialize();
+    await waitForScanner();
+
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(contribFetcher).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+
+    // Drive a REAL re-scan to prove the guard survives churn: append an
+    // ELEMENT node into the observed subtree. (A text node wouldn't — the
+    // MutationObserver `continue`s past non-element added nodes, so
+    // scheduleScan never fires and the assertion would pass trivially.) The
+    // span is a SIBLING of the anchor inside the editor, NOT a child of `a`,
+    // so the anchor's childElementCount stays 0 and it's the editable-context
+    // guard — not the already-annotated guard — that keeps it un-annotated.
+    // The 500ms wait clears the 300ms scan debounce so fireScan runs.
+    editor.appendChild(document.createElement('span'));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(contribFetcher).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
+  });
+
+  test('DOES annotate a repo link in a contenteditable="false" island inside an editor', async () => {
+    // A contenteditable="false" subtree opts OUT of editing: in a real browser
+    // the anchor is non-editable (isContentEditable === false), the editor
+    // won't reconcile an injected chip, and it's safe to annotate. The
+    // nearest-ancestor-wins fallback must agree with that — the closest
+    // contenteditable to the anchor is the "false" island, so it is NOT
+    // blocked. (The old selector-only guard matched the outer "true" ancestor
+    // and wrongly skipped this anchor; this test pins the corrected behavior.)
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    const island = document.createElement('span');
+    island.setAttribute('contenteditable', 'false');
+    const a = document.createElement('a');
+    a.href = 'https://github.com/ollama/ollama';
+    island.appendChild(a);
+    editor.appendChild(island);
+    document.body.appendChild(editor);
+
+    startScanner();
+    await waitForScanner();
+
+    expect(portFetcherMock).toHaveBeenCalledWith(['ollama/ollama'], expect.any(Function));
+    expect(a.querySelector('.data-sneetch-extension')).not.toBeNull();
+  });
+
   test('does not double-fetch when a second scan fires while the first is still in flight', async () => {
     // Race scenario: the first scan fires getRepoData for an anchor, the
     // promise takes a while to resolve (cold cache + slow network), and
