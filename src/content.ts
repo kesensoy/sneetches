@@ -91,8 +91,29 @@ const RESCAN_TRIGGER_KEYS: readonly string[] = [
 // Pure helpers (no closure state)
 // ---------------------------------------------------------------------------
 
+// True when the anchor lives inside a rich-text editor's editable host
+// (Confluence/Notion/ProseMirror, Draft, Slate, Quill, CKEditor, etc.).
+// Those editors own their DOM and reconcile it against an internal model:
+// injecting a chip child makes the editor strip it (resetting
+// childElementCount to 0) and serialize its text into the document, which
+// re-fires our MutationObserver, re-annotates, and loops forever —
+// corrupting the user's document. `isContentEditable` is the precise
+// runtime check (handles inherited editability + designMode) but jsdom
+// returns undefined for it, so OR it with a `closest('[contenteditable]')`
+// walk that catches the common case (editor host sets contenteditable to
+// "true" / "" / "plaintext-only") and is testable. The `i` flag matches
+// case-insensitively — contenteditable is an HTML enumerated attribute, so
+// "TRUE"/"True" are valid and the selector must not be case-sensitive. We
+// deliberately don't treat contenteditable="false" as editable — that's an
+// explicit non-editable island (e.g. an editor atom).
+const isInEditableContext = (elt: HTMLElement): boolean =>
+  elt.isContentEditable ||
+  elt.closest(
+    '[contenteditable="" i], [contenteditable="true" i], [contenteditable="plaintext-only" i]'
+  ) !== null;
+
 export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
-  isRepoUrl(elt.href) && elt.childElementCount === 0;
+  isRepoUrl(elt.href) && elt.childElementCount === 0 && !isInEditableContext(elt);
 
 // Build a single chip span with optional text before and/or after the
 // SVG icon, and append it to the parent element. Text is inserted via
