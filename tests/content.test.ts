@@ -724,29 +724,32 @@ describe('startLinkScanner', () => {
     expect(a.querySelector('.data-sneetch-extension')).toBeNull();
   });
 
-  test('DOES annotate a repo link in a contenteditable="false" island inside an editor', async () => {
-    // A contenteditable="false" subtree opts OUT of editing: in a real browser
-    // the anchor is non-editable (isContentEditable === false), the editor
-    // won't reconcile an injected chip, and it's safe to annotate. The
-    // nearest-ancestor-wins fallback must agree with that — the closest
-    // contenteditable to the anchor is the "false" island, so it is NOT
-    // blocked. (The old selector-only guard matched the outer "true" ancestor
-    // and wrongly skipped this anchor; this test pins the corrected behavior.)
+  test('does NOT annotate a repo link inside a contenteditable="false" subtree', async () => {
+    // A contenteditable="false" subtree can't be distinguished from a rich-text
+    // editor mid-hydration: Confluence's editor surface is briefly false before
+    // flipping to true, so a chip injected during that window gets serialized
+    // into the document. We block on the presence of any contenteditable
+    // ancestor regardless of value — safe direction over a corrupted document.
+    await setSync({
+      show: { stars: true, forks: false, update: false, contributors: true },
+      star_style: 'outline',
+    });
+    const contribFetcher = jest.fn() as unknown as ContribFetcher;
+
     const editor = document.createElement('div');
-    editor.setAttribute('contenteditable', 'true');
-    const island = document.createElement('span');
-    island.setAttribute('contenteditable', 'false');
+    editor.setAttribute('contenteditable', 'false');
     const a = document.createElement('a');
     a.href = 'https://github.com/ollama/ollama';
-    island.appendChild(a);
-    editor.appendChild(island);
+    editor.appendChild(a);
     document.body.appendChild(editor);
 
-    startScanner();
+    instance = createContentScript({ portFetcher: portFetcherMock, contribFetcher });
+    instance.initialize();
     await waitForScanner();
 
-    expect(portFetcherMock).toHaveBeenCalledWith(['ollama/ollama'], expect.any(Function));
-    expect(a.querySelector('.data-sneetch-extension')).not.toBeNull();
+    expect(portFetcherMock).not.toHaveBeenCalled();
+    expect(contribFetcher).not.toHaveBeenCalled();
+    expect(a.querySelector('.data-sneetch-extension')).toBeNull();
   });
 
   test('does not double-fetch when a second scan fires while the first is still in flight', async () => {
