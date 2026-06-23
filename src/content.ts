@@ -99,22 +99,16 @@ const RESCAN_TRIGGER_KEYS: readonly string[] = [
 // re-fires our MutationObserver, re-annotates, and loops forever —
 // corrupting the user's document.
 //
-// `isContentEditable` is the precise runtime check (handles inherited
-// editability + designMode) but jsdom returns undefined for it, so fall
-// back to the NEAREST ancestor carrying an explicit `contenteditable`
-// attribute: per DOM inheritance that nearest value wins, so the anchor is
-// editable unless that closest value is "false". This deliberately leaves a
-// `contenteditable="false"` island (e.g. an editor atom) inside an editor
-// un-blocked — matching exactly what `isContentEditable` returns in a real
-// browser, so the two branches never disagree. The value compare is
-// lowercased because contenteditable is an HTML enumerated attribute
-// ("TRUE"/"False" are valid); "" (bare attribute) and "plaintext-only" are
-// both editable since neither equals "false".
-const isInEditableContext = (elt: HTMLElement): boolean => {
-  if (elt.isContentEditable) return true;
-  const host = elt.closest('[contenteditable]');
-  return host !== null && (host.getAttribute('contenteditable') ?? '').toLowerCase() !== 'false';
-};
+// Block injection inside any contenteditable host. `isContentEditable` is the
+// precise runtime check but jsdom returns undefined for it, so we also match
+// the mere presence of a `contenteditable` ancestor — any value, including
+// "false". We don't exempt `contenteditable="false"` subtrees: a hydrating
+// editor surface (Confluence's .ProseMirror root is briefly false before
+// flipping to true) is indistinguishable from a static "false" atom at scan
+// time, and a chip injected during that window gets serialized into the
+// document. Worst case here is a missing chip; the alternative is corruption.
+const isInEditableContext = (elt: HTMLElement): boolean =>
+  elt.isContentEditable || elt.closest('[contenteditable]') !== null;
 
 export const isRepoLink = (elt: HTMLAnchorElement): boolean =>
   isRepoUrl(elt.href) && elt.childElementCount === 0 && !isInEditableContext(elt);
